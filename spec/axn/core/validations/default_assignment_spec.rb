@@ -48,62 +48,29 @@ RSpec.describe Axn do
       end
     end
 
+    # A done! from a callable the contract evaluates is refused: a successful early exit there would skip
+    # the validation that guarantees the result's shape. done! belongs in `call` or a hook.
     context "when done! is called in default block" do
+      let(:fired) { [] }
       let(:action) do
+        fired = self.fired
         build_axn do
           expects :value, default: -> { done!("Early completion") }
-          exposes :value
-
-          def call
-            expose value:
-          end
+          on_success { fired << :on_success }
+          define_method(:call) { fired << :call }
         end
       end
 
-      subject { action.call }
+      subject(:result) { action.call }
 
-      it "returns a successful result" do
-        is_expected.to be_ok
+      it "settles as an exception naming the misplaced done!" do
+        expect(result.exception).to be_a(Axn::MisplacedFlowControl)
+        expect(result.exception.message).to include("resolving the default: for field 'value'")
       end
 
-      it "sets the success message" do
-        expect(subject.success).to eq("Early completion")
-      end
-
-      it "triggers on_success handlers" do
-        success_called = false
-
-        action = build_axn do
-          expects :value, default: -> { done!("Early completion") }
-          exposes :value
-
-          on_success { success_called = true }
-
-          def call
-            expose value:
-          end
-        end
-
-        result = action.call
-        expect(result).to be_ok
-        expect(success_called).to be true
-      end
-
-      it "does not execute call method" do
-        call_executed = false
-
-        action = build_axn do
-          expects :value, default: -> { done!("Early completion") }
-          exposes :value
-
-          define_method :call do
-            call_executed = true
-            expose value:
-          end
-        end
-
-        action.call
-        expect(call_executed).to be false
+      it "neither runs call nor fires on_success" do
+        result
+        expect(fired).to be_empty
       end
     end
 
@@ -151,43 +118,35 @@ RSpec.describe Axn do
       end
     end
 
+    # A done! from a callable the contract evaluates is refused: a successful early exit there would skip
+    # the validation that guarantees the result's shape. done! belongs in `call` or a hook.
     context "when done! is called in subfield default block" do
       let(:user_data) do
         {
           name: "John Doe",
         }
       end
-
+      let(:fired) { [] }
       let(:action) do
+        fired = self.fired
         build_axn do
           expects :user_data
           expects :bio, on: :user_data, default: -> { done!("Early completion") }
+          on_success { fired << :on_success }
+          define_method(:call) { fired << :call }
         end
       end
 
-      it "returns a successful result" do
-        result = action.call(user_data:)
-        expect(result).to be_ok
+      subject(:result) { action.call(user_data:) }
+
+      it "settles as an exception naming the misplaced done!" do
+        expect(result.exception).to be_a(Axn::MisplacedFlowControl)
+        expect(result.exception.message).to include("resolving the default: for")
       end
 
-      it "sets the success message" do
-        result = action.call(user_data:)
-        expect(result.success).to eq("Early completion")
-      end
-
-      it "triggers on_success handlers" do
-        success_called = false
-
-        action = build_axn do
-          expects :user_data
-          expects :bio, on: :user_data, default: -> { done!("Early completion") }
-
-          on_success { success_called = true }
-        end
-
-        result = action.call(user_data:)
-        expect(result).to be_ok
-        expect(success_called).to be true
+      it "neither runs call nor fires on_success" do
+        result
+        expect(fired).to be_empty
       end
     end
   end

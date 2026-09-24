@@ -195,8 +195,8 @@ end
 - This ensures database consistency while allowing early completion
 
 **Validation:**
-- Outbound validation (required `exposes`) still runs even with early completion
-- If required fields are not provided, the action will fail despite the early completion
+- Outbound validation (required `exposes`) still runs after `done!`, so if required fields are not provided, the action will fail despite the early completion
+- `done!` belongs in `call` or a hook. One inside a `default:`, a `preprocess:`, or a validation's condition or callable option raises `Axn::MisplacedFlowControl` instead (a `validate:` callable turns it into that field's validation failure), since a successful early exit there would skip the validation that guarantees the result's shape (`fail!` is still allowed there) — see [What runs when](#what-runs-when)
 
 ```ruby
 class BadExample
@@ -681,11 +681,81 @@ ensure
 end
 ```
 
-Note the limit of that guarantee: `ensure` covers every halt raised **after the hook chain is entered**, which is what the four outcomes above have in common. An outcome settled *earlier* — a failed inbound `expects` validation, or an **inbound** `preprocess:`/`default:` callable that raises — never reaches the hooks at all, so neither the `around` body nor its `ensure` runs. The `exposes` side is bounded too, in the other direction: outbound resolution (an `exposes` `default:`, outbound validation) runs *after* the hook body has already returned, so the hooks complete **normally** and never observe a raise from it — `chain.call` returned cleanly, and any `ensure` fired on the success path. An `around` hook that rescues in order to record failures will therefore miss every outbound-resolution error; use `on_exception` to catch those. Don't rely on an `around` hook to observe every call; for that, use `on_success`/`on_failure`/`on_exception` callbacks, which fire on the settled result.
+That `ensure` covers every halt raised **after the hook chain is entered** — not every call. See [What runs when](#what-runs-when) for exactly where the boundary sits.
+
+#### What runs when
+
+Hooks run *inside* the contract; callbacks and the framework's own tracing, logging and timing run *outside* it:
+
+```text
+tracing → logging → timing → exception handling → contract → hooks → call
+```
+
+The ordering is forced, not incidental: a `before` hook that reads `user` needs `user` already resolved and validated, so hooks cannot run before inbound resolution without exposing your code to unresolved readers. The consequence is that an outcome settled during inbound resolution never reaches the hooks, while callbacks — which fire on the settled result — see every call.
+
+Two things decide what runs: **where** a call halts decides which hooks run, and **what kind** of halt it is decides the outcome and which callbacks fire. A "halt" here is any of a raise, `fail!`, or `done!` — they unwind the hooks identically, so the first table holds for all three (✓ runs, — does not):
+
+| Where the call halts | `before`⁴ | `around`, up to `chain.call` | `around`, after `chain.call` | `around` `ensure` | `around` `rescue` sees it | `after`⁴ |
+| --- | --- | --- | --- | --- | --- | --- |
+| Inbound validation fails | — | — | — | — | — | — |
+| An inbound `preprocess:` or `default:` halts during inbound validation¹ | — | — | — | — | — | — |
+| An `around` hook halts before its own `chain.call`³ | — | ✓ | — | ✓ | ✓ | — |
+| A `before` hook halts | ✓ | ✓ | — | ✓ | ✓ | — |
+| `call` halts | ✓ | ✓ | — | ✓ | ✓ | — |
+| An `after` hook halts | ✓ | ✓ | — | ✓ | ✓ | ✓ |
+| An `around` hook halts after its own `chain.call`³ | ✓ | ✓ | — | ✓ | ✓ | ✓ |
+| Outbound resolution halts: outbound validation fails, an `exposes` `default:` or a callable its validation evaluates halts, or a field both expected and exposed resolves its `default:`/`preprocess:` for the first time and halts | ✓ | ✓ | ✓ | ✓ | — | ✓ |
+| *No halt: `call` returns* | ✓ | ✓ | ✓ | ✓ | — | ✓ |
+| *No halt: an `around` hook returns without calling `chain.call`* | — | ✓ | ✓ | ✓ | — | — |
+
+¹ Inbound validation resolves a field's `preprocess:`/`default:` when it checks that field, which it does for any field carrying a validation — including the implicit presence check on a required field. A field with none resolves on first read instead, so a halt from it belongs to whatever reads it first: read by `call` or a hook, it follows that row; read first by a callable axn contains (an input `tag`/`dimension`, a message, a callback — see the table below), that callable swallows it along with its own raise, and the call carries on.
+
+³ For these rows the `around` columns describe the hooks *enclosing* the one that halted (declared before it, or in a parent class). The halting hook itself behaves like any Ruby method: its statements after the halt don't run, and its own `rescue`/`ensure` do.
+
+⁴ ✓ means the phase was entered. Its hooks run one after another with no rescue between them, so a halt ends the phase: a `before` hook that halts skips the `before` hooks after it, and likewise for `after`.
+
+| Kind of halt | Outcome | Callbacks |
+| --- | --- | --- |
+| None, or `done!` | success² | `on_success` |
+| `fail!` | failure | `on_failure`, `on_error` |
+| A raise axn captures — including a validation failure | exception | `on_exception`, `on_error` |
+| An exception axn does not capture (`Interrupt`, `SystemExit`, …) | none: `.call` re-raises it | none |
+
+² Outbound resolution still runs after a call that returns and after every `done!`, so an unset required exposure turns either into an `exception` (`OutboundValidationError`) — and `on_success` fires only once outbound resolution has passed, never beside the exception callbacks. A `done!` never skips validation: it can only come from `call` or a hook. One from a callable the contract evaluates — a `preprocess:`, a `default:`, or a validation's condition or callable option, inbound or outbound, including a field's `default:` first read from inside `call` — settles the call as an `Axn::MisplacedFlowControl` exception instead. (While a call is already settling a raise or `fail!`, outbound defaults are applied best-effort, so a refused `done!` from one is swallowed and the original halt stands.) A `fail!` there is still allowed: a failure promises no exposures, and a `validate:` callable contains any of the three as that field's validation failure (see the table below).
+
+Both tables hold for [`call!`](/usage/using#call) too: the same hooks and callbacks run, and `call!` then raises for a failure or exception outcome instead of returning the result.
+
+A captured raise settles as a failure instead when it is reclassified — by [`fails_on`](#suppressing-reports-for-expected-failures-in-composed-actions), or, for a validation failure, by [`user_facing:`](/reference/class#user-facing). Which exceptions axn captures, and why the rest pass through, is covered under [What `call` can still raise](/usage/using).
+
+A halt only counts if it escapes your own code. One you rescue and don't re-raise — in `call`, in a hook, or in an enclosing `around` — never happened: the chain returns normally, and the call settles by outbound resolution like any halt-free call (axn records a `done!`'s message as it leaves `before`/`call`/`after`, so one raised there and swallowed by an enclosing `around` keeps its message; one rescued before it leaves them, or raised by an `around` itself and swallowed by an outer one, falls back to the default success message). A non-exception exit — a `throw` to a `catch` outside the call — is not a halt at all: nothing can rescue it, so it unwinds through `.call` exactly like an exception axn does not capture (below). Likewise, a halt only counts where it reaches the pipeline. These callables can halt a call: `before`/`around`/`after` hooks, `call`, a field's `preprocess:` or `default:`, and any callable a validation evaluates — an `if:`/`unless:` condition, or a callable option such as `inclusion: { in: -> { … } }` or a `numericality:` bound (but not `validate:`, below) — which runs where its field is validated: for an `expects` field during inbound validation (so it halts before any hook runs), for an `exposes` field during outbound validation (so it follows the outbound-resolution row). From any of these contract callables a raise or `fail!` halts the call, but a `done!` is refused (²). Every other callable axn runs on your behalf contains a raise, `fail!` or `done!` itself — by default it is swallowed, and whatever the callable was deciding falls back. These are the ones whose fallback is worth knowing; anything else axn invokes to settle or observe the call (`additional_execution_context`, the global `on_exception` handler, …) is swallowed without changing the outcome:
+
+| Callable | What a raise, `fail!` or `done!` inside it does |
+| --- | --- |
+| A `validate:` callable | Becomes a validation failure of that field |
+| A `model:` finder | A `StandardError` resolves the field to `nil`, which the field's validation then judges (see [`model:`](/reference/class)); a `SystemStackError` or `ScriptError` is not contained, and settles the call as that exception |
+| A `success`/`error` message callable | Falls back to the next message, then the default; the outcome is unchanged |
+| A `user_facing:` override callable | Falls back to the field's own validation message |
+| A `fails_on` `if:`/`unless:` gate | Reads as not matching, so the exception is not reclassified |
+| A `tag`/`dimension` callable | Is swallowed; the outcome is unchanged |
+| A callback (`on_success`, `on_error`, …) | Is swallowed; the outcome is unchanged. A `done!` or `fail!` there — or in a message, `fails_on` gate or `user_facing:` override — is reported as `Axn::MisplacedFlowControl`, since these callables observe or describe the outcome rather than decide it |
+
+An exception axn does not capture still passes through all of them; for a message callable that happens when the message is read, since messages resolve lazily. With [`best_effort_raises_in_dev`](/reference/configuration#best-effort-raises-in-dev) on in development, none of this containment applies: each one re-raises, and where that lands depends on when it runs. Before settlement — a `validate:` callable, a `model:` finder, a `user_facing:` override — it settles the call as that exception. During settlement it escapes `.call`, as described under the callback limits below. A `tag`/`dimension` callable escapes `.call` too. A few callables axn contains itself stay contained even then: a dynamic `sensitive:` predicate fails closed, and an error message's `join:` Proc falls back to the default join.
+
+What the tables promise:
+
+1. **Callbacks observe every settled call.** `on_success`/`on_failure`/`on_exception`/`on_error` fire whenever a call settles, from any origin — including an inbound validation failure, where no hook ran — subject to each callback's own exception-class filter and `if:`/`unless:` condition ([Callbacks](/reference/class#callbacks)). They are the seam for "must not miss a call", within these limits:
+   - An exception axn does not capture — or a `throw` to a `catch` outside the call — raised before the call settles, means it never settles, so no callback fires. Raised *after* settlement — by a callback, or by a message callable read during settlement — it still escapes `.call`, and the callbacks after it never fire, although the result had already settled.
+   - With ActiveRecord 7.2+, `on_success` waits for the enclosing (joinable) database transaction to commit, so it is [skipped if that transaction rolls back](/reference/class#on-success), even though the action itself succeeded. Without ActiveRecord, or on an older version, it [dispatches inline](/recipes/running-without-rails#on-success-timing) and a later rollback does not skip it. The failure and exception callbacks are never deferred.
+   - In an async job, `on_exception` is gated per attempt by [`async_exception_reporting`](/reference/configuration#async-exception-reporting): under the default `:first_and_exhausted`, an intermediate retry still settles as an exception but fires only `on_error`. Register `on_error` if you need every attempt.
+   - In development with [`best_effort_raises_in_dev`](/reference/configuration#best-effort-raises-in-dev) on, anything axn would otherwise swallow — a callback's raise, or a message callable's — is re-raised out of `.call` instead, and never changes a result that has already settled. During failure or exception settlement (a `fails_on` gate, the `error` message, or an `on_error`/`on_failure`/`on_exception` callback) the callbacks not yet run never fire; a raising gate or `error` message fires none of them. An inline `on_success` runs after the call has settled as a success, so its raise escapes with the result left exactly as it settled. The `success` message resolves lazily, so it raises wherever it is first read. A transaction-deferred `on_success` runs at commit, after `.call` has returned. Test and production always swallow these `StandardError`s and carry on.
+2. **Hooks observe every call that passed inbound resolution.** An inbound `expects` failure, or an inbound `preprocess:`/`default:` callable that halts while inbound validation resolves it (¹), settles before the hook chain is reached, so no hook runs — not even an `around`'s `ensure`.
+3. **Within the hook chain,** `before` and the start of each `around` run on entry. The rest of the `around` (statements after `chain.call`) and `after` run only when the chain completes cleanly. An `ensure` inside `around` runs on every halt raised after entry.
+4. **Running is not observing.** Outbound resolution — an `exposes` `default:`, outbound validation — happens *after* the hook body has returned. The hooks run to completion **normally** and the call still settles by the kind of halt, but no hook ever sees it: an `around` that rescues in order to record failures silently misses every outbound-resolution error. So "a failing `default:`" is two different rows depending on direction. Use `on_exception` to catch these.
+5. **Framework observability wraps everything.** The `axn.call` span/notification, the automatic log lines and `result.elapsed_time` sit outside the contract, so a validation failure is still traced, logged and timed. You don't need an `around` hook to time or trace every call.
 
 #### Around hooks
 
-Around hooks wrap the entire action execution, including before and after hooks. They receive a block that represents the next step in the chain:
+Around hooks wrap `call` together with the `before` and `after` hooks — everything inside the contract, not inbound resolution (see [What runs when](#what-runs-when)). They receive a block that represents the next step in the chain:
 
 ```ruby
 class Foo

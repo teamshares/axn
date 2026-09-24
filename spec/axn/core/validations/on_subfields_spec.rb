@@ -1451,37 +1451,30 @@ RSpec.describe Axn do
       end
     end
 
+    # A done! from a callable the contract evaluates is refused: a successful early exit there would skip
+    # the validation that guarantees the result's shape. done! belongs in `call` or a hook.
     context "when done! is called in subfield preprocess block" do
+      let(:fired) { [] }
       let(:action) do
+        fired = self.fired
         build_axn do
           expects :user_data
           expects :email, on: :user_data, preprocess: ->(_email) { done!("Early completion") }
+          on_success { fired << :on_success }
+          define_method(:call) { fired << :call }
         end
       end
 
-      it "returns a successful result" do
-        result = action.call(user_data:)
-        expect(result).to be_ok
+      subject(:result) { action.call(user_data:) }
+
+      it "settles as an exception naming the misplaced done!" do
+        expect(result.exception).to be_a(Axn::MisplacedFlowControl)
+        expect(result.exception.message).to include("running the preprocess: for")
       end
 
-      it "sets the success message" do
-        result = action.call(user_data:)
-        expect(result.success).to eq("Early completion")
-      end
-
-      it "triggers on_success handlers" do
-        success_called = false
-
-        action = build_axn do
-          expects :user_data
-          expects :email, on: :user_data, preprocess: ->(_email) { done!("Early completion") }
-
-          on_success { success_called = true }
-        end
-
-        result = action.call(user_data:)
-        expect(result).to be_ok
-        expect(success_called).to be true
+      it "neither runs call nor fires on_success" do
+        result
+        expect(fired).to be_empty
       end
     end
 
