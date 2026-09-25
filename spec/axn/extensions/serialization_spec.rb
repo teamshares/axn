@@ -373,6 +373,26 @@ RSpec.describe Axn::Extensions::Serialization do
           .to eq("d" => { "name" => "a" })
       end
 
+      # Codex review, PR #296, round 4: the MIRROR direction of the reopening test above. A declared class
+      # that owns its own as_json at the first render makes the position OPAQUE, so the memoized guard plan
+      # has NO guard object for it at all. If that method is later REMOVED, output_schema immediately starts
+      # publishing the member-derived shape (it re-validates every call) -- but a cached `nil` guard cannot
+      # retroactively gain a guard object that was never built. `output_render_guards`' `watched_classes` is
+      # what makes the memo notice: it re-checks every class found opaque at build time before trusting the
+      # cache, and rebuilds the whole plan the moment one of them stops being opaque.
+      it "rebuilds the whole memoized plan when a declared class LOSES the as_json it owned at the first " \
+         "render, so a position that started opaque can still gain a guard" do
+        reopenable = Data.define(:name, :internal_notes) { def as_json(*) = { name: } }
+        klass = shaped_action(type: reopenable)
+        described_class.render(klass.call(value: reopenable.new(name: "a", internal_notes: "x"))) # warms the memo opaque
+
+        reopenable.send(:remove_method, :as_json)
+        overriding_subclass = Class.new(reopenable) { def as_json(*) = { name: } }
+
+        expect { described_class.render(klass.call(value: overriding_subclass.new(name: "a", internal_notes: "secret"))) }
+          .to raise_error(Axn::Extensions::Serialization::UnserializableValue)
+      end
+
       it "raises for a nested shape member (a Hash field whose own shaped member is such a subclass)" do
         inner_type = s
         klass = Class.new do
@@ -818,6 +838,20 @@ RSpec.describe Axn::Extensions::Serialization do
 
           super(name)
         end
+
+        expect { described_class.render(klass.call(value: public_s.new(name: "a", internal_notes: "x"))) }
+          .to raise_error(Axn::Extensions::Serialization::UnserializableValue)
+      end
+
+      # Codex review, PR #296, round 4: `@_axn_render_guards` follows the SAME single-underscore, per-class
+      # ivar convention as its sibling `@_axn_validated_outbound` (and `@_axn_config_sources`/
+      # `@_axn_config_overrides` elsewhere in this codebase) rather than the double-underscore convention
+      # AGENTS.md documents for PER-INSTANCE framework state (`@__context`, set on a running action) -- but an
+      # accidental value at that exact ivar slot, from whatever source, must fail SAFELY into a rebuild
+      # rather than trust a wrong-shaped value or raise trying to index one.
+      it "rebuilds rather than trusts a wrong-shaped value already at the render-guard ivar slot" do
+        klass = shaped_action(type: s)
+        klass.instance_variable_set(:@_axn_render_guards, true) # some unrelated truthy, non-Array value
 
         expect { described_class.render(klass.call(value: public_s.new(name: "a", internal_notes: "x"))) }
           .to raise_error(Axn::Extensions::Serialization::UnserializableValue)
