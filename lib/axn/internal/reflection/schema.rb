@@ -2057,8 +2057,10 @@ module Axn
         # numeric strings; enum/const constraints apply to all JSON types.
         # Absence is exact on non-strings through project_collision_checks; strings and gated
         # absence still need a report rather than a different interpretation of blankness.
+        PER_TYPE_REPORTED_KEYS = (%i[length format absence] + NUMERIC_BOUND_ENTRIES.keys).freeze
+
         def report_unexpressed_checks(prop, configs)
-          keys = %i[length format absence] + NUMERIC_BOUND_ENTRIES.keys
+          keys = PER_TYPE_REPORTED_KEYS
           sources = configs.select { |config| keys.any? { |key| config.validations[key] } }
           return prop if sources.empty?
 
@@ -2077,11 +2079,11 @@ module Axn
               next reported if missing.empty?
 
               prefix = conditional ? "#{GATED_RESIDUE}; " : ""
-              prefix += "after transformation, " if transforms_wire_value?([config])
+              prefix += "after transformation, " if definitely_transforms_wire_value?([config])
               subject = key == :absence ? "blankness" : "the runtime value or its string form"
               record_residue(reported, "#{prefix}#{key} checks #{subject} for #{missing.join(', ')} values; " \
                                        "JSON Schema cannot fully express this check " \
-                                       "(#{render_constraint({ key => ungated_options(options) })})",
+                                       "(#{render_constraint({ key => reported_options(options) })})",
                              kind: conditional ? :conditional : :inherent, per_type: true)
             end
           end
@@ -2093,6 +2095,33 @@ module Axn
           return options unless Axn::Internal::Identity.kind?(options, ::Hash)
 
           options.except(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
+        end
+
+        # An entry's options as a residue renders them: the check, not the exemptions around it. A tolerance is
+        # pushed into every entry from the declaration (`optional:` → `allow_nil`/`allow_blank`), and the node's own
+        # nullability already says what it admits, so repeating it in each sentence only buries the constraint. An
+        # entry left with no option of its own reads as the bare switch it is.
+        def reported_options(options)
+          options = ungated_options(options)
+          return options unless Axn::Internal::Identity.kind?(options, ::Hash)
+
+          options = options.except(:allow_nil, :allow_blank)
+          options.empty? ? true : options
+        end
+
+        # Whether the value these configs check is certainly not the wire value — a `preprocess:`, or a type that
+        # opts into coercion itself. A coercible type that says nothing is checked as sent unless the action turns
+        # `coerce_input_types` on, which is also the reading its emitted `type` rests on, so residue prose does not
+        # qualify every Integer's check with a transformation that by default never happens.
+        def definitely_transforms_wire_value?(configs)
+          configs.any? do |config|
+            next false unless config.respond_to?(:preprocess)
+            next true if config.preprocess
+
+            type_opt = config.validations[:type]
+            Axn::Internal::Identity.kind?(type_opt, ::Hash) && type_opt[:coerce] == true &&
+              !Axn::Internal::Coercion.coercible_klasses(type_opt).empty?
+          end
         end
 
         # Asks whether this TYPE can carry the check's keyword at all, so a tolerance is left out: whether a blank
@@ -2161,12 +2190,18 @@ module Axn
               baseline = build_property(config.with(validations: context), subfield: true)
               fragment = build_property(config.with(validations: context.merge(key => ungated_options(opt))), subfield: true)
               fragment = fragment.except(*RESIDUE_UNGATEABLE_KEYS).reject { |name, value| same_schema_value?(baseline[name], value) }
-              # A check no keyword states even with its gate open is still left out, so it is named as written.
-              fragment = { key => ungated_options(opt) } if fragment.empty?
+              # A check no keyword states even with its gate open is still left out, so it is named as written —
+              # unless it is one `report_unexpressed_checks` already names per surviving type, which runs over the
+              # same declared entries wherever this does.
+              if fragment.empty?
+                next if PER_TYPE_REPORTED_KEYS.include?(key)
+
+                fragment = { key => reported_options(opt) }
+              end
               fragment = fragment.reject { |name, value| unconditionally_enforced?(stated, name, value) }
               next if fragment.empty?
 
-              phase = transforms ? "after transformation, " : ""
+              phase = definitely_transforms_wire_value?([config]) ? "after transformation, " : ""
               Residue.new(summary: "#{phase}#{GATED_RESIDUE} (#{render_constraint(fragment)})", kind: :conditional)
             end
           end
@@ -2676,7 +2711,7 @@ module Axn
           unstated_entry_fragments(declared_config.validations, prop).reduce(prop) do |acc, (key, options)|
             conditional = Axn::Validation::Base.entry_effectively_gated?(options, gates)
             prefix = conditional ? "#{GATED_RESIDUE}; " : ""
-            record_residue(acc, "#{prefix}JSON Schema cannot express this check (#{render_constraint({ key => ungated_options(options) })})",
+            record_residue(acc, "#{prefix}JSON Schema cannot express this check (#{render_constraint({ key => reported_options(options) })})",
                            kind: conditional ? :conditional : :inherent)
           end
         end
