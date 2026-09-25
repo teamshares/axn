@@ -79,11 +79,17 @@ module Axn
       # the rebuild itself for an in-place mutation, and paying that rebuild unconditionally would cost every
       # ordinary render the ~2-3x this memo exists to avoid, to guard a route the supported API cannot reach.
       def render_guards_for(action_class, configs)
-        cached = action_class.instance_variable_get(:@_axn_render_guards)
+        # Bound ivar access (Codex review, PR #296, round 3), not a dispatched `instance_variable_get`/`set`:
+        # `action_class` is a user-authored action class, so nothing stops it defining its own singleton
+        # override of either — one returning a forged `[configs, nil]` would make the identity check
+        # succeed and disable every displaced-projection guard silently, exactly what this feature exists
+        # to prevent. `NativeMethods.ivar_get`/`ivar_set` read and write the real instance variable
+        # regardless of what the class defines.
+        cached = Axn::Internal::NativeMethods.ivar_get(action_class, :@_axn_render_guards)
         return cached[1] if cached && configs.equal?(cached[0])
 
         guards = Axn::Internal::Reflection::Schema.output_render_guards(configs)
-        action_class.instance_variable_set(:@_axn_render_guards, [configs, guards]) unless Axn::Internal::NativeMethods.frozen?(action_class)
+        Axn::Internal::NativeMethods.ivar_set(action_class, :@_axn_render_guards, [configs, guards]) unless Axn::Internal::NativeMethods.frozen?(action_class)
         guards
       end
       private_class_method :render_guards_for

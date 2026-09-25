@@ -721,19 +721,29 @@ module Axn
         # Whether SOMETHING in `value`'s own table displaces the built-in projection — the class's
         # (covering a subclass's own definition and one contributed by an included module, at any
         # ancestry depth) OR a singleton-level one (a literal singleton method, or a module `extend`ed onto
-        # this one value, at ANY visibility) — without materializing a singleton class for a genuine `Data`
-        # instance, the one case provably safe to skip.
+        # this one value, at ANY visibility) — without materializing a singleton class for a
+        # CONVENTIONALLY-CONSTRUCTED `Data` instance, the one case provably safe to skip.
         #
         # `frozen?` ALONE is not that case (Codex review, PR #296, round 2): freezing prevents ADDING a
         # singleton method or `extend`ed module from that point on, but does not remove one already
         # installed — `st = Struct.new(:x).new(1); def st.to_h = {}; st.freeze` leaves `st.singleton_methods`
         # still `[:to_h]` after the freeze, so a value frozen AFTER gaining an override would wrongly read as
-        # safe. What actually closes the question is being a `Data` instance AND frozen together: `Data.new`
-        # (and `#with`) freeze UNCONDITIONALLY at construction, before any window in which a singleton method
-        # could be added, so there is no ORDER in which one could exist — a value satisfying both can never
-        # have carried one. `Data#allocate` is the one bypass (skips `initialize`, produces an UNFROZEN
-        # instance), and the `frozen?` half of this same check is what still catches it: it falls to the full
-        # path below rather than being read as safe.
+        # safe. `Data` + `frozen?` together IS that case for a value `.new`/`#with` produced: both freeze
+        # UNCONDITIONALLY at construction, before any window in which a singleton method could be added, so
+        # there is no order in which one could exist for such a value.
+        #
+        # ACCEPTED, NAMED EXCEPTION (Codex review, PR #296, round 3, identifying the gap the round-2 fix
+        # left): `Data#allocate` bypasses `initialize` and returns an UNFROZEN instance, so a caller can install a
+        # singleton override on it and freeze it only afterward — `frozen?` alone can no longer distinguish
+        # that from a conventionally-constructed value once it is frozen, and `kind?(value, ::Data)` does not
+        # care how it was built. There is no cheap, non-materializing way to close this remaining gap: every
+        # rejected alternative here (`singleton_methods`, `frozen?` alone) failed for the identical structural
+        # reason — Ruby exposes no way to ask "does a private singleton table exist" or "was this frozen from
+        # birth" without either missing private methods or materializing the very table being asked about.
+        # The conventional instance of `Data.define` — every value `.new`/`#with` ever produces — is exactly
+        # what this fast path proves safe; a value built by bypassing its own constructor is the narrow,
+        # documented exception, on the same terms `Nestability::SEGMENT_JUDGED_SCALARS` already draws that
+        # line for a different reflection question.
         #
         # A `Struct` (or any other mutable-by-default value) is never provably safe this way — no `frozen?`
         # timing tells you whether an override existed before a later freeze — so it always takes the full

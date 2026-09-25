@@ -805,6 +805,23 @@ RSpec.describe Axn::Extensions::Serialization do
         expect(unguarded_delta).to eq(0) # the control itself must cost nothing, or the comparison proves nothing
         expect(guarded_delta).to eq(unguarded_delta)
       end
+
+      # Codex review, PR #296, round 3: the action class is user-authored, so nothing stops it defining its
+      # own singleton `instance_variable_get` -- a dispatched read of the guard cache would run THAT instead
+      # of the real ivar, and a forged `[configs, nil]` return makes the identity check succeed while
+      # disabling every displaced-projection guard.
+      it "reads the render-guard cache through a bound ivar access, not a dispatched one a hostile action " \
+         "class could override to forge a cache hit and disable every guard" do
+        klass = shaped_action(type: s)
+        klass.define_singleton_method(:instance_variable_get) do |name|
+          return [external_field_configs, nil] if name == :@_axn_render_guards
+
+          super(name)
+        end
+
+        expect { described_class.render(klass.call(value: public_s.new(name: "a", internal_notes: "x"))) }
+          .to raise_error(Axn::Extensions::Serialization::UnserializableValue)
+      end
     end
 
     it "derives the action's class through a bound reader, not a dispatched #class (Codex #259, P2)" do
