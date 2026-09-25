@@ -167,21 +167,6 @@ module Axn
         # already uses, for the same reason: nothing earlier in the build can promise it has seen the FINAL
         # `properties` map.
 
-        # Every blank a JSON document can carry. `false` is among them: ActiveSupport counts it blank, which
-        # is what an ungated `presence:` rejects — and so is `nil`, which is why it is listed here even
-        # though `reject_null!` independently strips a null branch on the nested-child path. The floor is
-        # only ever restored where some config's ungated `presence:` rejects blank, and such a config also
-        # answers `nil_allowed?` false, so naming nil here cannot narrow a nil-tolerant position; it closes
-        # the axis path, where that separate null pass does not reach.
-        #
-        # Deep-frozen on the same terms as `BLANK_BRANCH_WITNESS`, and for the same measured reason: these
-        # members ride INSIDE an emitted schema, schemas are rebuilt per call and caller-mutable, and a
-        # shared mutable `[]`/`{}` lets one consumer's mutation reach every schema emitted afterwards —
-        # appending to one action's floor changed a DIFFERENT action class's `enum` to `["", [:x], {}, false,
-        # nil]`. Freezing rather than copying is what the neighbours do, so a mutating consumer gets a
-        # FrozenError instead of silently corrupting every later schema.
-        BLANK_WIRE_VALUES = ["", [].freeze, {}.freeze, false, nil].freeze
-
         # Metadata is not a validator contribution. In particular, a default applies independently
         # of validator gates and must never be included in a conditional fragment.
         SIBLING_DEPENDENT_KEYWORDS = %i[additionalProperties].freeze
@@ -2721,7 +2706,7 @@ module Axn
           # A size ceiling of 0 states an `absence:` exactly on a declaration whose every type is a container;
           # anywhere else — a scalar, or a union a scalar branch of which the ceiling never reaches — the blank
           # axis is spelled as a value set, which is exact for every JSON type but a String.
-          if absence_bounds_blankness?(validations) && !only_blank_is_empty_types?(validations)
+          if absence_bounds_blankness?(validations) && !(only_blank_is_empty_types?(validations) && size_zero_stated?(prop))
             prop = prop.merge(allOf: Array(prop[:allOf]) + [{ anyOf: [{ type: "string" }, { enum: BLANK_WIRE_VALUES }] }])
           end
           prop = report_unexpressed_checks(prop, [declared_config])
@@ -2732,6 +2717,15 @@ module Axn
             record_residue(acc, "#{prefix}JSON Schema cannot express this check (#{render_constraint({ key => reported_options(options) })})",
                            kind: conditional ? :conditional : :inherent)
           end
+        end
+
+        # Whether the node itself already holds every container branch it has to size 0 — asked of what was
+        # emitted rather than of the derivation, since a bag position spells its type as `klass:` and reaches no
+        # ceiling through the field's.
+        def size_zero_stated?(prop)
+          branches = prop[:anyOf].is_a?(Array) ? prop[:anyOf] : [prop]
+          containers = branches.select { |branch| Array(branch[:type]).intersect?(%w[array object]) }
+          containers.any? && containers.all? { |branch| branch.values_at(:maxItems, :maxProperties).include?(0) }
         end
 
         def only_blank_is_empty_types?(validations)
@@ -2749,7 +2743,7 @@ module Axn
           fragments << [:exclusion, entries[:exclusion]] if entries[:exclusion]
           fragments << [:inclusion, entries[:inclusion]] if entries[:inclusion] && !inclusion_enum_values(entries[:inclusion])
           fragments << [:numericality, entries[:numericality]] if entries[:numericality] && numericality_unstated?(entries[:numericality], prop)
-          fragments << [:length, entries[:length]] if blank_tolerant_length?(validations)
+          fragments << [:length, entries[:length]] if blank_tolerant_length_unstated?(validations)
           fragments << [:type, entries[:type]] if entries[:type] && unknown_type_constrains?(validations)
           fragments
         end

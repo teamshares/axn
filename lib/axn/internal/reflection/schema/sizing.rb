@@ -134,6 +134,16 @@ module Axn
             length[:allow_blank] == true && !empty_value_rejected?(validations)
           end
 
+          # Whether a blank-tolerant `length:` loses a bound it declares: always its floor ("blank, or at least
+          # N" has no keyword), and its ceiling unless every blank value is empty.
+          def blank_tolerant_length_unstated?(validations)
+            return false unless blank_tolerant_length?(validations)
+
+            length = effective_entry_options(validations[:length], shared_validation_options(validations))
+            floor = Axn::Validation::Base.declared_length_floor(length)
+            Axn::Validation::Base.emittable_length_floor?(floor) || !blank_values_are_empty?(validations)
+          end
+
           def declared_size_minimum(validations)
             # Whether an empty value can get through at all decides BOTH branches below: it is the floor of 1 a
             # presence/emptiness check imposes on its own, and it is what tells a blank-tolerant `length:` apart
@@ -156,13 +166,14 @@ module Axn
           # field carrying `absence:` beside a dropped floor emitted no ceiling at all, a node LOOSER than the
           # contract it projects.
           #
-          # A blank-tolerant `length:` whose blank is not rejected anyway emits no ceiling: a String's blank is
-          # any run of whitespace, of any length, which no `maxLength` admits — so the bound is left out and
-          # named as a residue (`blank_tolerant_length?`), the same as its floor. A gated entry never reaches
-          # here (see declared_size_minimum).
+          # A blank-tolerant `length:` whose blank is not rejected anyway keeps its ceiling only where every blank
+          # value is empty (a container: an empty one measures 0, which every ceiling admits). A String's blank is
+          # any run of whitespace, of any length, which no `maxLength` admits — so there the bound is left out and
+          # named as a residue (`blank_tolerant_length_unstated?`). A gated entry never reaches here (see
+          # declared_size_minimum).
           def declared_size_maximum(validations)
             return 0 if absence_bounds_size?(validations)
-            return nil if blank_tolerant_length?(validations)
+            return nil if blank_tolerant_length?(validations) && !blank_values_are_empty?(validations)
 
             length = effective_entry_options(validations[:length], shared_validation_options(validations))
             declared = Axn::Validation::Base.declared_length_ceiling(length)

@@ -8,7 +8,8 @@
   * **A `Proc` `default:`** now makes a field omittable. Previously it was treated as unknowable and the field stayed `required`, although the default runs on the omitted call.
   * **A class JSON has no type for** (`type: Object`, `type: Comparable`, `type: Money`) emits no `type`, where it used to emit `"string"` inbound. A required one still rejects blanks, its other checks are stated per JSON type, and the class is named in the description.
   * **`numericality:` on a union with a String branch** (`type: [String, Integer]`) keeps the String branch, since a numeric String passes at runtime.
-  * **A blank-tolerant `length:`** (one that stands aside for a blank nothing else rejects) emits neither bound. A String's blank is whitespace of any length, so no `maxLength` states it.
+  * **A blank-tolerant `length:`** (one that stands aside for a blank nothing else rejects) emits no floor, since "blank, or at least N" has no keyword. On a String it emits no ceiling either, because a String's blank is whitespace of any length; on a container the ceiling stays exact.
+  * **Array element and map key/value positions** (`of:`) name what they leave out, like a field does.
   * **Named in the description:** a `format:` with no faithful ECMA spelling, `format: { without: }`, `exclusion:`, a non-literal `inclusion:` set, a bare `numericality:` on a node admitting non-numbers, and `absence:` on a String.
 
   `output_schema` and the refusals at declaration are unchanged. **Migration:** a tool adapter that read gated keywords or `"string"` for an unknown class out of `input_schema` should read `input_schema_residues` (below) or pass the descriptions through. See PRO-3505.

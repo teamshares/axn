@@ -98,12 +98,18 @@ module Axn
             # the runtime rejects, and stripped nil from an enum at a position that accepts it.
             nullable = bag_nullable?(bag)
             node = reconcile_contents_nullability(node, nullable:, for_output:)
+            # A `klass:` JSON has no type for leaves the node untyped, and a presence check still rejects every
+            # blank there — spelled as a value set, as a field's untyped floor is (`apply_type_info!`).
+            if !for_output && untyped_node?(node) && !Axn::Internal::ShapeGraph.type_tokens(bag[:klass]).empty? &&
+               presence_rejects_blank?(constraints)
+              node = node.merge(not: { enum: BLANK_WIRE_VALUES })
+            end
             # The bag's value validators (PRO-3193), through the same projector a named position uses. Applied
             # before the member/contents merges below so a `type:` those steps install cannot be read as the type
             # a keyword should key off — the node's type here is the bag's own `klass:`, which is what the
             # validators constrain.
             apply_value_constraints!(node, constraints, nullable:, for_output:, declared_klass: bag[:klass])
-            node = with_bag_gating_residues(node, bag) unless for_output
+            node = with_bag_residues(node, bag, constraints) unless for_output
             node = contents_member_schema(node, bag, for_output:, ancestry:)
             inner = emitted_contents_edge(bag, :of)
             return node if nil.equal?(inner)
@@ -126,24 +132,51 @@ module Axn
             end
           end
 
-          # A bag's self-gated entries are reduced away with their gate closed (`bag_value_constraints`,
-          # `emitted_contents_edge`), exactly as a field's are; inbound, each is named on the node it would have
-          # constrained. A validator is rendered as written; a gated `of:`/`shape:` edge by name, since its value
-          # is a nested contract rather than a constraint a reader can act on.
-          def with_bag_gating_residues(node, bag)
+          # Everything a bag position's node leaves out, named on that node — the same promise a field's property
+          # keeps, through the same reporter (`report_unstated_checks`), read off a view of the bag as the config
+          # it would be: its validators (gated ones included, for the per-type report), its tolerance, and its
+          # `klass:` as the declared type. Then each self-gated entry the reporter did not already name, rendered
+          # as written; a gated `of:`/`shape:` edge by name, since its value is a nested contract rather than a
+          # constraint a reader can act on.
+          def with_bag_residues(node, bag, closed_constraints)
+            declared = bag_config_view(bag, bag_value_constraints(bag, closed: false))
+            node = report_unstated_checks(node, bag_config_view(bag, closed_constraints), declared)
             Axn::Internal::ShapeGraph::INNER_CONTRACT_EDGES.each do |edge|
               entry = Axn::Internal::ShapeGraph.hash_or_nil(bag[edge])
               next if nil.equal?(entry) || !entry_self_gated?(entry)
 
               node = record_residue(node, "#{GATED_RESIDUE} (its `#{edge}:` contract)", kind: :conditional)
             end
-            gated = Axn::Validation::Base.validator_entries(bag)
-                                         .except(*Axn::Internal::ShapeGraph::POSITION_DESCRIPTION_KEYS,
-                                                 *Axn::Internal::ShapeGraph::INNER_CONTRACT_EDGES)
-                                         .select { |_key, opt| entry_self_gated?(opt) }
+            gated = declared.validations.select { |key, opt| !TOLERANCE_KEYS.include?(key) && entry_self_gated?(opt) }
             gated.sort_by { |key, _opt| key.to_s }.reduce(node) do |acc, (key, opt)|
-              record_residue(acc, "#{GATED_RESIDUE} (#{render_constraint({ key => reported_options(opt) })})", kind: :conditional)
+              rendered = render_constraint({ key => reported_options(opt) })
+              next acc if residues_on(acc).any? { |r| r.summary.include?(rendered) }
+
+              record_residue(acc, "#{GATED_RESIDUE} (#{rendered})", kind: :conditional)
             end
+          end
+
+          # Untyped, or carrying only the null rejection nullability added — which the blank value set subsumes,
+          # since `nil` is one of the blanks it names.
+          def untyped_node?(node)
+            return false if node.key?(:type) || node.key?(:anyOf) || node.key?(:enum)
+
+            !node.key?(:not) || node[:not] == { type: "null" }
+          end
+
+          TOLERANCE_KEYS = %i[allow_nil allow_blank].freeze
+          private_constant :TOLERANCE_KEYS
+
+          # A bag read as the config it would be at a field — enough of one for the reporters, which ask only for
+          # `validations` (and project it with `with`).
+          BagConfigView = Struct.new(:validations) do
+            def with(validations:) = self.class.new(validations)
+          end
+          private_constant :BagConfigView
+
+          def bag_config_view(bag, constraints)
+            tokens = Axn::Internal::ShapeGraph.type_tokens(bag[:klass])
+            BagConfigView.new(tokens.empty? ? constraints : constraints.merge(type: { klass: bag[:klass] }))
           end
 
           # Which edge a descent is taking, which decides only the SENTENCE a refusal carries: the fix for a cyclic
@@ -350,8 +383,10 @@ module Axn
             # numeric bound does not. The type is then dropped: `propertyNames` needs no `type: "string"` of its
             # own, and an axis that constrained nothing reduces to `{}` and emits no `propertyNames` at all.
             node = { type: "string" }
-            apply_value_constraints!(node, key_axis_constraints(axis, for_output:), nullable: false, for_output:, property_names: true)
+            closed = key_axis_constraints(axis, for_output:)
+            apply_value_constraints!(node, closed, nullable: false, for_output:, property_names: true)
             admit_empty_wire_key!(node) if for_output && bag_nullable?(axis)
+            node = with_bag_residues(node, axis, closed) unless for_output
             node.except(:type)
           end
 
@@ -463,10 +498,12 @@ module Axn
           # The other shared options do NOT come through. A gate is reduced away by `effective_validations` on
           # output and means nothing to the document on input, and the context/strict options are refused at
           # declaration.
-          def bag_value_constraints(bag)
+          def bag_value_constraints(bag, closed: true)
             constraints = Axn::Validation::Base.validator_entries(bag)
                                                .except(*Axn::Internal::ShapeGraph::POSITION_DESCRIPTION_KEYS,
                                                        *Axn::Internal::ShapeGraph::INNER_CONTRACT_EDGES)
+            return constraints.merge(Axn::Validation::Base.true_tolerance_options(bag)) unless closed
+
             # On OUTPUT a self-gated entry promises nothing — the action may successfully expose a value the entry
             # would have rejected — so it is reduced away exactly as `effective_validations` reduces a named
             # field's, and for the same reason: an output schema that rejects what the action can serialize is

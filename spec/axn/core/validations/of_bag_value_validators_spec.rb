@@ -85,14 +85,17 @@ RSpec.describe "value validators in an of: bag" do
       expect(action.input_schema.dig(:properties, :f, :items)).to include(exclusiveMinimum: 0)
     end
 
-    it "constrains each element with absence:, and emits no keyword for it" do
+    it "constrains each element with absence:, and names what no keyword states for a String" do
       action = build_axn { expects :f, type: Array, of: { klass: String, absence: true } }
 
       expect(action.call(f: [""])).to be_ok
       expect(action.call(f: ["a"])).not_to be_ok
-      # `maxLength: 0` / `const: null` would depend on the position's type and collides with the emptiness
-      # axis, which is PRO-3220's subject — so this stays unemitted, as at a field.
-      expect(action.input_schema.dig(:properties, :f, :items)).to eq(type: "string")
+      # A String's blank is any run of whitespace, which no keyword states, so the blank axis is spelled as a
+      # value set that admits every String (exact for every other JSON type) and the rest is named — as at a
+      # field.
+      items = action.input_schema.dig(:properties, :f, :items)
+      expect(items).to include(type: "string", allOf: [{ anyOf: [{ type: "string" }, { enum: ["", [], {}, false, nil] }] }])
+      expect(items[:description]).to include('"absence":true')
     end
 
     it "constrains each element with acceptance:, and emits no keyword for it" do
