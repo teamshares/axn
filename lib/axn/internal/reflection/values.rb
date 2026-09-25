@@ -721,14 +721,19 @@ module Axn
         # Whether SOMETHING in `value`'s own table displaces the built-in projection — the class's
         # (covering a subclass's own definition and one contributed by an included module, at any
         # ancestry depth) OR a singleton-level one (a literal singleton method, or a module `extend`ed onto
-        # this one value) — without materializing a singleton class for the overwhelming majority of
-        # values, which carry no singleton-level override at all and are fully answered by the class-level
-        # check alone. `NativeMethods.singleton_level_methods` is the cheap, non-materializing way to rule
-        # the rare case out first; `NativeMethods.method_table` (via `Kernel#singleton_class`) is reached
-        # only when it can't be.
+        # this one value, at ANY visibility) — without materializing a singleton class for a FROZEN value,
+        # which cannot carry one at all: `Kernel#singleton_class`/`define_method`/`extend`/`def value.name`
+        # all raise `FrozenError` on one (confirmed for a singleton method AND an `extend`), so a frozen
+        # value answering "no class-level override" answers the whole question, cheaply — which covers
+        # every `Data` instance, since a `Data` value is always frozen. A mutable value (a `Struct`, most
+        # custom classes) still needs the full check: `Kernel#singleton_methods` looked cheaper but is
+        # UNSOUND here — it excludes PRIVATE singleton-level methods entirely, and `to_h` displaces the
+        # built-in at ANY visibility (Codex review, PR #296) — so for a mutable value there is no shortcut
+        # that both avoids materializing AND stays complete; `NativeMethods.method_table` (via
+        # `Kernel#singleton_class`) is reached for those, exactly as before this optimization existed.
         def displacing_projection_anywhere?(value)
           return true if displacing_projection(Axn::Internal::Identity.class_of(value))
-          return false if Axn::Internal::NativeMethods.singleton_level_methods(value).empty?
+          return false if Axn::Internal::NativeMethods.frozen?(value)
 
           !displacing_projection(Axn::Internal::NativeMethods.method_table(value)).nil?
         end

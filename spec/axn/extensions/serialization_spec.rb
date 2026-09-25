@@ -283,6 +283,33 @@ RSpec.describe Axn::Extensions::Serialization do
           .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /defined on this value itself \(a singleton method\)/)
       end
 
+      # Codex review, PR #296: `to_h` displaces the built-in at ANY visibility (unlike `as_json`, which is
+      # reached only by dispatch), including a PRIVATE singleton `to_h` or one from a privately-`extend`ed
+      # module. `Kernel#singleton_methods` (an earlier, cheaper draft of the frozen-value fast path below)
+      # excludes private singleton-level methods entirely, so it would have missed this — verified: the
+      # fast path here gates on FROZEN, not on that method, and a Struct instance is mutable.
+      it "raises for a Struct instance's own PRIVATE singleton to_h" do
+        st = Struct.new(:name, :internal_notes)
+        klass = shaped_action(type: st)
+        value = st.new("a", "x")
+        value.singleton_class.send(:define_method, :to_h) { { name: } }
+        value.singleton_class.send(:private, :to_h)
+
+        expect { described_class.render(klass.call(value:)) }
+          .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /defined on this value itself \(a singleton method\)/)
+      end
+
+      it "raises for a Struct instance extended with a module whose to_h is PRIVATE" do
+        st = Struct.new(:name, :internal_notes)
+        klass = shaped_action(type: st)
+        redacting_module = Module.new { private def to_h = { name: } }
+        value = st.new("a", "x")
+        value.extend(redacting_module)
+
+        expect { described_class.render(klass.call(value:)) }
+          .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /defined in an anonymous module/)
+      end
+
       it "does not raise for a private/protected as_json override (never reached by dispatch, so the " \
          "built-in member-keyed to_h still renders)" do
         klass = shaped_action(type: s)

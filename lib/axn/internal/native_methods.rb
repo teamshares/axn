@@ -55,7 +55,6 @@ module Axn
       KERNEL_CLASS = ::Kernel.instance_method(:class)
       KERNEL_FROZEN = ::Kernel.instance_method(:frozen?)
       KERNEL_SINGLETON_CLASS = ::Kernel.instance_method(:singleton_class)
-      KERNEL_SINGLETON_METHODS = ::Kernel.instance_method(:singleton_methods)
       KERNEL_IVAR_GET = ::Kernel.instance_method(:instance_variable_get)
       KERNEL_IVAR_SET = ::Kernel.instance_method(:instance_variable_set)
       KERNEL_IVAR_DEFINED = ::Kernel.instance_method(:instance_variable_defined?)
@@ -83,7 +82,7 @@ module Axn
       private_constant :SYMBOL_ENCODING, :UNBOUND_METHOD_SUPER_METHOD
       private_constant :ARRAY_EMPTY, :HASH_EMPTY, :SET_EMPTY
       private_constant :KERNEL_IVAR_GET, :KERNEL_IVAR_SET, :KERNEL_IVAR_DEFINED, :KERNEL_IVAR_REMOVE
-      private_constant :KERNEL_CLASS, :KERNEL_FROZEN, :KERNEL_SINGLETON_CLASS, :KERNEL_SINGLETON_METHODS,
+      private_constant :KERNEL_CLASS, :KERNEL_FROZEN, :KERNEL_SINGLETON_CLASS,
                        :STRING_EMPTY, :STRING_ENCODING,
                        :MODULE_ANCESTORS, :MODULE_DEFINE_METHOD, :MODULE_INCLUDE,
                        :MODULE_INSTANCE_METHOD, :MODULE_INSTANCE_METHODS, :MODULE_METHOD_DEFINED,
@@ -485,22 +484,15 @@ module Axn
       # this returns — the value's dispatch table is the caller's, not this reader's, to change.
       #
       # NOT free for a value that had no singleton class yet: `Kernel#singleton_class` MATERIALIZES one —
-      # a permanent, real object that outlives this call — so a caller checking many values for a rare
-      # condition should rule that out cheaply first (`singleton_level_methods` below never materializes
-      # one) and reach for this only once a singleton-level answer is actually needed.
+      # a permanent, real object that outlives this call. A caller checking many values for a rare
+      # condition should rule out a FROZEN value first (`frozen?` below, or any bound test of its own that
+      # implies it) — one can never carry a singleton method or an `extend`ed module at all, so it never
+      # needs this reader — and reach for this only for a value that could.
       def self.method_table(value)
         KERNEL_SINGLETON_CLASS.bind_call(value)
       rescue ::TypeError
         KERNEL_CLASS.bind_call(value)
       end
-
-      # The names of `value`'s own singleton-level methods — a literal singleton method, or one contributed
-      # by a module `extend`ed onto this one value — WITHOUT materializing a singleton class where none
-      # exists: `Kernel#singleton_methods` answers `[]` for a value that never had one, at no allocation
-      # cost, where `method_table` above (via `Kernel#singleton_class`) would create one just to answer the
-      # same question. The cheap way to rule out "this value carries something beyond its class's own
-      # methods" before paying for `method_table`'s materialization.
-      def self.singleton_level_methods(value) = KERNEL_SINGLETON_METHODS.bind_call(value)
 
       # Whether this NAME renders through Ruby's own code, which is the condition for "the property a rule judged
       # is the property every consumer reads".
