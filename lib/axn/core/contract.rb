@@ -4008,9 +4008,10 @@ module Axn
 
           raise ArgumentError,
                 "length: on #{where} has an option ActiveModel cannot use — building its validator raises " \
-                "`#{error.class}: #{error.message}`. Declared, the class would define cleanly and every call " \
-                "would raise instead. `in:`/`within:` must be a non-empty Range, and `is:`/`minimum:`/`maximum:` " \
-                "each a non-negative Integer, Float::INFINITY, a Symbol, or a Proc."
+                "`#{Internal::Rendering.class_name(error)}: #{Internal::Rendering.exception_message(error)}`. " \
+                "Declared, the class would define cleanly and every call would raise instead. `in:`/`within:` " \
+                "must be a non-empty Range, and `is:`/`minimum:`/`maximum:` each a non-negative Integer, " \
+                "Float::INFINITY, a Symbol, or a Proc."
         end
 
         # An `inclusion:` set no value of the declared type can be a member of — a contract that rejects every

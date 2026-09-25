@@ -212,7 +212,8 @@ module Axn
         begin
           validator = build_validator(clusivity_validator_class(key), options)
         rescue StandardError => e
-          return "building its validator raises `#{e.class}: #{e.message}`"
+          return "building its validator raises `#{Axn::Internal::Rendering.class_name(e)}: " \
+                 "#{Axn::Internal::Rendering.exception_message(e)}`"
         end
 
         method_name, count = delimiter_dispatch_mismatch(delimiter, validator)
