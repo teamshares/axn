@@ -392,6 +392,62 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
     expect(wrong).to be_empty, "these schemas accept what the runtime rejects without saying so:\n  #{wrong.join("\n  ")}"
   end
 
+  # The same two inbound questions at a POSITION rather than a field: an array's element and a map's value are
+  # declared through an `of:` bag, which the emitter projects on a path of its own — so a residue the field path
+  # records can still go missing there, and only a walk over positions would see it.
+  def positions
+    {
+      "element" => [->(bag) { { type: Array, of: bag } }, ->(value) { [value] }],
+      "map value" => [->(bag) { { type: Hash, of: { values: bag } } }, ->(value) { { "k" => value } }],
+    }
+  end
+
+  def each_position_cell
+    positions.each do |pname, (wrap_decl, wrap_value)|
+      types.each do |tname, tklass|
+        next if no_distinct_wire_form.include?(tname)
+
+        validators.each do |vname, vopts|
+          klass = declare(:in, wrap_decl.call({ klass: tklass }.merge(vopts)), nil)
+          next if klass.nil?
+
+          yield "#{pname} / #{tname} / #{vname}", klass, wrap_value
+        end
+      end
+    end
+  end
+
+  def position_verdicts(klass, wrap_value)
+    probe_values.map do |value|
+      wire = wrap_value.call(value)
+      runtime_ok = begin
+        klass.call(n: wire).ok?
+      rescue StandardError
+        false
+      end
+      [value, runtime_ok, schemer(klass.input_schema).valid?(JSON.parse(JSON.generate("n" => wire)))]
+    end
+  end
+
+  it "never rejects at a position a value the runtime accepts there, and reports what it accepts that it rejects" do
+    stricter = []
+    unreported = []
+    cells = 0
+
+    each_position_cell do |label, klass, wrap_value|
+      cells += 1
+      reported = klass.input_schema_residues.any?
+      position_verdicts(klass, wrap_value).each do |value, runtime_ok, accepted|
+        stricter << "#{label}: runtime accepts #{value.inspect}, document rejects it" if runtime_ok && !accepted
+        unreported << "#{label}: document accepts #{value.inspect}, runtime rejects it" if accepted && !runtime_ok && !reported
+      end
+    end
+
+    expect(cells).to be > 150
+    expect(stricter).to be_empty, "these positions reject what the runtime accepts:\n  #{stricter.join("\n  ")}"
+    expect(unreported).to be_empty, "these positions accept what the runtime rejects without saying so:\n  #{unreported.join("\n  ")}"
+  end
+
   # The three examples above declare a single FLAT field, which leaves the whole nested-subfield surface
   # outside the audit — and that is where PRO-3399 lived: an explicit subfield node at a key an ancestor
   # `shape:` also described replaced the member's emitted property instead of conjoining with it, so the

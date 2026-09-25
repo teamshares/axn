@@ -10319,8 +10319,10 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
         # No TYPE is inferred at either position, which is the claim — neither a pattern nor a size names one
         # JSON type. The element node is not EMPTY, though: the position still rejects nil (`nil.to_s` is `""`,
-        # which this pattern refuses), so it says that much and nothing more.
-        expect(bagged.input_schema.dig(:properties, :f, :items)).to eq(not: { type: "null" })
+        # which this pattern refuses), so it says that much, and names the pattern it cannot state for the
+        # non-string values it admits.
+        expect(constraints(bagged.input_schema.dig(:properties, :f, :items))).to eq(not: { type: "null" })
+        expect(bagged.input_schema.dig(:properties, :f, :items, :description)).to include('"format":')
         expect(bagged.input_schema.dig(:properties, :f, :items)).not_to have_key(:type)
         expect(constraints(fielded.input_schema[:properties][:f])).to eq({})
         expect(fielded.input_schema[:properties][:f][:description]).to include('"format":{"with":')
@@ -10467,10 +10469,11 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     end
 
     describe "constraints that stay unemitted" do
-      it "emits nothing for exclusion:, as at a field" do
+      it "emits nothing for exclusion:, as at a field, and names it" do
         prop = prop_for(:roles) { expects :roles, type: Array, of: { klass: String, exclusion: { in: %w[admin] } } }
 
-        expect(prop[:items]).to eq(type: "string")
+        expect(constraints(prop[:items])).to eq(type: "string")
+        expect(prop[:items][:description]).to include('"exclusion":{"in":["admin"]}')
       end
 
       it "emits nothing for a validate: callable" do
