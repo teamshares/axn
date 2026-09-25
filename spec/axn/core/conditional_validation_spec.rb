@@ -134,7 +134,9 @@ RSpec.describe "conditional validation declarations (if:/unless:)" do
       # The restored gate is a shared option, not a validator — reflection must not read it as a
       # nil-rejecting validator and mark the (omittable) field required.
       expect(action.input_schema[:required] || []).not_to include(:num, "num")
-      expect(action.input_schema.dig(:properties, :num, :type)).to contain_exactly("number", "null")
+      # The whole declaration is gated, so what it enforces is named rather than typed.
+      expect(action.input_schema.dig(:properties, :num)).not_to have_key(:type)
+      expect(action.input_schema.dig(:properties, :num, :description)).to include('"type":["number","null"]')
     end
 
     it "declares an optional field carrying only a shared option (no real validator) without crashing" do

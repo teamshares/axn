@@ -506,15 +506,17 @@ RSpec.describe "value validators in an of: bag" do
       expect(keyed.call(flag: true)).not_to be_ok
     end
 
-    # Reflection is static-maximal on INPUT: a gate removes the check at runtime but the document advertises it
-    # regardless, which is the existing rule for a self-gated `of:` edge (PRO-3166) and for a field's own.
-    it "still advertises it on input, where reflection is static-maximal" do
+    # INPUT reduces it the same way — a gated check is reflected with its gate closed in both directions, the
+    # rule a self-gated `of:` edge and a field's own entry follow — and names it on the element node instead.
+    it "leaves it out on input too, and names it there" do
       inbound = build_axn do
         expects :flag, type: :boolean
         expects :codes, type: Array, of: { klass: String, inclusion: { in: ["a"], if: :flag } }
       end
 
-      expect(inbound.input_schema.dig(:properties, :codes, :items)).to include(enum: ["a"])
+      items = inbound.input_schema.dig(:properties, :codes, :items)
+      expect(items).not_to have_key(:enum)
+      expect(items[:description]).to include("applies only on the calls its condition opens", '"in":["a"]')
     end
   end
 
