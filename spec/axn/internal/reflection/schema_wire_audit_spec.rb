@@ -99,7 +99,13 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
   # engine and STRING anchors under ECMA-262, so a probe with no embedded newline could never have told the
   # two grammars apart — every other value here is a single line, and the pattern axis would have kept
   # passing by accident whichever engine `schemer` used.
-  def probe_values = [nil, true, false, 0, 1, 2, 1.5, 123, "", "a", "abc", "1", "123", "a\nb", [], [1], {}, { "a" => 1 }]
+  #
+  # Each sized type also gets a value on either side of the `length is:3` cell's bounds, so a dropped floor OR a
+  # dropped ceiling is a value the document and the runtime disagree on.
+  def probe_values
+    [nil, true, false, 0, 1, 2, 1.5, 123, "", "a", "abc", "abcd", "1", "123", "a\nb", [], [1], [1, 2, 3], [1, 2, 3, 4],
+     {}, { "a" => 1 }, { "a" => 1, "b" => 2, "c" => 3 }, { "a" => 1, "b" => 2, "c" => 3, "d" => 4 }]
+  end
 
   # A tolerated BLANK passes every validator — ActiveModel skips it before any of them runs — while the emitted
   # `enum`/`pattern`/narrowing still describes only the non-blank values. So a blank-tolerant position accepts
