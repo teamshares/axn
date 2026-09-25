@@ -142,7 +142,7 @@ module Axn
                                                  *Axn::Internal::ShapeGraph::INNER_CONTRACT_EDGES)
                                          .select { |_key, opt| entry_self_gated?(opt) }
             gated.sort_by { |key, _opt| key.to_s }.reduce(node) do |acc, (key, opt)|
-              record_residue(acc, "#{GATED_RESIDUE} (#{render_constraint({ key => ungated_options(opt) })})", kind: :conditional)
+              record_residue(acc, "#{GATED_RESIDUE} (#{render_constraint({ key => reported_options(opt) })})", kind: :conditional)
             end
           end
 
