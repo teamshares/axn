@@ -207,20 +207,26 @@ module Axn
         reject_aliased_clusivity_delimiter!(delimiter, key, where)
       end
 
-      # Why ActiveModel cannot use this delimiter (refusals 1 and 2 above), or nil when it can.
+      # Why ActiveModel cannot use this delimiter (refusals 1 and 2 above), or nil when it can — each with the
+      # consequence it actually has. A build error recurs on EVERY call whatever gates the entry, since the
+      # validator class is compiled on each call until a compile succeeds (`ValidatorClassCache`). A signature
+      # that cannot take its argument breaks only when the validator RUNS, which an `if:`/`unless:` gate or an
+      # `allow_nil:`/`allow_blank:` skip can prevent.
       def unusable_delimiter_reason(delimiter, options, key)
         begin
           validator = build_validator(clusivity_validator_class(key), options)
         rescue StandardError => e
           return "building its validator raises `#{Axn::Internal::Rendering.class_name(e)}: " \
-                 "#{Axn::Internal::Rendering.exception_message(e)}`"
+                 "#{Axn::Internal::Rendering.exception_message(e)}`, so declared, the class would define " \
+                 "cleanly and every call would raise that instead"
         end
 
         method_name, count = delimiter_dispatch_mismatch(delimiter, validator)
         return nil unless method_name
 
         "its `#{method_name}` cannot take the #{count} argument#{'s' unless count == 1} ActiveModel passes it, so " \
-          "every call raises `ArgumentError: wrong number of arguments`"
+          "declared, the class would define cleanly and raise `ArgumentError: wrong number of arguments` " \
+          "whenever the validator runs"
       end
 
       # axn's own validator classes rather than ActiveModel's (`Validation::Base::InclusionValidator`), since
@@ -374,8 +380,7 @@ module Axn
       def unusable_delimiter_message(delimiter, key, where, reason)
         "#{key}: on #{where} names a set of class " \
           "#{Axn::Internal::Reflection::PropertyNames.renderable_class_name(delimiter)}, which ActiveModel " \
-          "cannot use — #{reason}. Declared, the class would define cleanly and every call would raise " \
-          "instead. Name an Array or Range of members, a Set or Hash (whose keys are read as members), a " \
+          "cannot use — #{reason}. Name an Array or Range of members, a Set or Hash (whose keys are read as members), a " \
           "Symbol naming an action method that returns a collection, or a Proc/lambda called with the record."
       end
 
@@ -392,15 +397,15 @@ module Axn
 
       # A String delimiter declares cleanly (a String answers `include?`, so `check_validity!` accepts it) and
       # is not a membership set at all: `String#include?` is a SUBSTRING test, and raises `TypeError` for any
-      # value that is not itself a String. So `type: Integer, inclusion: { in: "12" }` would raise on every
-      # call.
+      # value that is not itself a String. So `type: Integer, inclusion: { in: "12" }` would raise whenever
+      # the validator runs.
       def reject_string_clusivity_delimiter!(collection, key, where)
         raise ArgumentError,
               "#{key}: on #{where} names a String as its set (of class " \
               "#{Axn::Internal::Reflection::PropertyNames.renderable_class_name(collection)}). A String " \
               "answers membership by SUBSTRING, and raises `TypeError` for any value that is not itself a " \
-              "String — so declared, the class defines cleanly and every call raises unless the field's own " \
-              "value is a String. Name the members instead (`%w[a b c]`), or use `format:` for a " \
+              "String — so declared, the class defines cleanly and raises whenever the validator runs on a " \
+              "value that is not a String. Name the members instead (`%w[a b c]`), or use `format:` for a " \
               "substring/pattern check."
       end
 

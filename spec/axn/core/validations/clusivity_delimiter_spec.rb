@@ -152,6 +152,13 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
         .to raise_error(ArgumentError, /names a set of class Proc, which ActiveModel cannot use — its `call` cannot take the 1 argument/)
     end
 
+    # Judged by its gate-open reading, and described as what happens when the validator runs — a closed gate
+    # or a tolerated nil never dispatches it, so "every call" would be false.
+    it "refuses a gated wrong-arity lambda, saying it raises whenever the validator runs" do
+      expect { build_axn { expects :v, allow_nil: true, inclusion: { in: ->(_record, _second) { [1] }, if: -> { false } } } }
+        .to raise_error(ArgumentError, /whenever the validator runs/) { |e| expect(e.message).not_to include("every call") }
+    end
+
     it "refuses a lambda requiring a keyword" do
       expect { build_axn { expects :v, inclusion: ->(_record, only:) { [only] } } }
         .to raise_error(ArgumentError, /names a set of class Proc, which ActiveModel cannot use/)
