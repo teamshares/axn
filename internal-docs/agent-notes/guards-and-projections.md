@@ -63,10 +63,11 @@ the same fact about `dup`.)
 
 ## An unsatisfiable projection satisfies a directional invariant vacuously
 
-Reflection is documented as biased STRICTER than the runtime — schema-valid ⇒ runtime-valid
-(`docs/reference/class.md`, `docs/recipes/authoring-tool-adapters.md`), with two documented looser exceptions.
-A directional rule alone does not catch the worst kind of divergence, because a node admitting NO value is
-maximally strict and therefore trivially "not looser".
+Reflection's promise has two tiers (`docs/reference/class.md` "What the schema promises"): the core — types,
+requiredness, nullability, nesting, literal enums and bounds — is exact in both directions, and everything else
+is never STRICTER than the runtime, with whatever it leaves out named as a residue. The looser half of that is a
+directional rule, and a directional rule alone does not catch the worst kind of divergence, because a node
+admitting NO value is maximally strict and therefore trivially "not looser".
 
 `inclusion: { in: %w[a b] }` on a `type: Array` field emitted `{type: "array", enum: ["a","b"]}` — nothing is
 both an array and the string `"a"` — while the runtime accepted `["a","b"]` by distributing the set over the
@@ -91,11 +92,11 @@ Three mechanics that made the single test possible, each an instance of a rule a
 - **A missing bound was a missing EMISSION first.** `absence:` names size 0 as the only admissible size and emitted nothing, which made the guard blind to it AND left `absence: true, allow_empty: true` advertising a node looser than its contract. Teaching the emitter fixed both — the guard's blindness and the projection defect were one gap seen from two sides.
 - **The guard runs LAST in `_parse_field_validations`**, unlike every other guard there, which reads the author's own spelling. The floor it weighs is one axn itself installs (`_apply_default_presence!`), so it has to judge the settled bag — the same bag the emitter will read.
 
-The stand-downs split along whether the emitted NODE survives, not whether the runtime does. A nil tolerance rescues, because the tolerated nil is a passing value and the node stays satisfiable through its null branch. An `if:`/`unless:` gate does not, because reflection is static-maximal and emits the gated bound anyway — so the runtime is satisfiable while the document is not, which is the original defect wearing a gate.
+A nil tolerance rescues, because the tolerated nil is a passing value and the node stays satisfiable through its null branch. A gate stands the size rules down too — they weigh two entries they cannot prove run on the same call — and the emitter agrees from its side: it reflects a gated bound with its gate closed, so the gated contradiction never reaches the document as an unsatisfiable pair.
 
-## …and at a COLLISION, static-maximal is what produces that defect, so it stops applying there
+## …and a gated check is reflected with its gate CLOSED — first at a collision, then everywhere
 
-PRO-3405 reached the same wall from the emitter's side and had to move the doctrine rather than the projection. Where TWO declarations bind one wire position and one is conditional, emitting the gated bound anyway is not merely strict — it is false about the position: a gated `type: String` member beside an ungated `type: Hash` node describes a value nothing can be, while the runtime accepts a Hash on every call the condition closes.
+PRO-3405 reached the same wall from the emitter's side and had to move the doctrine rather than the projection. It began at a collision, and PRO-3505 then made it the rule for every position: emitting a gated check as if its gate were open is stricter than the runtime on every call the gate closes, which the input schema may never be. Where TWO declarations bind one wire position and one is conditional, emitting the gated bound anyway is not merely strict — it is false about the position: a gated `type: String` member beside an ungated `type: Hash` node describes a value nothing can be, while the runtime accepts a Hash on every call the condition closes.
 
 Six review rounds tried to keep static-maximal there and stand the gated side down only where the conjunction could be PROVEN empty. Every one of those provers was incomplete in a new way the next round found — type sets, then literal sets, then literals against bounds, then against a lone pattern, then against `format` — and the round that made the prover broadest introduced the opposite defect: marking a side gated because SOME entry was, and so dropping constraints that run on every call, which is looseness rather than vacuity. Three rules came out of it:
 
@@ -151,18 +152,18 @@ must become readable descriptions first, while the schema vocabulary still disti
 from caller literals. The finalizer's copy mode detaches those nodes so mentioning a subtree
 cannot consume reports another projection still needs.
 
-## A biased-stricter projection is not evidence about the contract
+## An approximate projection is not evidence about the contract
 
-`absence:` rejects every non-blank value. On an `Array` that means size 0 exactly, so a `maxItems: 0` is its faithful projection. On a `String` it does not: ActiveSupport gives String its own `blank?`, under which `"  "` is blank and two characters long. Emitting `maxLength: 0` there is still *permissible* — it is biased stricter, the documented direction for reflection to err in — and PRO-3220 first shipped it that way.
+`absence:` rejects every non-blank value. On an `Array` that means size 0 exactly, so a `maxItems: 0` is its faithful projection. On a `String` it does not: ActiveSupport gives String its own `blank?`, under which `"  "` is blank and two characters long. PRO-3220 first shipped `maxLength: 0` there, when the doctrine still let a projection err stricter; today that would be refused on its own terms, since it rejects `"  "`, which the runtime accepts.
 
 The guard then read that ceiling back and used it to prove a contract unsatisfiable, which refused `type: String, presence: false, absence: true, length: { minimum: 1 }` — a contract satisfied by every whitespace-only String. Two rules collided and only one of them can bend:
 
-- a PROJECTION may be stricter than the runtime, because a caller who obeys it is still correct;
+- a PROJECTION was then allowed to be stricter than the runtime (it no longer is: a stricter schema silently rejects valid calls);
 - a GUARD may not, because over-restriction rejects a legal declaration, and there is no recovery from a declaration that will not declare.
 
 So an approximation loses its licence the moment a guard reads it as fact. Where a guard must lean on a projected bound, the bound has to be EXACT on the axis being judged, or the guard stands down. The fix split the family in two: `presence:` ∧ `absence:` is a blank-axis contradiction, exact at every type and needing no size reasoning at all, while the size rule keeps only the bounds that really are about size — which meant withdrawing the String ceiling from the emitter as well, since a bound no guard may trust is one worth asking whether to emit at all.
 
-The same distinction settles gates in opposite directions in the two rules, and the test is *authored or inferred*, not *conditional or not*. Whichever way a rule resolves, ask it of EFFECTIVE gates (`Base.entry_effectively_gated?`) rather than of each entry's own (`entry_self_gated?`): a declaration-level `if:` is nobody's own gate and stops every check in the declaration regardless, so a rule asking "does this run on every call" that consults only nested gates is wrong on the commonest spelling. A `length:` ceiling is a size constraint the author wrote, so it is emitted as written whatever gates it, and the size rule counts it static-maximally. A size meaning for `absence:` is one axn infers, so it may only be inferred from a check that always runs — `presence: { unless: :archived }, absence: { if: :archived }` is a working contract, and a `maxItems: 0` derived from its conditional half would describe a document the contract does not carry on the calls where the gate is closed.
+The same distinction settles gates in opposite directions in the two rules, and the test is *authored or inferred*, not *conditional or not*. Whichever way a rule resolves, ask it of EFFECTIVE gates (`Base.entry_effectively_gated?`) rather than of each entry's own (`entry_self_gated?`): a declaration-level `if:` is nobody's own gate and stops every check in the declaration regardless, so a rule asking "does this run on every call" that consults only nested gates is wrong on the commonest spelling. A `length:` ceiling is a size constraint the author wrote, so the size rule reads it as written (and stands down if it is gated, through the effective-gate test). A size meaning for `absence:` is one axn infers, so it may only be inferred from a check that always runs — `presence: { unless: :archived }, absence: { if: :archived }` is a working contract, and a `maxItems: 0` derived from its conditional half would describe a document the contract does not carry on the calls where the gate is closed.
 
 ## Four review rounds, one class: shape read where effect was the question
 
