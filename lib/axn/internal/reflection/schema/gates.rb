@@ -15,7 +15,27 @@ module Axn
           # Whether the field's validators, taken together, permit a nil/omitted value — the one question
           # requiredness and nullability turn on, owned by Validation::Base so a field config's own
           # `optional?` answers it identically.
-          def nil_accepted?(config) = Axn::Validation::Base.nil_accepted?(config.validations)
+          #
+          # An entry whose nil verdict reflection cannot know — a `validate:` callable, or a clusivity set it may
+          # not read — is left out of the question rather than counted as rejecting nil: counting it would publish
+          # a field as required (or non-null) that the runtime may accept omitted, which is the one direction the
+          # schema may never err in. Such an entry is always named as a residue instead.
+          def nil_accepted?(config) = Axn::Validation::Base.nil_accepted?(nil_judgeable_validations(config.validations))
+
+          def nil_judgeable_validations(validations)
+            shared = shared_validation_options(validations)
+            validations.reject { |key, opt| nil_verdict_unknowable?(key, opt, shared) }
+          end
+
+          def nil_verdict_unknowable?(key, opt, shared)
+            return false unless opt
+
+            case key
+            when :validate then true
+            when :inclusion, :exclusion then set_includes_nil?(effective_entry_options(opt, shared)).nil?
+            else false
+            end
+          end
 
           # Whether the config's declaration carries a declaration-level if:/unless: gate — the signal
           # that its enforcement (NOT its shape) is conditional at runtime. Asked of a config here and of

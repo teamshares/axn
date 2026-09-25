@@ -436,7 +436,7 @@ module Axn
             # see no `klass:` and call a nil-admitting union nil-rejecting.
             validations = validations.merge(type: { klass: }) unless Axn::Internal::ShapeGraph.type_tokens(klass).empty?
 
-            Axn::Validation::Base.nil_accepted?(validations)
+            Axn::Validation::Base.nil_accepted?(nil_judgeable_validations(validations))
           end
 
           # Bring the type a bag's `klass:` produced into line with the nullability derived above. A `NilClass`

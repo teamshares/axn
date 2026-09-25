@@ -88,7 +88,37 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
       "format without" => { format: { without: /\d/ } },
       "exclusion [a]" => { exclusion: { in: %w[a] } },
       "absence" => { presence: false, absence: true },
+      # Checks no keyword states at all: an accepted-value set, equality with a companion field, a callable, and
+      # the numeric options with no bound to write.
+      "acceptance" => { acceptance: true },
+      "confirmation" => { confirmation: true },
+      "validate" => { validate: ->(value) { "is one" if value == 1 } },
+      "cmp other_than:1" => { comparison: { other_than: 1 } },
+      "num odd" => { numericality: { odd: true } },
     }
+  end
+
+  # The validator keys the corpus above does not exercise, each for a reason the audit cannot reach past.
+  # Everything else a declaration accepts must appear, so a validator added to axn is a cell here before it is
+  # a silent gap in the schema.
+  def unaudited_validation_keys
+    {
+      uniqueness: "refused at declaration",
+      model: "resolves a record, so it needs ActiveRecord (spec_rails)",
+      of: "a position, walked by the position example",
+      shape: "a position, walked by the nested examples",
+      coerce: "a transform, not a check",
+      if: "a gate, walked by the gate axis", unless: "a gate, walked by the gate axis",
+      on: "refused at declaration", strict: "refused at declaration", message: "prose, not a check"
+    }
+  end
+
+  it "exercises every validator a declaration accepts" do
+    known = Axn::Core::Contract::ClassMethods::KNOWN_VALIDATION_KEYS.to_a
+    # `type:` is every cell's other axis.
+    audited = validators.values.flat_map(&:keys).uniq + [:type]
+
+    expect(known - audited - unaudited_validation_keys.keys).to be_empty
   end
 
   # `optional:` is axn's nil-AND-blank tolerance, which is why it earns a column of its own here.

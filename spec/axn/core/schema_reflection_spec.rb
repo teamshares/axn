@@ -485,17 +485,18 @@ RSpec.describe "Axn class-level schema reflection" do
       expect(Array(klass.input_schema[:required])).to eq(["v_id"])
     end
 
-    # A custom `validate:` is user code, which reflection may never run — so its verdict on a nil is unknown,
-    # and unknown resolves to nil-REJECTING. The runtime here accepts the omitted value (the block returns no
-    # error), leaving both mirrors deliberately stricter than the runtime: the safe direction, and the same
-    # trade the Proc-default divergence makes.
-    it "reads a custom validate: as nil-rejecting, which is stricter than its runtime" do
+    # A custom `validate:` is user code, which reflection may never run — so its verdict on a nil is unknown.
+    # `optional?` stays conservative and reads it as nil-rejecting, but the schema may not err stricter than the
+    # runtime: it leaves the field optional and names the check. The runtime here does accept the omitted value
+    # (the block returns no error). The one row where `optional?` and the schema disagree, so it has its own title.
+    it "leaves a field with a custom validate: optional in the schema, naming the check" do
       klass = declare(presence: false, validate: ->(_value) {}) # no error returned: the value passes
 
       expect(klass.call).to be_ok
       config = klass.internal_field_configs.find { _1.field == :v }
       expect(config.optional?).to be(false)
-      expect(Array(klass.input_schema[:required])).to include("v")
+      expect(Array(klass.input_schema[:required])).not_to include("v")
+      expect(klass.input_schema_residues.map(&:summary)).to include(a_string_including("`validate:`"))
     end
 
     # `uniqueness:` has no nil axis to read, because it never reaches the validator set: ActiveModel ships no

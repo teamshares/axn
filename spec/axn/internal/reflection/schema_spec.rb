@@ -3800,14 +3800,18 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(schema[:required] || []).not_to include("role")
     end
 
-    it "still requires a field with a dynamic (Proc) exclusion set, since nil-membership can't be determined (stays conservative)" do
+    # Whether the set holds nil is unknowable without running the Proc, so the schema may not read it as
+    # rejecting nil (that would be stricter than a runtime whose set does not): the field is optional, and the
+    # exclusion is named.
+    it "leaves a field with a dynamic (Proc) exclusion set optional, naming the set, since its nil-membership can't be determined" do
       klass = Class.new do
         include Axn
         expects :role, presence: false, exclusion: { in: -> { %w[admin] } }
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-      expect(schema[:required]).to include("role")
+      expect(Array(schema[:required])).not_to include("role")
+      expect(schema.dig(:properties, :role, :description)).to include("exclusion")
     end
 
     it "still requires a field when a bare non-nil-tolerant validator is active alongside a nil-tolerant exclusion (all validators must tolerate nil)" do
@@ -8963,12 +8967,13 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       # An option-less entry is not the only spelling that reaches here: an entry whose options carry no
       # emittable bound leaves `restrict_union_to_bounded_branches!` nothing to narrow on, so the drop is the
       # only thing standing between the document and a branch the runtime rejects.
-      it "drops the branch under an entry whose only option emits no bound" do
+      it "drops the branch under an entry whose only option emits no bound, and names the option" do
         action = build_axn { expects :n, type: [TrueClass, Integer], numericality: { other_than: 5 } }
 
         expect(action.call(n: 1)).to be_ok
         expect(action.call(n: true)).not_to be_ok
-        expect(action.input_schema[:properties][:n]).to eq(type: "integer")
+        expect(constraints(action.input_schema[:properties][:n])).to eq(type: "integer")
+        expect(action.input_schema[:properties][:n][:description]).to include('"other_than":5')
       end
 
       # The string branch is the one this may not touch: bare `numericality:` really does accept a numeric
@@ -10476,16 +10481,18 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         expect(prop[:items][:description]).to include('"exclusion":{"in":["admin"]}')
       end
 
-      it "emits nothing for a validate: callable" do
+      it "emits nothing for a validate: callable, and names it" do
         prop = prop_for(:codes) { expects :codes, type: Array, of: { klass: String, validate: ->(v) { "no" if v == "x" } } }
 
-        expect(prop[:items]).to eq(type: "string")
+        expect(constraints(prop[:items])).to eq(type: "string")
+        expect(prop[:items][:description]).to include("`validate:`")
       end
 
-      it "emits nothing for acceptance:" do
+      it "emits nothing for acceptance:, and names it" do
         prop = prop_for(:flags) { expects :flags, type: Array, of: { klass: String, acceptance: { accept: %w[yes] } } }
 
-        expect(prop[:items]).to eq(type: "string")
+        expect(constraints(prop[:items])).to eq(type: "string")
+        expect(prop[:items][:description]).to include('"acceptance":{"accept":["yes"]}')
       end
     end
   end
