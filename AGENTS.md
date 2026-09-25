@@ -135,8 +135,9 @@ out of `Axn::Internal`. Adding a new error class, or deciding whether it should 
   emitter to paper over it.
 - **The input schema is exact at its core and never stricter elsewhere.** Tier 1 — property names, `type`,
   `required`, nullability, nesting, literal `enum`, literal numeric/length bounds, the `allow_empty:` floor,
-  `model:` id typing — agrees with the runtime in BOTH directions; a residue there is a bug (the `model:` id's
-  narrower type is the one stated exception). Tier 2 — `format:`, exclusion sets, every `if:`/`unless:`-gated
+  `model:` id typing — agrees with the runtime in BOTH directions; a residue there is a bug (stated exceptions:
+  the `model:` id's narrower type, and the blank axis — a blank-tolerant position's skipped blank, and a String
+  `presence:`'s whitespace — which is PRO-3244's). Tier 2 — `format:`, exclusion sets, every `if:`/`unless:`-gated
   entry, transformed values, merge corners, checks with no keyword for some admitted type — may say LESS than
   the runtime, never more: emit it only where the keyword is exactly what the runtime checks, otherwise leave it
   out and record a `Residue` (`record_residue`), which reaches the property's `description` and
