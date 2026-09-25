@@ -58,9 +58,10 @@ RSpec.describe "constructors of a stored validations bag" do
   # The constructor scan cannot see such a site, because the class name is absent from it — the receiver is a
   # variable (`config.with(...)`) — so the bag-REPLACING form is pinned by its own keyword instead.
   #
-  # Six projection-only derivations live in Schema: effective_validations, projected_property,
-  # type_agnostic_property, property_for_type_branches, and gating_residues' baseline/fragment pair. They retain
-  # unchanged entries from a guarded declaration, except for the type-agnostic validator path:
+  # Eight projection-only derivations live in Schema: effective_validations, projected_property,
+  # type_agnostic_property, property_for_type_branches, gating_residues' baseline/fragment pair, gates_stripped,
+  # and state_gate_open_contract!. The last two only remove gate keys (a declaration's, and each entry's own). They
+  # retain unchanged entries from a guarded declaration, except for the type-agnostic validator path:
   # it substitutes each WIRE_TYPE_CONTEXTS token, or each declared union token with its original
   # type options preserved. The synthetic domain contains only native type tokens with no
   # validator option bags (and therefore no context-scoped options to smuggle past the seam).
@@ -69,7 +70,7 @@ RSpec.describe "constructors of a stored validations bag" do
   #
   # Adding a site still requires auditing both the origin of every entry and its consumers.
   EXPECTED_BAG_DERIVATIONS = {
-    "lib/axn/internal/reflection/schema.rb" => 6,
+    "lib/axn/internal/reflection/schema.rb" => 8,
   }.freeze
 
   DERIVATION_PATTERN = /\.with\((?:[^()]|\([^()]*\))*\bvalidations:/
