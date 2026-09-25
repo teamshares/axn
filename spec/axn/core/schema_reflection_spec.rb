@@ -494,6 +494,36 @@ RSpec.describe "Axn class-level schema reflection" do
     end
   end
 
+  describe "input_schema_residues" do
+    it "is empty for a contract the schema states in full" do
+      expect(klass.input_schema_residues).to eq([])
+    end
+
+    it "names each constraint input_schema leaves out, by the property keys the schema uses" do
+      gapped = build_axn do
+        expects :payload, type: Hash, of: { values: { klass: Array, of: Integer } }
+        expects :inner, on: :payload
+      end
+      residues = gapped.input_schema_residues
+
+      expect(residues.map { |r| [r.path, r.kind] }).to eq([[%i[payload inner], :unfixed]])
+      expect(gapped.input_schema.dig(:properties, :payload, :properties, :inner, :description))
+        .to include(residues.first.summary)
+    end
+
+    it "hands back frozen values a caller cannot mutate into the next read" do
+      gapped = build_axn do
+        expects :payload, type: Hash, of: { values: { klass: Array, of: Integer } }
+        expects :inner, on: :payload
+      end
+      residues = gapped.input_schema_residues
+
+      expect(residues).to be_frozen
+      expect(residues.first.path).to be_frozen
+      expect(residues.first).to be_a(Axn::Core::SchemaReflection::Residue)
+    end
+  end
+
   describe "unrepresentable-subfield omission warning" do
     let(:deep_klass) do
       Class.new do
@@ -521,8 +551,8 @@ RSpec.describe "Axn class-level schema reflection" do
 
     it "keeps residue diagnostics harmless and deduplicated for a frozen action class" do
       klass = build_axn do
-        expects(:payload, type: Hash) { field :inner, type: String }
-        expects :inner, on: :payload, type: Integer, preprocess: :to_i.to_proc
+        expects :payload, type: Hash, of: { values: { klass: Array, of: Integer } }
+        expects :inner, on: :payload
       end
       # Prime the legitimate schema cache without emitting diagnostics, isolating the memo failure.
       Axn::Internal::Reflection::Schema.build_input_for(klass)

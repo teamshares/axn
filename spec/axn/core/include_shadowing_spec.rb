@@ -54,6 +54,16 @@ RSpec.describe "Axn include does not shadow a pre-existing base-class class meth
     expect(tool_class.raw_output_schema).to eq({ type: "object" })
   end
 
+  # The adapter owning `input_schema` is exactly the case that most needs to know what axn's projection
+  # leaves out, so the residue reader is guarded on its own name rather than riding with `input_schema`.
+  it "still provides input_schema_residues when the base owns input_schema" do
+    tool_class.class_eval do
+      expects :payload, type: Hash, of: { values: { klass: Array, of: Integer } }
+      expects :inner, on: :payload
+    end
+    expect(tool_class.input_schema_residues.map(&:path)).to eq([%i[payload inner]])
+  end
+
   it "still provides axn's other Naming DSL (axn_name/resolved_axn_name)" do
     tool_class.axn_name "custom"
     expect(tool_class.resolved_axn_name).to eq("custom")

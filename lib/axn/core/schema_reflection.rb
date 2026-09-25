@@ -21,7 +21,19 @@ module Axn
       def self.included(base)
         _extend_reflection(base, :input_schema, InputSchemaMethod)
         _extend_reflection(base, :output_schema, OutputSchemaMethod)
+        _extend_reflection(base, :input_schema_residues, InputSchemaResiduesMethod)
       end
+
+      # One constraint the contract enforces that `input_schema` does not state. `path` is the property
+      # keys from the root to the property it qualifies, exactly as the schema spells them (empty for the
+      # root); `summary` is the clause that property's `description` also carries; `kind` is `:conditional`
+      # (applies only when an `if:`/`unless:` gate opens), `:inherent` (JSON Schema has no faithful keyword
+      # for it) or `:unfixed` (axn could state it and does not yet).
+      #
+      # The schema is exact for its core vocabulary — types, requiredness, nullability, nesting, literal
+      # enums and literal bounds — and never stricter than the runtime for everything else. What it leaves
+      # out is listed here, so a caller obeying the schema can still be rejected, but never silently.
+      Residue = Data.define(:path, :summary, :kind)
 
       def self._extend_reflection(base, name, mod)
         if Axn::Core::MethodShadowing.externally_defined?(base, name)
@@ -82,7 +94,13 @@ module Axn
       # reopened to add another collision — the ordinary shape of a reload, and of a concern included after
       # the first reflection — got the new residue in its schema and no warning about it ever. Keying on the
       # rendered gaps keeps repeated reads quiet while a genuinely new one still speaks.
+      #
+      # Only an `:unfixed` residue is warned about. A conditional or inherent one is the schema keeping its
+      # promise — it leaves out what it cannot state faithfully — and is ordinary for any action with a gate
+      # or a pattern JSON Schema cannot spell; warning on each would teach authors to ignore the channel. They
+      # are still in the property's `description` and in `input_schema_residues`.
       def self.warn_inexpressible_constraints(klass, residues)
+        residues = residues.select { |_path, residue| residue.kind == :unfixed }
         return if residues.empty?
 
         # Preparation and bookkeeping are part of the side channel too. Neither a frozen class,
@@ -169,6 +187,18 @@ module Axn
         # The UTF-8 property a declared name renders as, falling back to the escaped `inspect` when its bytes
         # have no UTF-8 rendering at all. Same rule the declaration errors use, for the same reason.
         def _schema_name_label(name) = Axn::Internal::Reflection::PropertyNames.renderable_label(name)
+      end
+
+      # Guarded separately from `input_schema`: an adapter base that owns `input_schema` still leaves this
+      # name free, and it is exactly those classes whose adapter most needs to know what the schema omits.
+      # Built through `PropertyNames.validate_inbound!`, the same build the reader performs, for the same
+      # reason setup uses it — the class's own `input_schema` may not be axn's.
+      module InputSchemaResiduesMethod
+        def input_schema_residues
+          Axn::Internal::Reflection::PropertyNames.validate_inbound!(self).map do |path, residue|
+            Residue.new(path: path.freeze, summary: residue.summary, kind: residue.kind)
+          end.freeze
+        end
       end
 
       module OutputSchemaMethod
