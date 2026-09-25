@@ -98,12 +98,13 @@ RSpec.describe "value validators in an of: bag" do
       expect(items[:description]).to include('"absence":true')
     end
 
-    it "constrains each element with acceptance:, and emits no keyword for it" do
+    it "constrains each element with acceptance:, emits no keyword for it, and names it" do
       action = build_axn { expects :f, type: Array, of: { klass: String, acceptance: { accept: %w[yes] } } }
 
       expect(action.call(f: %w[yes])).to be_ok
       expect(action.call(f: %w[no])).not_to be_ok
-      expect(action.input_schema.dig(:properties, :f, :items)).to eq(type: "string")
+      expect(action.input_schema.dig(:properties, :f, :items).except(:description)).to eq(type: "string")
+      expect(action.input_schema.dig(:properties, :f, :items, :description)).to include("acceptance")
     end
 
     it "constrains a klass-less bag, leaving the element's class open" do

@@ -2714,10 +2714,22 @@ module Axn
           unstated_entry_fragments(declared_config.validations, prop).reduce(prop) do |acc, (key, options)|
             conditional = Axn::Validation::Base.entry_effectively_gated?(options, gates)
             prefix = conditional ? "#{GATED_RESIDUE}; " : ""
-            record_residue(acc, "#{prefix}JSON Schema cannot express this check (#{render_constraint({ key => reported_options(options) })})",
-                           kind: conditional ? :conditional : :inherent)
+            record_residue(acc, "#{prefix}#{unstated_check_sentence(key, options)}", kind: conditional ? :conditional : :inherent)
           end
         end
+
+        # A callable is named rather than rendered: its only rendering is an object address, and asking it for
+        # one would run a caller's `to_s`.
+        def unstated_check_sentence(key, options)
+          return "a custom `validate:` check applies, which JSON Schema cannot express" if key == :validate
+
+          "JSON Schema cannot express this check (#{render_constraint({ key => reported_options(options) })})"
+        end
+
+        # The `numericality:`/`comparison:` options the emitter states: the bounds (`NUMERIC_BOUND_KEYS`, and a
+        # ranged `in:`), the integer/numeric narrowings, and the tolerances. Anything else — `other_than:`,
+        # `odd:`, `even:` — has no keyword and is named.
+        STATED_NUMERIC_OPTIONS = (NUMERIC_BOUND_KEYS.keys + %i[in only_integer only_numeric allow_nil allow_blank message if unless]).freeze
 
         # Whether the node itself already holds every container branch it has to size 0 — asked of what was
         # emitted rather than of the derivation, since a bag position spells its type as `klass:` and reaches no
@@ -2744,6 +2756,12 @@ module Axn
           fragments << [:inclusion, entries[:inclusion]] if entries[:inclusion] && !inclusion_enum_values(entries[:inclusion])
           fragments << [:numericality, entries[:numericality]] if entries[:numericality] && numericality_unstated?(entries[:numericality], prop)
           fragments << [:length, entries[:length]] if blank_tolerant_length_unstated?(validations)
+          # No keyword states these at all: an accepted-value set, equality with a companion field, a callable.
+          %i[acceptance confirmation validate].each { |key| fragments << [key, entries[key]] if entries[key] }
+          NUMERIC_BOUND_ENTRIES.each_key do |key|
+            unstated = unstated_numeric_options(entries[key])
+            fragments << [key, unstated] unless unstated.empty?
+          end
           fragments << [:type, entries[:type]] if entries[:type] && unknown_type_constrains?(validations)
           fragments
         end
@@ -2751,6 +2769,14 @@ module Axn
         def numericality_settled_member?(value)
           Axn::Internal::Identity.nil_value?(value) || Axn::Internal::Identity.same?(value, false) ||
             (Axn::Internal::Identity.kind?(value, ::Numeric) && !Axn::Internal::Identity.kind?(value, ::Complex))
+        end
+
+        # A numeric entry's options no keyword states, gate options kept so the caller can tell a conditional one.
+        def unstated_numeric_options(entry)
+          return {} unless Axn::Internal::Identity.kind?(entry, ::Hash)
+
+          unstated = entry.except(*STATED_NUMERIC_OPTIONS)
+          unstated.empty? ? {} : unstated.merge(entry.slice(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS))
         end
 
         # The Ruby class of every value a JSON document can carry.

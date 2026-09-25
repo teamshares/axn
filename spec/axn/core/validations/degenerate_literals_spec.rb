@@ -210,7 +210,7 @@ RSpec.describe "a degenerate literal" do
       expect(comparison.input_schema[:properties][:v][:description]).to include('"comparison":{"equal_to":1')
 
       acceptance = build_axn { expects :v, type: Array, presence: false, acceptance: { allow_blank: true } }
-      expect(acceptance.input_schema[:properties][:v]).to eq({ type: "array" })
+      expect(acceptance.input_schema[:properties][:v].except(:description)).to eq({ type: "array" })
     end
 
     it "does NOT let a blank rescue `inclusion:`, whose literals ARE the emitted enum" do
