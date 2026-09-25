@@ -106,8 +106,8 @@ module Axn
         RenderGuard = Data.define(:classes, :members, :items, :values) do
           # The child guard for a Hash entry at `wire_key`: the shaped key's OWN guard if this position
           # declared one (nil included — see `members`' own comment), else the map's `values` axis. A
-          # PRESENT key wins over `values` even when its own guard is nil, which `Hash#fetch`'s default block
-          # (invoked only for an ABSENT key) makes exact.
+          # PRESENT key wins over `values` even when its own guard is nil — `key?` asks presence directly,
+          # rather than `fetch`'s default block, which a nil-valued key would also trigger.
           def entry(wire_key) = members.key?(wire_key) ? members[wire_key] : values
         end
 
@@ -706,15 +706,31 @@ module Axn
 
           declared = guard.classes.find { |klass| Axn::Internal::Identity.kind?(value, klass) }
           return if declared.nil?
-
-          table = Axn::Internal::NativeMethods.method_table(value)
-          method = displacing_projection(table)
-          return if method.nil?
+          return unless displacing_projection_anywhere?(value)
           return unless displacing_projection(declared).nil?
 
+          # Materialized only once we are actually about to raise: the value is being refused either way,
+          # so paying for `method_table` here (rather than in the cheap check above) costs nothing extra on
+          # the path that renders cleanly — which is every value this check ever sees, ordinarily.
+          table = Axn::Internal::NativeMethods.method_table(value)
           raise Axn::Extensions::Serialization::UnserializableValue.new(
-            path:, value:, reason: displaced_projection_reason(declared, method, table),
+            path:, value:, reason: displaced_projection_reason(declared, displacing_projection(table), table),
           )
+        end
+
+        # Whether SOMETHING in `value`'s own table displaces the built-in projection — the class's
+        # (covering a subclass's own definition and one contributed by an included module, at any
+        # ancestry depth) OR a singleton-level one (a literal singleton method, or a module `extend`ed onto
+        # this one value) — without materializing a singleton class for the overwhelming majority of
+        # values, which carry no singleton-level override at all and are fully answered by the class-level
+        # check alone. `NativeMethods.singleton_level_methods` is the cheap, non-materializing way to rule
+        # the rare case out first; `NativeMethods.method_table` (via `Kernel#singleton_class`) is reached
+        # only when it can't be.
+        def displacing_projection_anywhere?(value)
+          return true if displacing_projection(Axn::Internal::Identity.class_of(value))
+          return false if Axn::Internal::NativeMethods.singleton_level_methods(value).empty?
+
+          !displacing_projection(Axn::Internal::NativeMethods.method_table(value)).nil?
         end
 
         def displaced_projection_reason(declared, method, table)
@@ -796,7 +812,7 @@ module Axn
                              :own_wire_key, :no_entries_lost!, :raise_colliding_fields!, :owner_of,
                              :capture_elements, :raise_colliding_keys!, :framework_projection_owner?,
                              :describe_key_classes, :check_opaque_key!, :projection_for, :default_to_s?,
-                             :refuse_displaced_projection!, :displaced_projection_reason,
+                             :refuse_displaced_projection!, :displacing_projection_anywhere?, :displaced_projection_reason,
                              :displaced_projection_owner_label, :displaced_projection_location
       end
     end

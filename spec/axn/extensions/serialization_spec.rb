@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "spec_helper"
+require "open3"
 
 # A NAMED module, so the PRO-3284 owner-label test below can pin the "defined in <a real module name>"
 # branch of `Values.displaced_projection_owner_label` — a module built with `Module.new` inline stays
@@ -144,6 +145,28 @@ RSpec.describe Axn::Extensions::Serialization do
       let(:public_s) do
         klass = s
         Class.new(klass) { def as_json(*) = { name: } }
+      end
+
+      # Some examples below mean to pin behavior specifically for a Data/Struct value that has NO as_json
+      # of its own — routing through `to_h` outside Rails, or through Rails/ActiveSupport's own `to_h.as_json`
+      # inside it. But `Data`/`Struct` getting their OWN `as_json` isn't actually exclusive to "a Rails app":
+      # `require "globalid"` (elsewhere in this process — spec/axn/internal/exception_context_spec.rb) pulls
+      # in ActiveSupport's real `active_support/core_ext/object/json`, which reopens `Data`/`Struct` DIRECTLY
+      # (`Data.instance_method(:as_json).owner == Data`, not the generic `Object` the file-level `opaque_object`
+      # comment describes) — so whether this suite happens to be contaminated depends on example run order,
+      # not on "Rails" as such. `FRAMEWORK_PROJECTION_OWNERS` already treats that as a non-displacing,
+      # framework-owned `as_json` (Data IS in the list), so ownership verdicts are unaffected either way —
+      # but `Values.projection_for`'s ROUTE (`as_json` vs `to_h`) is not, and a couple of examples exist
+      # specifically to pin ONE of those two routes. This clears `Data#as_json`/`Struct#as_json` for the
+      # block's duration, if ActiveSupport put one there, and restores it afterward — deterministic either
+      # way, rather than order-dependent on which OTHER spec file in this process ran first.
+      def without_activesupport_json_core_ext
+        removed = [Data, Struct].select { |klass| klass.method_defined?(:as_json) }
+        originals = removed.to_h { |klass| [klass, klass.instance_method(:as_json)] }
+        removed.each { |klass| klass.send(:remove_method, :as_json) }
+        yield
+      ensure
+        originals&.each { |klass, method| klass.define_method(:as_json, method) }
       end
 
       def shaped_action(type:, of: nil, **opts) # rubocop:disable Naming/MethodParameterName -- matches the DSL kwarg it forwards
@@ -324,6 +347,36 @@ RSpec.describe Axn::Extensions::Serialization do
         expect { described_class.render(klass.call(value:)) }.to raise_error(Axn::Extensions::Serialization::UnserializableValue, /`w\.inner`/)
       end
 
+      # Data-in-Data (not through a Hash/Array): the OUTER value is rendered via `to_h` (`Values.projection_for`
+      # prefers it over any incidentally-present generic `Object#as_json`, since `Data` always answers
+      # `to_h`), and that recursion is what has to carry `guard` into the inner value — the one path
+      # ActiveSupport's own `Data#as_json` (`to_h.as_json`, one step — present in a Rails app, or wherever
+      # else that core_ext got loaded) shortcuts around instead (see spec_rails/dummy_app's pinned-gap
+      # example, PRO-3547). Wrapped in `without_activesupport_json_core_ext` so this pins the `to_h` route
+      # deterministically rather than depending on whether some OTHER spec in this process loaded it first.
+      it "raises for a Data value nested directly inside another Data value, via the to_h route" do
+        outer_type = Data.define(:inner)
+        inner_type = s
+        klass = Class.new do
+          include Axn
+          auto_log false
+          expects :value
+          exposes :w, type: outer_type do
+            field :inner, type: inner_type do
+              field :name, type: String
+              field :internal_notes, type: String
+            end
+          end
+          def call = expose(w: value)
+        end
+        value = outer_type.new(inner: public_s.new(name: "a", internal_notes: "secret"))
+
+        without_activesupport_json_core_ext do
+          expect { described_class.render(klass.call(value:)) }
+            .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /`w\.inner`/)
+        end
+      end
+
       it "raises at an array element (type: Array, of: S do ... end)" do
         klass = shaped_action(type: Array, of: s)
 
@@ -392,6 +445,68 @@ RSpec.describe Axn::Extensions::Serialization do
         expect { described_class.render(result) }.to raise_error(Axn::Extensions::Serialization::UnserializableValue, /`m\.key`/)
       end
 
+      it "raises at a map's values: axis when the axis is a BAG carrying its own nested shape (`of: " \
+         "{values: {klass: S, shape: {...}}}`), not just a bare token" do
+        value_type = s
+        klass = Class.new do
+          include Axn
+          auto_log false
+          expects :value
+          exposes :m, type: Hash, of: { values: { klass: value_type } } do
+            # nothing named here -- the values: axis carries its OWN shape via the block below
+          end
+          def call = expose(m: value)
+        end
+        result = klass.call(value: { key: public_s.new(name: "a", internal_notes: "x") })
+        expect(result.ok?).to be(true)
+
+        expect { described_class.render(result) }.to raise_error(Axn::Extensions::Serialization::UnserializableValue, /`m\.key`/)
+      end
+
+      it "raises inside a nested contents bag (`of: { klass: Array, of: { klass: S, shape: } }`, an Array " \
+         "of Arrays of S), two `of:` rungs deep" do
+        # A bag's own `shape:` at an unnamed, doubly-nested position has no block-DSL sugar (there's no
+        # field name to hang a `do...end` off two containers down) — built directly the way
+        # spec/axn/core/ambient_context_spec.rb's "reaches a member two containers deep" example does.
+        element_type = s
+        inner_shape = {
+          members: [
+            Axn::Core::Contract::ShapeConfig.new(field: :name, validations: { type: { klass: String } }),
+            Axn::Core::Contract::ShapeConfig.new(field: :internal_notes, validations: { type: { klass: String } }),
+          ],
+        }
+        klass = Class.new do
+          include Axn
+          auto_log false
+          expects :value
+          exposes :ds, type: Array, of: { klass: Array, of: { klass: element_type, shape: inner_shape } }
+          def call = expose(ds: value)
+        end
+        result = klass.call(value: [[public_s.new(name: "a", internal_notes: "x")]])
+        expect(result.ok?).to be(true)
+
+        expect { described_class.render(result) }.to raise_error(Axn::Extensions::Serialization::UnserializableValue, /`ds\[0\]\[0\]`/)
+      end
+
+      it "raises for a Struct instance `extend`ed with a module defining as_json" do
+        st = Struct.new(:name, :internal_notes)
+        redacting_module = Module.new { def as_json(*) = { name: } }
+        klass = shaped_action(type: st)
+        value = st.new("a", "x")
+        value.extend(redacting_module)
+
+        expect { described_class.render(klass.call(value:)) }
+          .to raise_error(Axn::Extensions::Serialization::UnserializableValue)
+      end
+
+      it "raises for a pass-through override (`def as_json(*) = super`) — ownership decides, not behavior: " \
+         "the override still displaces the built-in even though it renders identically" do
+        pass_through = Class.new(s) { def as_json(*) = super }
+
+        expect { described_class.render(shaped_action(type: s).call(value: pass_through.new(name: "a", internal_notes: "x"))) }
+          .to raise_error(Axn::Extensions::Serialization::UnserializableValue)
+      end
+
       it "guards an explicitly-shaped key on the SAME class ownership terms as the values: axis (the " \
          "override is refused regardless of which subset of members that key's own shape asks for — an " \
          "ownership rule, not an effect check: PublicS still satisfies meta's own narrower `required`)" do
@@ -431,6 +546,31 @@ RSpec.describe Axn::Extensions::Serialization do
           .to eq("m" => { "label" => "x", "other" => { "name" => "a", "internal_notes" => "b" } })
         expect { described_class.render(klass.call(value: { label: "x", other: public_s.new(name: "a", internal_notes: "b") })) }
           .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /`m\.other`/)
+      end
+
+      # A positive control for the "keeps a shaped key … from falling through" example above: THAT example
+      # never actually proves the safeguard runs, since a String at `label` would never match the values:
+      # axis's guard classes even if it fell through to them. Here `label` is given a runtime value the
+      # values: axis's guard WOULD flag (an overriding S instance, ignoring its own declared `type: String`
+      # — `render` reads whatever was exposed, contract-valid or not, and the point is what the GUARD walk
+      # does with it) — proving the member Hash's PRESENT-nil entry, not merely `label`'s declared type,
+      # is what keeps it unguarded.
+      it "does not raise for a shaped key with no guard of its own even when its runtime value is one the " \
+         "sibling values: axis WOULD flag — proving the member Hash keeps a present nil entry rather than " \
+         "dropping it" do
+        value_type = s
+        klass = Class.new do
+          include Axn
+          auto_log false
+          expects :value
+          exposes :m, type: Hash, of: { values: value_type } do
+            field :label, type: String
+          end
+          def call = expose(m: value)
+        end
+
+        expect(described_class.render(klass.call(value: { label: public_s.new(name: "a", internal_notes: "b") })))
+          .to eq("m" => { "label" => { "name" => "a" } })
       end
 
       it "raises for a union of Data classes at a contents position, with a shape overlay (both branches " \
@@ -543,6 +683,82 @@ RSpec.describe Axn::Extensions::Serialization do
           "items" => [{ "x" => 1 }],
           "m" => { "k" => { "y" => 2 } },
         )
+      end
+
+      # A singleton class is a permanent object that outlives the call, so materializing one for every
+      # guarded value at render time would be a lasting side effect on caller data, not just an allocation
+      # cost — and on the hot render path this repo already gates allocations on (the alpha-6 allocation
+      # gate). `Kernel#singleton_class` (`NativeMethods.method_table`) creates one where none exists;
+      # `Kernel#singleton_methods` (`NativeMethods.singleton_level_methods`) answers the same "does this
+      # value carry anything beyond its class" question without ever doing so, so the common case (no
+      # override at all) must reach for the class-level check alone.
+      # Run in a FRESH Ruby process (the same technique spec/axn/standalone_require_spec.rb uses, and for
+      # the identical reason): this suite's own process can be contaminated by whichever OTHER spec file
+      # happened to run first — `require "globalid"` (spec/axn/internal/exception_context_spec.rb) reopens
+      # `Data`/`Struct` with ActiveSupport's real `as_json`, and once that has happened, PRE-EXISTING code
+      # (`Values.projection_for`'s `owner_of(value, :as_json)` check, unrelated to this fix) materializes a
+      # singleton class for every Data/Struct value reaching it EITHER WAY, guarded or not — swamping the
+      # one signal this test means to isolate regardless of any in-process countermeasure. A clean process
+      # never runs that `require` at all, so it needs none.
+      it "does not materialize a singleton class for a guarded value with no singleton-level override" do
+        program = <<~RUBY
+          $LOAD_PATH.unshift(#{File.expand_path('../../../lib', __dir__).inspect})
+          require "axn"
+          require "logger"
+          Axn.config.logger = Logger.new(File::NULL)
+
+          x = Data.define(:name)
+          guarded_klass = Class.new do
+            include Axn
+            auto_log false
+            expects :values
+            exposes :ds, type: Array, of: x do
+              field :name, type: String
+            end
+            define_method(:call) { expose(ds: values) }
+          end
+          # A BARE `of: x` (no block) is ALSO guarded (a Data class gets member-derived output_schema
+          # properties either way), so it is not a valid negative control here. Fully untyped elements
+          # (`type: Array`, no `of:` at all) are the one shape this position's `output_schema` never
+          # describes at all, and so the one shape genuinely unguarded.
+          unguarded_klass = Class.new do
+            include Axn
+            auto_log false
+            expects :values
+            exposes :ds, type: Array
+            define_method(:call) { expose(ds: values) }
+          end
+
+          # `Kernel#singleton_class` is idempotent — calling it twice on the SAME value returns the same
+          # class, no new allocation the second time — so every measured value below must be one neither
+          # class has rendered before. A throwaway call on ONE value warms each class's own memo
+          # (output_schema/render-guard, built once and cached on the class, unrelated to this fix).
+          Axn::Extensions::Serialization.render(guarded_klass.call(values: [x.new(name: "a")]))
+          Axn::Extensions::Serialization.render(unguarded_klass.call(values: [x.new(name: "a")]))
+
+          # Each Result is built OUTSIDE the measured window: `.call` itself runs full inbound/outbound
+          # validation, no part of what this measures.
+          unguarded_result = unguarded_klass.call(values: Array.new(50) { x.new(name: "a") })
+          guarded_result = guarded_klass.call(values: Array.new(50) { x.new(name: "a") })
+
+          GC.disable
+          unguarded_before = ObjectSpace.count_objects[:T_CLASS]
+          Axn::Extensions::Serialization.render(unguarded_result)
+          unguarded_delta = ObjectSpace.count_objects[:T_CLASS] - unguarded_before
+
+          guarded_before = ObjectSpace.count_objects[:T_CLASS]
+          Axn::Extensions::Serialization.render(guarded_result)
+          guarded_delta = ObjectSpace.count_objects[:T_CLASS] - guarded_before
+
+          puts [unguarded_delta, guarded_delta].join(" ")
+        RUBY
+
+        out, status = Open3.capture2e(RbConfig.ruby, "-e", program)
+        expect(status).to be_success, "subprocess failed: #{out}"
+        unguarded_delta, guarded_delta = out.strip.split.map(&:to_i)
+
+        expect(unguarded_delta).to eq(0) # the control itself must cost nothing, or the comparison proves nothing
+        expect(guarded_delta).to eq(unguarded_delta)
       end
     end
 

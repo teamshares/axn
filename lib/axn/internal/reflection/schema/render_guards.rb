@@ -175,10 +175,10 @@ module Axn
 
           # Every named member of a shape, keyed by wire key — INCLUDING a member whose own guard is nil, so
           # that key still exists in the returned Hash (mapped to nil) rather than being absent from it. That
-          # distinction is what `Values::RenderGuard#entry` depends on: a shaped-but-untyped member must not
-          # fall through to a sibling `values` axis that does not describe it (`Hash#fetch` only invokes its
-          # default block for an ABSENT key, never for a present key holding nil). Empty (no named members at
-          # all) collapses to nil, the ordinary case, so a node with nothing else to say costs nothing to keep.
+          # distinction is what `Values::RenderGuard#entry` depends on: it asks presence directly (`key?`),
+          # so a shaped-but-untyped member is a PRESENT nil rather than an absent key, and does not fall
+          # through to a sibling `values` axis that does not describe it. Empty (no named members at all)
+          # collapses to nil, the ordinary case, so a node with nothing else to say costs nothing to keep.
           def member_render_guards(members, ancestry)
             hash = guard_contents_descent(members, ancestry, edge: :shape) { |child| build_member_render_guards(members, child) }
             hash.empty? ? nil : hash
