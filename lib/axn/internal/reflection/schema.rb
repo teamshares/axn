@@ -2687,7 +2687,7 @@ module Axn
           nullable = nil_allowed?(config)
           apply_type_info!(prop, type_info, config, nullable:)
 
-          prop = with_input_default(prop, config, subfield:)
+          prop = with_input_default(prop, config, subfield:, for_output:)
 
           apply_structured_schema!(prop, config, for_output:, ancestry:)
 
@@ -2813,10 +2813,12 @@ module Axn
         # A Proc default is never emitted — reflection may not run it — but it counts toward the field being
         # omittable, and whether its value then passes the field's own checks (or a shape it materializes) is
         # unknowable here. That is named, so the omission the schema allows is never a silent looseness.
-        def with_input_default(prop, config, subfield:)
+        # Outbound a Proc default is simply not emitted: the output schema carries no residues (`build_output`
+        # never finalizes them, so one recorded there would leak as a raw key).
+        def with_input_default(prop, config, subfield:, for_output: false)
           declared_default = declared_attribute(config, :default)
           return prop if declared_default.nil?
-          return record_residue(prop, PROC_DEFAULT_RESIDUE) if declared_default.is_a?(Proc)
+          return for_output ? prop : record_residue(prop, PROC_DEFAULT_RESIDUE) if declared_default.is_a?(Proc)
 
           emit_default = subfield ? config.applied_default? : true
           prop[:default] = normalize_schema_literal(declared_default) if emit_default
