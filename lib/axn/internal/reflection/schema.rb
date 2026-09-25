@@ -187,11 +187,6 @@ module Axn
         SIBLING_DEPENDENT_KEYWORDS = %i[additionalProperties].freeze
         RESIDUE_UNGATEABLE_KEYS = [:description, :default, RESIDUE_KEY, Vocabulary::MAP_VALUE_EXEMPT_KEY].freeze
 
-        GATED_RESIDUE = "a conditional validator at this position applies only on the calls " \
-                        "its condition opens"
-
-        GATED_REQUIRED_RESIDUE = "required on the calls its condition opens"
-
         PROC_DEFAULT_RESIDUE = "its `default:` is computed on the call when it is omitted, and the computed value must " \
                                "still pass this contract"
 

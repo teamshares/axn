@@ -23,6 +23,14 @@ module Axn
           # (`standalone_require_spec.rb` catches a reference the referencing file's own requires can't
           # satisfy).
           MAP_VALUE_EXEMPT_KEY = :__axn_map_value_exempt
+
+          # The residue sentences a gated check left out of the schema is named with. Here rather than on
+          # `Schema` for the reason above: `Contents` names a gated shape member's requirement and a gated bag
+          # entry too.
+          GATED_RESIDUE = "a conditional validator at this position applies only on the calls " \
+                          "its condition opens"
+
+          GATED_REQUIRED_RESIDUE = "required on the calls its condition opens"
         end
       end
     end
