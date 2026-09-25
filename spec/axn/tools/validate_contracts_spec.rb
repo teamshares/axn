@@ -658,6 +658,18 @@ RSpec.describe "Axn::Tools.validate_contracts!" do
   # READER, and the warning it emits, was never installed on the class. So whatever the projection could not
   # state has to be reported from here, or it is reported nowhere for exactly the tools a model reads.
   describe "a contract the projection cannot fully state" do
+    # A nested `values:` axis over a map that also names a key is the one gap the emitter could close and
+    # does not yet (an `:unfixed` residue) — the only kind the warning speaks for.
+    def unfixed_gap_tool(name = "ToolContractsSpec::UnfixedGap")
+      stub_const(name, Class.new do
+        include Axn
+        tool(:mcp)
+        expects :payload, type: Hash, of: { values: { klass: Array, of: Integer } }
+        expects :inner, on: :payload
+        def call; end
+      end)
+    end
+
     def transforming_tool(name = "ToolContractsSpec::Transforming")
       stub_const(name, Class.new do
         include Axn
@@ -670,11 +682,11 @@ RSpec.describe "Axn::Tools.validate_contracts!" do
 
     it "warns naming the position and what still applies" do
       Axn::Tools.register_adapter(:mcp)
-      transforming_tool
+      unfixed_gap_tool
       expect(Axn.config.logger).to receive(:warn).at_least(:once) do |message|
-        expect(message).to include("ToolContractsSpec::Transforming input_schema cannot state every constraint")
+        expect(message).to include("ToolContractsSpec::UnfixedGap input_schema cannot state every constraint")
         expect(message).to include("payload.inner")
-        expect(message).to include('{"type":"integer"}')
+        expect(message).to include("values: axis")
       end
 
       Axn::Tools.validate_contracts!
@@ -685,7 +697,7 @@ RSpec.describe "Axn::Tools.validate_contracts!" do
     # not on either one, or the same gap is announced again on every boot and reload.
     it "warns once per class across repeated setup passes and a later reader call" do
       Axn::Tools.register_adapter(:mcp)
-      tool = transforming_tool
+      tool = unfixed_gap_tool
       warnings = 0
       allow(Axn.config.logger).to receive(:warn) do |message|
         warnings += 1 if message.include?("cannot state every constraint")
@@ -700,7 +712,7 @@ RSpec.describe "Axn::Tools.validate_contracts!" do
 
     it "validates frozen tools and shares their warning memo with reflection" do
       Axn::Tools.register_adapter(:mcp)
-      tool = transforming_tool.freeze
+      tool = unfixed_gap_tool.freeze
       expect(Axn.config.logger).to receive(:warn).with(/cannot state every constraint/).once
       2.times { expect { Axn::Tools.validate_contracts! }.not_to raise_error }
       expect(tool.input_schema).to include(:properties)
@@ -708,7 +720,7 @@ RSpec.describe "Axn::Tools.validate_contracts!" do
 
     it "keeps frozen residue warning deduplication through garbage collection", :slow do
       Axn::Tools.register_adapter(:mcp)
-      tool = transforming_tool.freeze
+      tool = unfixed_gap_tool.freeze
       expect(Axn.config.logger).to receive(:warn).with(/cannot state every constraint/).once
       Axn::Tools.validate_contracts!
       GC.start
@@ -720,7 +732,7 @@ RSpec.describe "Axn::Tools.validate_contracts!" do
     # reached — so reflecting a schema blew up over the name of the very action the warning names.
     it "renders a non-UTF-8 axn name rather than raising while reporting it" do
       Axn::Tools.register_adapter(:mcp)
-      tool = transforming_tool
+      tool = unfixed_gap_tool
       tool.define_singleton_method(:resolved_axn_name) { "café".dup.force_encoding("ISO-8859-1") }
 
       expect { Axn::Tools.validate_contracts! }.not_to raise_error
@@ -732,7 +744,7 @@ RSpec.describe "Axn::Tools.validate_contracts!" do
     # was warned rather than on whether anything was.
     it "still warns when a later declaration adds a collision the first read never saw" do
       Axn::Tools.register_adapter(:mcp)
-      tool = transforming_tool
+      tool = unfixed_gap_tool
       warnings = 0
       allow(Axn.config.logger).to receive(:warn) do |message|
         warnings += 1 if message.include?("cannot state every constraint")
@@ -742,12 +754,23 @@ RSpec.describe "Axn::Tools.validate_contracts!" do
       expect(warnings).to eq(1)
 
       tool.class_eval do
-        expects(:other, type: Hash) { field :x, type: String }
-        expects :x, on: :other, type: { klass: Integer, coerce: true }
+        expects :other, type: Hash, of: { values: { klass: Array, of: Integer } }
+        expects :x, on: :other
       end
       tool.input_schema
 
       expect(warnings).to eq(2)
+    end
+
+    # A conditional or inherent gap is the schema keeping its promise — it leaves out what it cannot state
+    # faithfully — so it is reported in `description` and `input_schema_residues`, not logged.
+    it "says nothing for a gap JSON Schema itself cannot state" do
+      Axn::Tools.register_adapter(:mcp)
+      tool = transforming_tool
+      expect(Axn.config.logger).not_to receive(:warn)
+
+      Axn::Tools.validate_contracts!
+      expect(tool.input_schema_residues.map(&:kind)).to eq([:inherent])
     end
 
     it "says nothing for a tool whose contract it can state in full" do
