@@ -393,6 +393,62 @@ RSpec.describe Axn::Extensions::Serialization do
           .to raise_error(Axn::Extensions::Serialization::UnserializableValue)
       end
 
+      # Codex review, PR #296, round 5: a THIRD instance of the opaque-to-member-derived staleness class
+      # (round 4 fixed the direct shape position; this is the array-of-shape position). At `type: Array, of:
+      # ReopenableStruct do ... end`, a Struct that owns as_json at the first render makes `shape_overlay_applies?`
+      # false, so `contents_render_guard` takes the NON-overlay branch and falls through to
+      # `contents_klass_render_classes`, which watches only Data tokens (a bare Struct position is always `{}`
+      # and never needs a guard) -- silently dropping this Struct from `watched_classes` even though its
+      # opacity is exactly what decided overlay was false. When the Struct later loses that as_json,
+      # `shape_overlay_applies?` flips to true and `output_schema` starts publishing member-derived `items`,
+      # but the memoized guard plan has no way to notice (`watched_classes` never named this class), so it
+      # keeps serving the stale guardless plan forever.
+      it "rebuilds the memoized array-of-shape guard when a Struct that owned as_json at the first render " \
+         "loses it, even though the overlay-vs-bare BRANCH (not just the guarded classes) depended on that " \
+         "opacity" do
+        reopenable_struct = Struct.new(:name, :internal_notes) { def as_json(*) = { name: } }
+        klass = shaped_action(type: Array, of: reopenable_struct)
+        described_class.render(klass.call(value: [reopenable_struct.new("a", "x")])) # warms the memo, opaque -> bare branch
+
+        reopenable_struct.send(:remove_method, :as_json)
+        overriding_subclass = Class.new(reopenable_struct) { def as_json(*) = { name: } }
+
+        expect { described_class.render(klass.call(value: [overriding_subclass.new("a", "secret")])) }
+          .to raise_error(Axn::Extensions::Serialization::UnserializableValue)
+      end
+
+      # Codex review, PR #296, round 5: `output_render_guards` records the SAME opaque declared class once
+      # per guarded position it appears at, so `watched` can carry duplicates -- deduplicating them with
+      # plain `Array#uniq` dispatches that class's own `hash`/`eql?` (a caller-authored Data/Struct can
+      # define either as a singleton override), which is exactly the "decide without asking the caller's
+      # class about itself" rule this module otherwise follows throughout (`Identity.same?`, never `equal?`,
+      # for `configs.equal?` in the sibling memo). A raising override must not abort an otherwise-valid
+      # render just because the class happened to be watched twice.
+      it "does not dispatch a watched class's own hash/eql? while deduplicating watched_classes, even when " \
+         "the SAME opaque class is watched at two separate guarded positions" do
+        reopenable = Data.define(:name, :internal_notes) { def as_json(*) = { name: } }
+        reopenable.singleton_class.send(:define_method, :hash) { raise "must never be dispatched" }
+        reopenable.singleton_class.send(:define_method, :eql?) { |_other| raise "must never be dispatched" }
+
+        klass = Class.new do
+          include Axn
+          auto_log false
+          expects :value
+          exposes :d1, type: reopenable do
+            field :name, type: String
+            field :internal_notes, type: String
+          end
+          exposes :d2, type: reopenable do
+            field :name, type: String
+            field :internal_notes, type: String
+          end
+          def call = expose(d1: value, d2: value)
+        end
+        value = reopenable.new(name: "a", internal_notes: "x")
+
+        expect(described_class.render(klass.call(value:))).to eq("d1" => { "name" => "a" }, "d2" => { "name" => "a" })
+      end
+
       it "raises for a nested shape member (a Hash field whose own shaped member is such a subclass)" do
         inner_type = s
         klass = Class.new do

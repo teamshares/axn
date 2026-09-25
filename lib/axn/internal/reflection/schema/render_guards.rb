@@ -5,6 +5,7 @@ require "axn/internal/reflection/schema/contents"
 require "axn/internal/reflection/schema/nestability"
 require "axn/internal/reflection/values"
 require "axn/internal/shape_graph"
+require "axn/internal/identity"
 
 module Axn
   module Internal
@@ -63,7 +64,19 @@ module Axn
 
               acc[Axn::Internal::Reflection::Values.canonical_wire_key(config.field)] = guard
             end
-            [guards.empty? ? nil : guards, watched.uniq]
+            [guards.empty? ? nil : guards, dedupe_watched_classes(watched)]
+          end
+
+          # The SAME opaque declared class is pushed once per guarded position it appears at, so `watched`
+          # routinely carries duplicates -- `Array#uniq` dedupes via `hash`/`eql?`, DISPATCHED methods a
+          # caller-authored Data/Struct can define as a singleton override (Codex review, PR #296, round 5).
+          # `Identity.same?` is the bound `equal?` this codebase's no-dispatch discipline already reaches for
+          # elsewhere; an O(n^2) scan is free here, since a class list built one entry per guarded position
+          # is never large enough for the algorithmic difference to matter.
+          def dedupe_watched_classes(watched)
+            watched.each_with_object([]) do |klass, acc|
+              acc << klass unless acc.any? { |seen| Axn::Internal::Identity.same?(seen, klass) }
+            end
           end
 
           # THE one field/member node builder, called both for a top-level FieldConfig (ancestry: nil) and
@@ -125,6 +138,15 @@ module Axn
           # through this same builder).
           def contents_render_guard(bag, ancestry, watched:)
             shape = emitted_contents_edge(bag, :shape, for_output: true)
+            # Watched unconditionally on `shape` (not gated on `overlay`, unlike the classes/members computed
+            # below): `shape_overlay_applies?` itself asks `member_keyed_object_type?` of EVERY token here, so
+            # a token's current opacity is what decides which branch runs, not only what a branch that already
+            # ran decides to guard. A token that is opaque right now takes the non-overlay branch below, whose
+            # own `contents_klass_render_classes` only watches Data tokens (a bare Struct position is always
+            # `{}` and never itself needs a guard) -- silently dropping a Struct here even though its opacity,
+            # not its class, is what this position's branch choice depended on (Codex review, PR #296, round
+            # 5; the round-4 fix covered a guard losing its classes, not a bare/overlay branch choice flipping).
+            watch_opaque_classes!(Axn::Internal::ShapeGraph.type_tokens(bag[:klass]), watched) if shape
             overlay = shape && shape_overlay_applies?(bag, for_output: true)
 
             classes =
@@ -135,7 +157,6 @@ module Axn
               else
                 contents_klass_render_classes(bag[:klass], watched)
               end
-            watch_opaque_classes!(Axn::Internal::ShapeGraph.type_tokens(bag[:klass]), watched) if overlay
             members = overlay ? member_render_guards(shape[:members], ancestry, watched:) : nil
 
             inner = emitted_contents_edge(bag, :of, for_output: true)
