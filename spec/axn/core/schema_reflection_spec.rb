@@ -572,6 +572,19 @@ RSpec.describe "Axn class-level schema reflection" do
       expect(klass.input_schema_residues.map(&:path)).to include(%i[payload user_id])
     end
 
+    # Residues are an INPUT-side report; the output schema carries none, and has no finalizer to render or strip
+    # one, so a residue recorded outbound would reach adapters as a raw internal key.
+    it "records no residue on output_schema, whatever the exposure carries" do
+      klass = build_axn do
+        exposes :at, type: Integer, default: -> { 1 }
+        exposes :codes, type: Array, of: { klass: String, inclusion: { in: ["a"], if: -> { true } } }
+        exposes :tag, type: String, format: { with: /\A\s*x\z/ }, if: -> { true }
+        exposes(:payload, type: Hash) { field :inner, type: String, if: -> { true } }
+      end
+
+      expect(JSON.generate(klass.output_schema)).not_to include("__axn_residues")
+    end
+
     # A residue is appended after an author's own description, which may not end in a full stop.
     it "closes the author's description as a sentence before the residue" do
       user = user_class
