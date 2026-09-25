@@ -3,6 +3,8 @@
 require "axn/internal/field_config"
 # A model id renders through the same serializer every other emitted literal does.
 require "axn/internal/reflection/values"
+# A gated id's requirement is named with the shared residue sentence.
+require "axn/internal/reflection/schema/vocabulary"
 
 module Axn
   module Internal
@@ -14,6 +16,8 @@ module Axn
         # own primary key where it can be, reconciled against an explicitly-declared `id_type:` or an explicit
         # sibling field where those exist, and refused at declaration where they disagree.
         module ModelId
+          include Vocabulary
+
           # Which token `model_id_type_token` infers for each ActiveRecord primary-key attribute type
           # (`klass.type_for_attribute(klass.primary_key).type`). Every value here is one of
           # `Internal::FieldConfig::MODEL_ID_TYPE_TOKENS` — that constant, not a copy of it here, is what
@@ -187,9 +191,15 @@ module Axn
             # A default at ANY depth under the model applies at read time (value-level defaults,
             # PRO-2889) — no synthesis is involved — so descendant omittability is the ordinary
             # annotation-derived rule, same as every other parent.
-            model_omittable = (optional_for_schema?(config) || requiredness_conditionally_relaxable?(config)) &&
-                              !children_require_presence?(children, ann)
-            return if model_omittable || (explicit_id && usable_default?(explicit_id, subfield: false))
+            stranded = children_require_presence?(children, ann)
+            return if (optional_for_schema?(config) && !stranded) || (explicit_id && usable_default?(explicit_id, subfield: false))
+
+            # Only a gate imposes the requirement: the id is left out of `required`, and the conditional
+            # requirement is named on it, exactly as an ordinary field's is.
+            if requiredness_conditionally_relaxable?(config) && !stranded
+              properties[id_field] = record_residue(properties[id_field], GATED_REQUIRED_RESIDUE, kind: :conditional) if properties[id_field]
+              return
+            end
 
             key = id_field.to_s
             required << key unless required.include?(key)

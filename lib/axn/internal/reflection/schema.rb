@@ -251,7 +251,7 @@ module Axn
             # Each part is rendered BEFORE the join. An author's `description:` is caller-supplied text and
             # may be valid in an encoding this generated prose cannot concatenate with (a UTF-16 String
             # raises outright); joining first and rendering after would raise from inside the composition.
-            schema[:description] = join_prose(schema[:description], clause)
+            schema[:description] = join_prose(as_sentence(schema[:description]), clause)
           end
 
           # PRO-3441. This node's own `properties` is now FINAL — every subfield, colliding member and
@@ -1545,7 +1545,12 @@ module Axn
             _, subprop = model_id_property(model_configs.first, id_type)
             prop[:properties][id_field] ||= subprop
           end
-          return if node_optional?(node, ann, model_configs.reject { |c| requiredness_conditionally_relaxable?(c) })
+          return if node_optional?(node, ann, model_configs)
+
+          if node_optional?(node, ann, model_configs.reject { |c| requiredness_conditionally_relaxable?(c) })
+            prop[:properties][id_field] = record_residue(prop[:properties][id_field], GATED_REQUIRED_RESIDUE, kind: :conditional) if prop[:properties][id_field]
+            return
+          end
 
           prop[:required] << id_field.to_s
           required_model_ids << id_field
@@ -2157,11 +2162,15 @@ module Axn
 
         # Every entry that runs on every call, and no gate key: an entry a declaration gate reaches is dropped,
         # so what is left is ungated whether or not the gate keys ride along — and leaving them would have
-        # `build_property` read the survivors as gated all over again.
+        # `build_property` read the survivors as gated all over again. The declaration's other shared options
+        # (`allow_nil:`/`allow_blank:`/`strict:`) are not entries and are never judged as one: they govern how
+        # every surviving entry runs, and dropping them turned an `optional:` field non-nullable.
         def ungated_validations(config)
           gates = declaration_gates(config)
+          shared = Axn::Validation::Base.shared_validation_option_keys
           config.validations.reject do |key, opt|
             next true if Internal::FieldConfig::CONDITIONAL_GATE_KEYS.include?(key)
+            next false if shared.include?(key)
 
             Axn::Validation::Base.entry_effectively_gated?(opt, gates)
           end
@@ -2397,6 +2406,17 @@ module Axn
         # Reduced through `mentionable_rendering`, never `to_s`: a String SUBCLASS description can override
         # `to_s`, and one that raises took `input_schema` down from inside the append. The seam reads a
         # String's bytes through bound methods and guards everything else.
+        # An author's description, rendered, and closed as a sentence where it is not already, so the residue
+        # sentence appended after it reads as its own ("ID of the User record. Additional constraints…").
+        SENTENCE_END = /[.!?:;]["')\]]*\s*\z/
+
+        def as_sentence(prose)
+          return prose if Axn::Internal::Identity.nil_value?(prose)
+
+          rendered = mentionable_rendering(prose)
+          rendered.empty? || rendered.match?(SENTENCE_END) ? rendered : "#{rendered}."
+        end
+
         def join_prose(*parts)
           rendered = parts.reject { |part| Axn::Internal::Identity.nil_value?(part) }.map { |part| mentionable_rendering(part) }
           rendered.empty? ? nil : rendered.join(" ")
@@ -2644,15 +2664,13 @@ module Axn
           prop[:description] = description if description
 
           # A gated check is reflected by what it enforces with its gate CLOSED, in both directions: the schema
-          # never promises what the runtime skips on some calls. A declaration-level gate skips EVERY validator
-          # (not just presence), so the value can be anything — no type/format/enum is assertable, and the
-          # property is left untyped. Inbound, what the open gate would enforce is named as a residue instead,
-          # and a `default:` still applies (a gate governs validation, not the pipeline).
-          if conditionally_gated?(config)
-            return prop if for_output
-
-            return with_gating_residues(with_input_default(prop, config, subfield:), config)
-          end
+          # never promises what the runtime skips on some calls. Outbound, a declaration-level gate leaves the
+          # property untyped outright (the action may expose whatever it assigned). Inbound, each entry is judged
+          # by its EFFECTIVE gate (`ungated_validations`), so a declaration gate drops every entry it reaches while
+          # one whose blank nested gate overrides it — `type: { klass: Integer, if: nil }, if: :enabled?` runs on
+          # every call — is still stated. What the open gate would enforce is named as a residue, and a
+          # `default:` still applies (a gate governs validation, not the pipeline).
+          return prop if for_output && conditionally_gated?(config)
 
           # GATE-CLOSED validations (see effective_validations, the one derivation of them): everything below
           # reads the config through that subset, so a per-validator gate drops the same entry here as in the
@@ -2662,7 +2680,7 @@ module Axn
           # every config (and a duck-typed member answers no `with` at all).
           declared_config = config
           declared = config.validations
-          effective = effective_validations(declared)
+          effective = for_output ? effective_validations(declared) : gate_closed_validations(config, declared)
           config = config.with(validations: effective) unless effective.equal?(declared)
 
           type_info = json_type_for(config.validations, for_output:)
@@ -2778,6 +2796,15 @@ module Axn
         # Whether `of:`/`shape:` establishes the property's JSON type (`apply_structured_schema!`), so an untyped
         # declared class is not left untyped after all.
         def structured?(config) = config.validations[:of] || config.validations[:shape]
+
+        # The validations an INPUT property is built from: every entry that runs on every call. The same Hash
+        # when nothing is gated, which is what lets `build_property` skip rebuilding a config — so it is handed
+        # the one read of `validations` the caller made, since a member's reader may mint a fresh Hash per read.
+        def gate_closed_validations(config, validations)
+          return validations unless gated_validations?(validations) || conditional_checks?(config)
+
+          ungated_validations(config)
+        end
 
         # A non-Proc `default:`, written into `prop` (mutated and returned). Only a truthy subfield default is
         # applied at runtime, so a falsey `default: false` subfield must not advertise a default the runtime

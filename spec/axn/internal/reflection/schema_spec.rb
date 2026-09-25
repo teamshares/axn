@@ -6251,7 +6251,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
               end
               inner = klass.input_schema[:properties][:payload][:properties][:inner]
 
-              expect(inner[:description]).to start_with("the caller's own words ")
+              expect(inner[:description]).to start_with("the caller's own words. ")
               expect(inner[:description]).to include('{"type":"integer"}')
             end
 
@@ -6478,7 +6478,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
               end
               inner = klass.input_schema[:properties][:payload][:properties][:inner]
 
-              expect(inner[:description]).to start_with("numeric identifier ")
+              expect(inner[:description]).to start_with("numeric identifier. ")
               expect(inner[:description]).to include("cannot express")
             end
 
