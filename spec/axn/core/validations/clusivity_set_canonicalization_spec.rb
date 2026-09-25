@@ -373,12 +373,10 @@ RSpec.describe "a clusivity set is canonicalized to its members, whatever contai
     end
   end
 
-  # The whole callability axis at once, because four consecutive review rounds each found a different shape on
-  # it and each single-case fix broke a neighbour. What ActiveModel does is decided by `respond_to?(:call)`,
-  # which axn may not dispatch, so it approximates by ownership — and an approximation has doubtful cases that
-  # the two decisions turning on it need to resolve OPPOSITE ways. This walks the product and states the whole
-  # rule: a container is refused exactly when it is unfrozen, carries code of its own, and is not certainly
-  # resolved per call by ActiveModel.
+  # The whole callability axis at once. What ActiveModel does is decided by `respond_to?(:call)`, and axn asks
+  # that same question, so every expectation below is derived from it rather than tabulated: a container is
+  # read only when ActiveModel will not call it, and refused exactly when it is unfrozen, carries code of its
+  # own, and is not resolved per call.
   describe "the callability axis" do
     def variant(kind, frozen:)
       set = Set[1]
@@ -397,20 +395,15 @@ RSpec.describe "a clusivity set is canonicalized to its members, whatever contai
       frozen ? set.freeze : set
     end
 
-    # kind => whether an UNFROZEN one is refused. Frozen is never refused: nothing can mutate it, so the
-    # aliasing rule has nothing to bite on.
-    {
-      plain: false,             # no code of its own — read out into an Array and copied
-      public_call: false,       # certainly resolved per call, so its members are not the contract
-      private_call: true,       # found in the table but never called by ActiveModel: a static set, aliased
-      method_missing_call: true,  # might be resolved per call, but axn cannot establish it without dispatch
-      method_missing_only: true,  # indistinguishable from the line above, and resolves the same way
-    }.each do |kind, refused_when_mutable|
-      it "#{refused_when_mutable ? 'refuses' : 'accepts'} an unfrozen #{kind} container" do
+    kinds = %i[plain public_call private_call method_missing_call method_missing_only]
+
+    kinds.each do |kind|
+      it "refuses an unfrozen #{kind} container exactly when it carries code and ActiveModel will not call it" do
         set = variant(kind, frozen: false)
+        refused = kind != :plain && !set.respond_to?(:call)
         declare = -> { build_axn { expects :v, type: Integer, inclusion: { in: set } } }
 
-        if refused_when_mutable
+        if refused
           expect { declare.call }.to raise_error(ArgumentError, /defines methods of its own/)
         else
           expect { declare.call }.not_to raise_error
@@ -423,26 +416,12 @@ RSpec.describe "a clusivity set is canonicalized to its members, whatever contai
       end
     end
 
-    # Nothing on the axis may be READ unless its method table is the whole truth and holds no `call` at all —
-    # reading a set the runtime never compares against is what refuses a working contract.
-    it "reads members only from a container whose table is authoritative and callable-free" do
-      # `private_call` is readable: visibility is decidable from the method table, ActiveModel will not call a
-      # non-public `call`, and so the container really does compare against the members it holds.
-      readable = { plain: true, public_call: false, private_call: true,
-                   method_missing_call: false, method_missing_only: false }
-
-      readable.each do |kind, may_read|
-        members = Axn::Validation::Base.literal_set_members({ in: variant(kind, frozen: true) })
-        expect(members.nil?).to be(!may_read), "#{kind}: expected may_read=#{may_read}"
-      end
-    end
-
-    # And the strict predicate must track ActiveModel's own answer wherever ActiveModel's answer is knowable
-    # without dispatch — which is every shape whose `call` lives in the method table.
-    it "matches ActiveModel's own callability test on every method-table shape" do
-      %i[plain public_call private_call].each do |kind|
+    # Reading a set the runtime never compares against is what refuses a working contract.
+    it "reads members only from a container ActiveModel will not resolve per call" do
+      kinds.each do |kind|
         set = variant(kind, frozen: true)
-        expect(Axn::Validation::Base.certainly_resolved_per_call?(set)).to be(set.respond_to?(:call)), kind.to_s
+        members = Axn::Validation::Base.literal_set_members({ in: set })
+        expect(members.nil?).to be(set.respond_to?(:call)), kind.to_s
       end
     end
   end
