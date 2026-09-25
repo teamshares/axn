@@ -226,6 +226,17 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
           [key, opt.is_a?(Hash) ? opt.merge(if: -> { false }) : { if: -> { false } }]
         end
       },
+      # A declaration gate every entry overrides with a blank nested one: ActiveModel drops the shared gate for
+      # that key and runs the entry on every call, so the declaration only LOOKS gated. The inferred presence
+      # check keeps the shared gate.
+      "declaration if: false, overridden per entry" => lambda { |decl|
+        decl.to_h do |key, opt|
+          next [key, opt] if key == :optional
+          next [key, { klass: opt, if: nil }] if key == :type
+
+          [key, opt.is_a?(Hash) ? opt.merge(if: nil) : { if: nil }]
+        end.merge(if: -> { false })
+      },
     }
   end
 

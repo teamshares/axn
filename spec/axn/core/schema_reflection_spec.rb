@@ -538,6 +538,49 @@ RSpec.describe "Axn class-level schema reflection" do
     end
   end
 
+  describe "a gate" do
+    let(:user_class) { Struct.new(:id) { def self.find(id) = id.nil? ? nil : new(id) } }
+
+    # A blank nested gate overrides the declaration's for its own key, so that entry runs on every call and is
+    # stated; only what the declaration gate still reaches is left out.
+    it "states an entry whose blank nested gate overrides the declaration gate" do
+      klass = build_axn { expects :n, type: { klass: Integer, if: nil }, if: -> { false } }
+
+      expect(klass.call(n: "x")).not_to be_ok
+      expect(klass.input_schema[:properties][:n]).to include(type: "integer")
+      expect(klass.input_schema[:required]).to eq(["n"])
+    end
+
+    it "names a gated model: field's generated id requirement rather than listing it" do
+      user = user_class
+      klass = build_axn { expects :user, model: { klass: user, finder: :find }, if: -> { true } }
+
+      expect(klass.call).not_to be_ok
+      expect(Array(klass.input_schema[:required])).not_to include("user_id")
+      expect(klass.input_schema_residues.map { |r| [r.path, r.summary] })
+        .to include([[:user_id], "required on the calls its condition opens"])
+    end
+
+    it "names a nested gated model: field's generated id requirement the same way" do
+      user = user_class
+      klass = build_axn do
+        expects :payload, type: Hash
+        expects :user, on: :payload, model: { klass: user, finder: :find }, if: -> { true }
+      end
+
+      expect(Array(klass.input_schema.dig(:properties, :payload, :required))).not_to include("user_id")
+      expect(klass.input_schema_residues.map(&:path)).to include(%i[payload user_id])
+    end
+
+    # A residue is appended after an author's own description, which may not end in a full stop.
+    it "closes the author's description as a sentence before the residue" do
+      user = user_class
+      klass = build_axn { expects :user, model: { klass: user, finder: :find }, if: -> { true } }
+
+      expect(klass.input_schema.dig(:properties, :user_id, :description)).to match(/record\. Additional constraints apply/)
+    end
+  end
+
   describe "unrepresentable-subfield omission warning" do
     let(:deep_klass) do
       Class.new do
