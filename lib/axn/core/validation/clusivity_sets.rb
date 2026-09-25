@@ -300,11 +300,15 @@ module Axn
         end
       end
 
-      # Whether `collection` is an Array or a Range (by ANCESTRY, never `is_a?`) — the two shapes whose
-      # membership cannot change after declaring even though axn stores neither frozen. An Array, subclasses
-      # included, is copied by the option detachment (`ShapeGraph.detach_option_containers!`) before it is
-      # stored, so mutating the caller's object leaves the declared copy alone (measured). A Range has no
-      # mutators: its bounds are fixed at construction, and a literal one is frozen besides.
+      # Whether `collection` is an Array or a Range (by ANCESTRY, never `is_a?`) — the two shapes the caller
+      # cannot re-point after declaring even though axn stores neither frozen. An Array, subclasses included,
+      # is copied by the option detachment (`ShapeGraph.detach_option_containers!`) before it is stored, so
+      # adding or removing members of the caller's object leaves the declared copy alone (measured). A Range
+      # has no mutators: its bounds are fixed at construction, and a literal one is frozen besides.
+      #
+      # Both are SHALLOW, the same boundary every copy here draws: a mutable member or endpoint (an unfrozen
+      # String) is still shared, so changing it in place reaches the declared set. Closing that would mean
+      # deep-freezing or deep-copying arbitrary values, which the option copy declines everywhere else too.
       def native_bare_clusivity_delimiter?(collection)
         klass = Axn::Internal::Identity.class_of(collection)
         Axn::Internal::NativeMethods.includes_module?(klass, ::Array) ||
