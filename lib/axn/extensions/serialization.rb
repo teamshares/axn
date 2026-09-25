@@ -62,10 +62,22 @@ module Axn
       # The render-time position map (PRO-3284), memoized beside `validate_outbound!`'s own verdict and on
       # the identical terms: keyed on the IDENTITY of `configs`, so a grown contract misses with no
       # invalidation hook to keep in sync, and skipped for a frozen class (whose configs cannot grow again
-      # anyway) — the same narrow consequence `validate_outbound!` states about a retained `shape:` graph
-      # mutated after the first render. Building this once per class is the whole reason it exists: an
-      # ordinary action with no Data/Struct shape in its `exposes` gets nil back and pays nothing more per
-      # render than the identity check.
+      # anyway). Building this once per class is the whole reason it exists — measured, rebuilding it on
+      # every render costs roughly as much as the render itself — so an ordinary action with no Data/Struct
+      # shape in its `exposes` gets nil back and pays nothing more per render than the identity check.
+      #
+      # The SAME narrow consequence `validate_outbound!` states about a retained `shape:` graph mutated
+      # after the first render — but stated plainly here rather than assumed identical, because the
+      # OUTCOME differs: `validate_outbound!`'s stale verdict only delays a WARNING (`output_schema` is
+      # rebuilt on every call and re-validates regardless), where a stale guard here means render can
+      # SUCCEED where a fresh build would have refused — no other layer re-checks that. Reaching this
+      # requires mutating axn's own SNAPSHOTTED shape graph (`_snapshot_declared_shape!` already deep-copies
+      # away from whatever the caller declared with) IN PLACE, through `external_field_configs` directly —
+      # the array itself is frozen and its `FieldConfig`/`ShapeConfig` elements are immutable `Data`, so the
+      # only route in is reaching past both into a nested Hash nothing in the public DSL exposes a path to.
+      # Accepted for the same reason `validate_outbound!`'s is: there is no invalidation signal cheaper than
+      # the rebuild itself for an in-place mutation, and paying that rebuild unconditionally would cost every
+      # ordinary render the ~2-3x this memo exists to avoid, to guard a route the supported API cannot reach.
       def render_guards_for(action_class, configs)
         cached = action_class.instance_variable_get(:@_axn_render_guards)
         return cached[1] if cached && configs.equal?(cached[0])

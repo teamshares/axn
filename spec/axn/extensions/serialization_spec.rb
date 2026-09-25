@@ -310,6 +310,24 @@ RSpec.describe Axn::Extensions::Serialization do
           .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /defined in an anonymous module/)
       end
 
+      # Codex review, PR #296, round 2: freezing a value prevents ADDING a singleton method from that point
+      # on, but does not remove one already installed -- a public singleton override given BEFORE freezing
+      # still displaces the built-in after. `frozen?` alone is therefore not the fast-path condition (only
+      # "is a Data instance AND frozen" is, since Data.new/#with freeze unconditionally at construction,
+      # before any window in which an override could have been added -- a Struct is never provably safe
+      # this way, so it always takes the full check regardless of its current frozen state).
+      it "raises for a Struct instance given a PUBLIC singleton to_h override BEFORE being frozen" do
+        st = Struct.new(:name, :internal_notes)
+        klass = shaped_action(type: st)
+        value = st.new("a", "x")
+        def value.to_h = { name: }
+        value.freeze
+
+        expect(value.frozen?).to be(true) # confirms this exercises the freeze-after-override ordering
+        expect { described_class.render(klass.call(value:)) }
+          .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /defined on this value itself \(a singleton method\)/)
+      end
+
       it "does not raise for a private/protected as_json override (never reached by dispatch, so the " \
          "built-in member-keyed to_h still renders)" do
         klass = shaped_action(type: s)

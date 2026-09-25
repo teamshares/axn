@@ -721,19 +721,29 @@ module Axn
         # Whether SOMETHING in `value`'s own table displaces the built-in projection — the class's
         # (covering a subclass's own definition and one contributed by an included module, at any
         # ancestry depth) OR a singleton-level one (a literal singleton method, or a module `extend`ed onto
-        # this one value, at ANY visibility) — without materializing a singleton class for a FROZEN value,
-        # which cannot carry one at all: `Kernel#singleton_class`/`define_method`/`extend`/`def value.name`
-        # all raise `FrozenError` on one (confirmed for a singleton method AND an `extend`), so a frozen
-        # value answering "no class-level override" answers the whole question, cheaply — which covers
-        # every `Data` instance, since a `Data` value is always frozen. A mutable value (a `Struct`, most
-        # custom classes) still needs the full check: `Kernel#singleton_methods` looked cheaper but is
-        # UNSOUND here — it excludes PRIVATE singleton-level methods entirely, and `to_h` displaces the
-        # built-in at ANY visibility (Codex review, PR #296) — so for a mutable value there is no shortcut
-        # that both avoids materializing AND stays complete; `NativeMethods.method_table` (via
-        # `Kernel#singleton_class`) is reached for those, exactly as before this optimization existed.
+        # this one value, at ANY visibility) — without materializing a singleton class for a genuine `Data`
+        # instance, the one case provably safe to skip.
+        #
+        # `frozen?` ALONE is not that case (Codex review, PR #296, round 2): freezing prevents ADDING a
+        # singleton method or `extend`ed module from that point on, but does not remove one already
+        # installed — `st = Struct.new(:x).new(1); def st.to_h = {}; st.freeze` leaves `st.singleton_methods`
+        # still `[:to_h]` after the freeze, so a value frozen AFTER gaining an override would wrongly read as
+        # safe. What actually closes the question is being a `Data` instance AND frozen together: `Data.new`
+        # (and `#with`) freeze UNCONDITIONALLY at construction, before any window in which a singleton method
+        # could be added, so there is no ORDER in which one could exist — a value satisfying both can never
+        # have carried one. `Data#allocate` is the one bypass (skips `initialize`, produces an UNFROZEN
+        # instance), and the `frozen?` half of this same check is what still catches it: it falls to the full
+        # path below rather than being read as safe.
+        #
+        # A `Struct` (or any other mutable-by-default value) is never provably safe this way — no `frozen?`
+        # timing tells you whether an override existed before a later freeze — so it always takes the full
+        # check: `Kernel#singleton_methods` looked like a cheaper substitute but is UNSOUND on its own too
+        # (round 1: it excludes PRIVATE singleton-level methods, and `to_h` displaces the built-in at ANY
+        # visibility) — `NativeMethods.method_table` (via `Kernel#singleton_class`) is reached for those,
+        # exactly as before this optimization existed at all.
         def displacing_projection_anywhere?(value)
           return true if displacing_projection(Axn::Internal::Identity.class_of(value))
-          return false if Axn::Internal::NativeMethods.frozen?(value)
+          return false if Axn::Internal::Identity.kind?(value, ::Data) && Axn::Internal::NativeMethods.frozen?(value)
 
           !displacing_projection(Axn::Internal::NativeMethods.method_table(value)).nil?
         end
