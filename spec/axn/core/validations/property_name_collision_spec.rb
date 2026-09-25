@@ -1937,7 +1937,7 @@ RSpec.describe "declaration-time property name collisions" do
 
       expect { klass = build_axn { expects :t, type: [colliding, Hash], shape: { members:, container: Hash }, optional: true } }
         .not_to raise_error
-      expect(klass.input_schema.dig(:properties, :t, :anyOf).flat_map(&:keys)).not_to include(:properties)
+      expect(Array(klass.input_schema.dig(:properties, :t, :anyOf)).flat_map(&:keys)).not_to include(:properties)
     end
   end
 
@@ -2960,19 +2960,18 @@ RSpec.describe "declaration-time property name collisions" do
             .to raise_error(ArgumentError, /names more than 25000 JSON properties/)
         end
 
-        # The reduction is OUTPUT-only (input is static-maximal: a gate can only relax enforcement at runtime,
-        # so the schema still advertises the type), which is why the same declaration is still charged inbound —
-        # and the members really are emitted there.
-        it "still charges a gated type: on INPUT, where the schema advertises it anyway" do
+        # The reduction runs in BOTH directions — a gated check is reflected with its gate closed — so the same
+        # declaration charges nothing inbound either, and the members are not emitted there.
+        it "charges nothing for a per-validator-gated type: on INPUT either" do
           wide = wide_type
 
-          expect { gated_type_axn(wide, :expects).input_schema }.to raise_error(ArgumentError, /names more than 25000 JSON properties/)
+          expect { gated_type_axn(wide, :expects).input_schema }.not_to raise_error
         end
 
-        it "emits a gated type's members inbound, so charging them is right there" do
+        it "emits none of a gated type's members inbound, so charging none is right there" do
           klass = gated_type_axn(Data.define(:sm1, :sm2), :expects)
 
-          expect(klass.input_schema.dig(:properties, :x, :properties).keys).to eq(%i[sm1 sm2 keep])
+          expect(klass.input_schema.dig(:properties, :x, :properties).keys).to eq([:keep])
         end
 
         # `of:` and `shape:` are entries of the same validations Hash, so the same gate drops either one — the

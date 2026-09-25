@@ -7,18 +7,21 @@ require "bigdecimal"
 require "date"
 require "json"
 
-# Reflection has one invariant it may never break, stated in `docs/reference/guards-and-projections.md`: the
-# emitted document may say LESS than the contract inbound and MORE than it outbound, never the reverse. Every
-# individual keyword is argued for in `schema_spec.rb`; nothing there asks the question this file asks, which is
-# whether the document and the runtime agree when a REAL JSON Schema engine is the one reading it.
+# Reflection's promise, stated in `docs/reference/class.md` ("What the schema promises"): inbound, the document
+# is exact at its core and never STRICTER than the runtime anywhere, and whatever it leaves out it names as a
+# residue (`input_schema_residues`); outbound, it may say MORE than the contract, never less. Every individual
+# keyword is argued for in `schema_spec.rb`; nothing there asks the question this file asks, which is whether the
+# document and the runtime agree when a REAL JSON Schema engine is the one reading it.
 #
-# So this walks the product of {declared type} x {validator spelling} x {tolerance} and, for every cell, asks
-# `json_schemer` — not a re-derivation of JSON Schema, and not the emitter's own opinion of what it wrote:
+# So this walks the product of {declared type} x {validator spelling} x {tolerance} (x {gate}, inbound) and, for
+# every cell, asks `json_schemer` — not a re-derivation of JSON Schema, and not the emitter's own opinion of what
+# it wrote:
 #
-#   * OUTBOUND, the schema must never REJECT a value the action exposed successfully. This is the sharp
-#     direction: the action settled ok, axn serialized the value, and its own `output_schema` refuses it.
-#   * INBOUND, the schema must never ACCEPT a value the runtime rejects, which is the looseness clients are
-#     told they can rely on.
+#   * OUTBOUND, the schema must never REJECT a value the action exposed successfully. The action settled ok, axn
+#     serialized the value, and its own `output_schema` refuses it.
+#   * INBOUND, the schema must never REJECT a value the runtime accepts — the direction a caller cannot recover
+#     from, since a client validating against the document never sends the call — and every value it ACCEPTS
+#     that the runtime rejects must be explained by a residue the class reports.
 #
 # Written after four consecutive rounds of review findings on PR #252 all landed in the same shape — each in the
 # mirror of a keyword just changed — and the answer was to measure the whole surface at once instead of fixing
@@ -33,8 +36,12 @@ require "json"
 # `format: { with: /\A[a-z]+\z/ }` emits `pattern: "^[a-z]+$"`, and against `"abc\ndef"` the RUBY-resolved
 # document wrongly ACCEPTS it (Ruby's `^`/`$` are line anchors) while the runtime and the ECMA-resolved
 # document both correctly refuse it. The emitted pattern was right all along; the ORACLE was reading it
-# under the wrong grammar. This file's own hard direction (inbound must never accept what the runtime
-# refuses) is exactly what that mismatch would have violated had this file gone looking with the right tool.
+# under the wrong grammar. A looseness nothing reports is exactly what that mismatch would have been read as had
+# this file gone looking with the wrong tool.
+module SchemaWireAudit
+  OMITTED = Object.new.freeze # "the key is not sent at all", distinct from every JSON value including nil
+end
+
 RSpec.describe "the emitted schema against runtime truth", :slow do
   # Deliberately not `build_axn`: this needs the class object itself for its schemas, and a fresh one per cell.
   def declare(direction, decl, value)
@@ -75,6 +82,12 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
       "presence" => { presence: true },
       "length is:3" => { length: { is: 3 } },
       "format a-z" => { format: { with: /\A[a-z]+\z/ } },
+      # The tier-2 checks the emitter leaves out and names: a pattern with no faithful ECMA spelling (`\s`), the
+      # `without:` spelling, an exclusion set, and the blank axis on its own.
+      "format \\s" => { format: { with: /\A\s*[a-z]+\z/ } },
+      "format without" => { format: { without: /\d/ } },
+      "exclusion [a]" => { exclusion: { in: %w[a] } },
+      "absence" => { presence: false, absence: true },
     }
   end
 
@@ -90,26 +103,12 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
 
   # A tolerated BLANK passes every validator — ActiveModel skips it before any of them runs — while the emitted
   # `enum`/`pattern`/narrowing still describes only the non-blank values. So a blank-tolerant position accepts
-  # `""`, `[]`, `{}` and `false` at runtime and its document refuses them.
-  #
-  # This is PRO-3016's axis conflation surfacing in reflection, it predates the work this file was written for,
-  # and closing it is a contract decision rather than a bug fix (PRO-3244: stand the keyword down, which is looser, or
-  # widen the emitted set with the blank). Excluded by NAME so the residue below stays meaningful, and so that
-  # deleting these two lines is all it takes to hold the emitter to it once that call is made.
+  # `""`, `[]`, `{}` and `false` at runtime and its document refuses them: STRICTER than the runtime, in the
+  # exact core, and the one such divergence this file still excludes by name. A blank-tolerant `length:` is
+  # already reflected as a residue instead; the literal-set and pattern half is PRO-3244's (widening the set
+  # with the blank is exact for a container and not for a String, whose blank is any run of whitespace).
   def known_blank_tolerance_divergence?(tolerance_name, value)
     tolerance_name == "optional" && !value.nil? && value.blank?
-  end
-
-  # The same class wearing its other face. A blank-tolerant `length:` means "blank OR exactly this size", and no
-  # single keyword says that — so the emitter DROPS the floor to let the blank through, and the document then
-  # accepts every shorter value as well (`type: String, length: { is: 3 }, optional: true` emits `maxLength: 3`
-  # with no `minLength`, so `"a"` passes the document and fails the runtime). One root, two symptoms: outbound
-  # the document refuses the blank it accepts, inbound it accepts the non-blanks the constraint refuses. The
-  # honest spelling is an `anyOf` of the blank and the constrained form, which is the decision PRO-3244 carries.
-  def floor_bearing_validators = ["length is:3"]
-
-  def known_blank_tolerance_floor_drop?(tolerance_name, validator_name)
-    tolerance_name == "optional" && floor_bearing_validators.include?(validator_name)
   end
 
   # A Ruby class the wire cannot carry a distinct form of: the runtime wants an INSTANCE and JSON has only its
@@ -117,60 +116,6 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
   # reached only through a String or number that axn will refuse. Inbound-only, and inherent rather than
   # unfixed — there is no keyword that says "a number written with a decimal point".
   def no_distinct_wire_form = ["[Integer,Float]", "Numeric"]
-
-  # Validators with no JSON Schema spelling on some BRANCH of the declared type, so the document says nothing
-  # there while the runtime speaks. Expressibility is a per-branch question, which is why this reads the tokens
-  # rather than the declaration: `format:`/`length:` measure `value.to_s` and so apply to every class, while
-  # `pattern`/`minLength`/`maxLength` exist only for a string — so `type: [String, Integer], length: { is: 3 }`
-  # constrains the Integer at runtime (`123.to_s.length`) and has no keyword to say so. A numeric bound is the
-  # mirror: no keyword bounds a string. Both are inherent to JSON Schema rather than unfixed here.
-  def numeric_bound_validators = ["num gt:0", "cmp gt:0", "cmp equal_to:1"]
-
-  def inexpressible_inbound?(validator_name, tokens)
-    return tokens.any? { |t| t != String } if ["length is:3", "format a-z"].include?(validator_name)
-    return tokens.any? { |t| !numeric_token?(t) } if numeric_bound_validators.include?(validator_name)
-
-    false
-  end
-
-  def numeric_token?(token) = token.is_a?(Module) && token <= Numeric
-
-  # PRO-3245. A bare `numericality:` on a String position accepts a numeric string and rejects the rest,
-  # and the document says nothing — so it accepts every string. The seam exists (`only_integer:` emits the exact
-  # test via `merge_integer_literal_pattern`), but an EXACT pattern for bare numericality is hard: ActiveModel
-  # funnels through `Kernel.Float`, which takes underscores (`Float("1_000")`) and surrounding whitespace, while
-  # `is_hexadecimal_literal?` rejects hex. An approximation would be looser or stricter than the runtime, and
-  # inbound looser is the direction reflection may never take.
-  def known_unpatterned_numeric_string?(validator_name, tokens)
-    validator_name == "numericality:true" && tokens.any? { |t| t == String }
-  end
-
-  # PRO-3246. `single_type_for` renders an UNKNOWN class as the permissive `"string"` — right for a
-  # narrow custom value class, which serializes through `to_s`, and wrong for a token like `Object` or
-  # `Comparable` that admits numbers and everything else besides. Two consequences, both pre-existing and both
-  # rooted in that one fallback rather than in any validator:
-  #
-  #   inbound         the document says `"string"` where the runtime takes an Integer, so it accepts `"a"`
-  #                   under a `numericality:` that rejects it
-  #   satisfiability  the approximate `"string"` collides with a set of non-string literals — `type: Object,
-  #                   inclusion: { in: [1, 2] }` emits `{type: "string", enum: [1, 2]}`, which nothing
-  #                   satisfies, while the runtime accepts `1`
-  #
-  # Not cheap to close: the fallback is deliberate and load-bearing (`type: Object, length: 2..5` emits
-  # `minLength` BECAUSE the node is a string), so it is the ticket's, not this file's.
-  #
-  # Scoped as narrowly as it can be. The satisfiability exclusion covers only the literal-projecting validator
-  # that collides with the type; the NARROWING family on a broad token stays audited, because that is the class
-  # this example was written for and the one that has regressed twice.
-  def broad_token?(tokens)
-    # Read through ancestry rather than `>=`, which would dispatch a comparison on a caller-supplied Module —
-    # the same reason `string_reachable_key_token?` reads String's own ancestors in the emitter.
-    tokens.any? { |t| t.is_a?(Module) && Numeric.ancestors.include?(t) && !t.ancestors.include?(Numeric) }
-  end
-
-  def known_broad_token_string_fallback?(validator_name, tokens)
-    broad_token?(tokens) && validator_name.start_with?("incl ")
-  end
 
   def each_cell
     types.each do |tname, tklass|
@@ -247,7 +192,6 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
         false
       end
       next if accepted.empty? # the contract admits nothing, so an unsatisfiable node is the faithful projection
-      next if known_broad_token_string_fallback?(vname, Array(tklass))
 
       live += 1
       document = schemer(klass.input_schema)
@@ -261,45 +205,128 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
     expect(wrong).to be_empty, "these contracts are satisfiable and their schemas are not:\n  #{wrong.join("\n  ")}"
   end
 
-  # The INBOUND direction: a document looser than the runtime tells a client a value is acceptable and then
-  # rejects it on every call.
-  it "never accepts inbound a value the runtime rejects" do
+  # A gate the audit holds CLOSED, at each position one can be written: on the whole declaration, and on a
+  # single validator entry. Closed is the reading under which the runtime accepts the most, so it is the one a
+  # document stricter than the runtime is caught by — and the schema is the same whatever the gate evaluates to,
+  # since reflection never runs a condition.
+  def closed_gates
+    {
+      "ungated" => ->(decl) { decl },
+      "declaration if: false" => ->(decl) { decl.merge(if: -> { false }) },
+      "entry if: false" => lambda { |decl|
+        decl.to_h do |key, opt|
+          next [key, opt] if %i[type optional].include?(key)
+
+          [key, opt.is_a?(Hash) ? opt.merge(if: -> { false }) : { if: -> { false } }]
+        end
+      },
+    }
+  end
+
+  # The one direction BOTH tiers promise: whatever the runtime accepts, the document accepts. A stricter
+  # document is invisible to the caller it misleads — a client validating against it never sends the call the
+  # runtime would have taken — while a looser one costs a round-trip to a named runtime error. So this is asked
+  # of every cell with every gate closed, and the only exclusions are the named, pre-existing ones.
+  def omitted = SchemaWireAudit::OMITTED
+
+  it "never rejects inbound a value the runtime accepts" do
+    wrong = []
+    accepted = 0
+
+    each_cell do |tname, tklass, vname, vopts, tolname, tol|
+      closed_gates.each do |gname, gate|
+        next if gname != "ungated" && vopts.empty?
+
+        klass = declare(:in, gate.call({ type: tklass }.merge(vopts)).merge(tol), nil)
+        next if klass.nil?
+
+        document = schemer(klass.input_schema)
+        # An omitted key is a probe of its own: requiredness is tier 1, and a gated presence check is the case a
+        # value-only walk can never see.
+        (probe_values + [omitted]).each do |value|
+          next if known_blank_tolerance_divergence?(tolname, value)
+
+          runtime_ok = begin
+            (omitted.equal?(value) ? klass.call : klass.call(n: value)).ok?
+          rescue StandardError
+            false
+          end
+          next unless runtime_ok
+
+          accepted += 1
+          next if document.valid?(omitted.equal?(value) ? {} : { "n" => value })
+
+          wrong << "#{tname} / #{vname} / #{tolname} / #{gname}: runtime accepts #{value.inspect}, document " \
+                   "rejects it, schema #{klass.input_schema[:properties][:n].inspect}"
+        end
+      end
+    end
+
+    expect(accepted).to be > 1000
+    expect(wrong).to be_empty, "these schemas reject what the runtime accepts:\n  #{wrong.join("\n  ")}"
+  end
+
+  # Gates the looseness walk holds OPEN as well as closed: an open gate is the reading under which the
+  # runtime rejects the most, so it is where a document that left a gated check out is loosest.
+  def all_gates
+    closed_gates.merge(
+      "declaration if: true" => ->(decl) { decl.merge(if: -> { true }) },
+      "entry if: true" => lambda { |decl|
+        decl.to_h do |key, opt|
+          next [key, opt] if %i[type optional].include?(key)
+
+          [key, opt.is_a?(Hash) ? opt.merge(if: -> { true }) : { if: -> { true } }]
+        end
+      },
+    )
+  end
+
+  # The INBOUND looseness direction. The schema may say less than the runtime — beyond its exact core, a
+  # check it cannot state faithfully is left out — but never silently: a value the document accepts and the
+  # runtime rejects must be explained by a residue the class reports (`input_schema_residues`, the same list
+  # rendered into each property's `description`). A looseness with no residue is a defect in either tier.
+  it "reports every value it accepts inbound that the runtime rejects" do
     wrong = []
     checked = 0
+    explained = 0
 
     each_cell do |tname, tklass, vname, vopts, tolname, tol|
       next if no_distinct_wire_form.include?(tname)
 
-      tokens = Array(tklass)
-      next if inexpressible_inbound?(vname, tokens)
-      next if known_unpatterned_numeric_string?(vname, tokens)
-      # Inbound, EVERY answer for a broad token rests on that same approximate `"string"`, so the whole row is
-      # the fallback's rather than any validator's.
-      next if broad_token?(tokens)
-      next if known_blank_tolerance_floor_drop?(tolname, vname)
+      all_gates.each do |gname, gate|
+        next if gname != "ungated" && vopts.empty?
 
-      klass = declare(:in, { type: tklass }.merge(vopts).merge(tol), nil)
-      next if klass.nil?
+        klass = declare(:in, gate.call({ type: tklass }.merge(vopts)).merge(tol), nil)
+        next if klass.nil?
 
-      document = schemer(klass.input_schema)
-      probe_values.each do |value|
-        next if known_blank_tolerance_divergence?(tolname, value)
+        document = schemer(klass.input_schema)
+        reported = klass.input_schema_residues.any?
+        probe_values.each do |value|
+          next if known_blank_tolerance_divergence?(tolname, value)
 
-        runtime_ok = begin
-          klass.call(n: value).ok?
-        rescue StandardError
-          false
+          runtime_ok = begin
+            klass.call(n: value).ok?
+          rescue StandardError
+            false
+          end
+          checked += 1
+          next unless document.valid?({ "n" => value }) && !runtime_ok
+
+          if reported
+            explained += 1
+            next
+          end
+
+          wrong << "#{tname} / #{vname} / #{tolname} / #{gname}: document accepts #{value.inspect}, runtime " \
+                   "rejects it, and nothing is reported — schema #{klass.input_schema[:properties][:n].inspect}"
         end
-        checked += 1
-        next unless document.valid?({ "n" => value }) && !runtime_ok
-
-        wrong << "#{tname} / #{vname} / #{tolname}: document accepts #{value.inspect}, runtime rejects it, " \
-                 "schema #{klass.input_schema[:properties][:n].inspect}"
       end
     end
 
-    expect(checked).to be > 400
-    expect(wrong).to be_empty, "these schemas accept what the runtime rejects:\n  #{wrong.join("\n  ")}"
+    expect(checked).to be > 1000
+    # The residue path is reached, or "reported" would be passing by never being asked.
+    expect(explained).to be > 100
+    expect(wrong).to be_empty, "these schemas accept what the runtime rejects without saying so:\n  #{wrong.join("\n  ")}"
   end
 
   # The three examples above declare a single FLAT field, which leaves the whole nested-subfield surface
@@ -332,41 +359,10 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
     !Axn::Internal::Reflection::Schema.dropped_deep_subfields(klass.internal_field_configs, klass.subfield_configs).empty?
   end
 
-  # The other excluded shape, asked of the emitter for the same reason: a declaration this document cannot
-  # state in full REPORTS that, as a residue rendered into the relevant `description`. A transforming node
-  # colliding with a member is the case — its keywords judge the coercion's target, and translating them
-  # back to the wire form means inverting the transform, which reflection cannot do. So the emitter stands
-  # down to the side that does describe the wire, and the position is knowingly looser than the runtime.
-  #
-  # Asking for the residue rather than re-deriving the condition is what keeps this from drifting: a row
-  # excluded here is exactly a row the document admits it cannot describe, and one that stops reporting a
-  # residue stops being excluded on the same commit.
-  def residues_for(klass)
-    residues = []
-    Axn::Internal::Reflection::Schema.build_input_for(klass, residues:)
-    residues
-  end
-
-  # Narrowed to `:inherent`/`:unfixed`, and the narrowing matters more than the exclusion. Written as "any
-  # residue at all", this laundered every conditional stand-down out of the walk below — and since a
-  # conditional stand-down is the one thing here that RELAXES a document, that hid the entire class of
-  # inbound looseness it can cause. Six review rounds then had to find those cases by reading, in a file
-  # whose whole purpose is to find them by measuring.
-  #
-  # A `:inherent` residue is different in kind from a `:conditional` one: nothing about it relaxes what
-  # the document says relative to the wire form it can describe — it names a constraint on a value the
-  # wire never carries, which no keyword could have expressed. `:unfixed` (PRO-3441 round 2, PR #285:
-  # `NESTED_AXIS_RESIDUE`) DOES relax the document relative to the runtime — the emitter chose not to
-  # duplicate a whole nested `values:` axis into every colliding property, to keep the document's size
-  # bounded — but it is the SAME kind of thing this file's own exclusion doctrine already treats as
-  # reported rather than hidden: a NAMED, ARGUED, declaration-time-visible trade, not a runtime-dependent
-  # gate silently narrowing coverage. Its own residue message says explicitly what it declined to state,
-  # which is exactly what lets `:unfixed` residues "shrink as they're closed" (the Residue kind's own
-  # doc) rather than accumulate as blind spots — a `:conditional` residue offers no such argument and
-  # stays excluded from THIS exclusion.
-  def reported_residue_kinds = %i[inherent unfixed]
-
-  def reported_inexpressible?(klass) = residues_for(klass).any? { |_path, residue| reported_residue_kinds.include?(residue.kind) }
+  # What the document reports it leaves out, asked of the public reader an adapter reads — not re-derived, so
+  # a row explained here is exactly a row whose document admits it cannot describe the contract, and one that
+  # stops reporting a residue stops being explained on the same commit.
+  def residues_for(klass) = klass.input_schema_residues
 
   def nested_members
     {
@@ -519,9 +515,11 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
     type == "object" || (type.is_a?(Array) && type.include?("object"))
   end
 
-  it "never accepts inbound a nested value the runtime rejects" do
+  # The looseness direction over the nested walk, on the flat walk's terms: a payload the document accepts and
+  # the runtime rejects must be explained by a residue the class reports.
+  it "reports every nested value it accepts inbound that the runtime rejects" do
     checked = 0
-    reported = 0
+    explained = 0
     wrong = []
 
     nested_members.each do |mname, member|
@@ -530,12 +528,8 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
         next if klass.nil?
         next if unrepresentable_deep_drop?(klass)
 
-        if reported_inexpressible?(klass)
-          reported += 1
-          next
-        end
-
         document = schemer(klass.input_schema)
+        reported = residues_for(klass).any?
         nested_payloads.each do |payload|
           runtime_ok = begin
             klass.call(payload:).ok?
@@ -545,18 +539,57 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
           checked += 1
           next unless document.valid?(JSON.parse(JSON.generate("payload" => payload))) && !runtime_ok
 
-          wrong << "#{mname} / #{nname}: document accepts #{payload.inspect}, runtime rejects it, " \
-                   "schema #{klass.input_schema[:properties][:payload].inspect}"
+          if reported
+            explained += 1
+            next
+          end
+
+          wrong << "#{mname} / #{nname}: document accepts #{payload.inspect}, runtime rejects it, and nothing " \
+                   "is reported — schema #{klass.input_schema[:properties][:payload].inspect}"
         end
       end
     end
 
     expect(checked).to be > 150
-    # The transforming rows must actually REACH the stand-down: an exclusion that never fires would make
-    # the rows above decorative, and a change that silently stopped emitting residues would pass this walk
-    # by simply not having anything to exclude.
-    expect(reported).to be > 5
-    expect(wrong).to be_empty, "these nested schemas accept what the runtime rejects:\n  #{wrong.join("\n  ")}"
+    # The transforming and gated rows must actually REACH a residue: an explanation that never fires would make
+    # them decorative.
+    expect(explained).to be > 5
+    expect(wrong).to be_empty, "these nested schemas accept what the runtime rejects without saying so:\n  #{wrong.join("\n  ")}"
+  end
+
+  # The never-stricter direction over the nested walk: a gated member or node is skipped on the calls its
+  # condition closes, so the merged document must admit what the runtime admits then — including a payload
+  # that omits the gated position altogether.
+  it "never rejects inbound a nested value the runtime accepts" do
+    accepted = 0
+    wrong = []
+
+    nested_members.each do |mname, member|
+      nested_nodes.each do |nname, node|
+        klass = declare_nested(member, node)
+        next if klass.nil?
+        next if unrepresentable_deep_drop?(klass)
+
+        document = schemer(klass.input_schema)
+        nested_payloads.each do |payload|
+          runtime_ok = begin
+            klass.call(payload:).ok?
+          rescue StandardError
+            false
+          end
+          next unless runtime_ok
+
+          accepted += 1
+          next if document.valid?(JSON.parse(JSON.generate("payload" => payload)))
+
+          wrong << "#{mname} / #{nname}: runtime accepts #{payload.inspect}, document rejects it, " \
+                   "schema #{klass.input_schema[:properties][:payload].inspect}"
+        end
+      end
+    end
+
+    expect(accepted).to be > 100
+    expect(wrong).to be_empty, "these nested schemas reject what the runtime accepts:\n  #{wrong.join("\n  ")}"
   end
 
   # The satisfiability corollary over the NESTED walk. The flat example above asked it of one field, and
@@ -613,12 +646,9 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
   # elsewhere in this PR closes.
   #
   # Excluded, both taken from the emitter rather than re-derived (`unrepresentable_deep_drop?` above):
-  # a residue means the emitted document ITSELF already admits it cannot state the full contract, and here
-  # that includes every `:conditional` stand-down too, not only `reported_inexpressible?`'s `:inherent`
-  # ones — a GATED side declared alone emits its full, unconditional property (nothing here closes its
-  # gate), so the merged document is legitimately LOOSER than that side's own alone document by design, not
-  # by defect. Verified: narrowing this exclusion to `:inherent` alone manufactures 8+ findings, every one a
-  # gated row whose own residue already names the gap.
+  # a residue means the emitted document ITSELF already admits it cannot state the full contract — a
+  # transforming side stands down, and a merge reports what it declined to conjoin — so the merged document
+  # may be looser than a side's own alone document by design, and says so.
   def collision_reports_a_residue?(klass) = residues_for(klass).any?
 
   it "never accepts merged what either colliding declaration would refuse alone" do
@@ -635,7 +665,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
         next if unrepresentable_deep_drop?(both)
 
         if collision_reports_a_residue?(both)
-          residues_for(both).each { |path_and_residue| excluded[path_and_residue.last.kind] += 1 }
+          residues_for(both).each { |residue| excluded[residue.kind] += 1 }
           next
         end
 

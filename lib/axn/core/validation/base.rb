@@ -154,8 +154,8 @@ module Axn
         # Judge only the REAL validators: ActiveModel's shared options (if:/unless:/on:/strict:/
         # allow_blank:/allow_nil:) ride in the validations hash but aren't validators, so a restored
         # `strict: true` under a tolerance flag must not read as a nil-rejecting validator and wrongly
-        # mark the field required. The judgment is static-maximal: gated validators are counted as if
-        # their gates were open (a condition can only relax enforcement at runtime, never tighten it).
+        # mark the field required. Gated validators are counted as if their gates were open; schema
+        # reflection asks it of the gate-closed validations instead, and names what a gate relaxes.
         v = validator_entries(validations)
         return true if v.empty?
 

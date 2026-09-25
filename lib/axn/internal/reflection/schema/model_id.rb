@@ -170,7 +170,7 @@ module Axn
           # KNOWN LIMITATION (accepted divergence): this covers a shallow model field and its explicit shallow
           # id sibling. Self-referential id/model contracts nested under a parent (a `model:` subfield with a
           # sibling defaulted `<field>_id` subfield) are not reconciled here — the parent may reflect as
-          # required though runtime synthesizes it. That is the safe direction (stricter than runtime).
+          # required though runtime synthesizes it — a known stricter divergence in requiredness, tier 1.
           def apply_model_id_requiredness!(config, children, field_configs, properties, required, ann)
             # The key alone, not `model_id_property(config)` — this pass runs for EVERY model config
             # regardless of whether an explicit sibling exists, so re-deriving the whole property here
@@ -187,7 +187,8 @@ module Axn
             # A default at ANY depth under the model applies at read time (value-level defaults,
             # PRO-2889) — no synthesis is involved — so descendant omittability is the ordinary
             # annotation-derived rule, same as every other parent.
-            model_omittable = optional_for_schema?(config) && !children_require_presence?(children, ann)
+            model_omittable = (optional_for_schema?(config) || requiredness_conditionally_relaxable?(config)) &&
+                              !children_require_presence?(children, ann)
             return if model_omittable || (explicit_id && usable_default?(explicit_id, subfield: false))
 
             key = id_field.to_s

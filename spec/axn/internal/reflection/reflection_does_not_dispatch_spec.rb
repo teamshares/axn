@@ -192,8 +192,9 @@ module AxnNameDispatchProbe
       Class.new do
         include Axn
         axn_name name
-        expects(:payload, type: Hash) { field :inner, type: String }
-        expects :inner, on: :payload, type: String, optional: true, preprocess: ->(v) { v }
+        # A gap axn could close and does not yet (`:unfixed`) — the only kind the warning speaks for.
+        expects :payload, type: Hash, of: { values: { klass: Array, of: Integer } }
+        expects :inner, on: :payload
         def call; end
       end
     },

@@ -296,10 +296,9 @@ RSpec.describe "Axn class-level schema reflection" do
       expect(Array(klass.input_schema[:required])).to include("v")
     end
 
-    # A Proc default is unknowable at declaration (schema resolves it toward required) and a blank literal
-    # default is rejected by the default `presence: true`, so neither widens the divergence above.
+    # A blank literal default is rejected by the default `presence: true`, so it does not widen the divergence
+    # above.
     {
-      "a Proc default" => { type: Integer, default: -> { 1 } },
       "a blank literal default" => { type: Array, default: [] },
     }.each do |label, opts|
       it "still agrees for #{label}, which the schema cannot use to omit the field" do
@@ -314,6 +313,21 @@ RSpec.describe "Axn class-level schema reflection" do
         expect(Array(klass.input_schema[:required])).to include("v")
       end
     end
+  end
+
+  # A Proc default is unknowable at declaration, but it runs on the omitted call, so listing the field as
+  # required would reject a call the runtime takes. Requiredness is exact both ways, so the schema leaves it
+  # optional; a Proc whose value fails the field's own checks is the same accepted divergence as a non-blank
+  # invalid literal default.
+  it "leaves a field with a Proc default optional, since the default runs on the omitted call" do
+    klass = Class.new do
+      include Axn
+      def call = nil
+    end
+    klass.expects :v, type: Integer, default: -> { 1 }
+
+    expect(klass.call).to be_ok
+    expect(Array(klass.input_schema[:required])).not_to include("v")
   end
 
   # THE nil axis across axn's whole validator vocabulary: every key a declaration may carry, in the option
@@ -793,9 +807,10 @@ RSpec.describe "Axn class-level schema reflection" do
           .to raise_error(ArgumentError, /length:.*has an option ActiveModel cannot use/m)
       end
 
-      it "carries the flag's own floor when the author's floor has no whole size to carry" do
-        expect(schema_for(type: Array, optional: true, allow_empty: false, length: { minimum: Float::INFINITY }))
-          .to eq(type: %w[array null], minItems: 1)
+      it "carries the flag's own floor when the author's floor has no whole size to carry, and names the rest" do
+        prop = schema_for(type: Array, optional: true, allow_empty: false, length: { minimum: Float::INFINITY })
+        expect(prop).to include(type: %w[array null], minItems: 1)
+        expect(prop[:description]).to include('"length":{"minimum":"Infinity"}')
       end
 
       it "emits no floor for a maximum that admits an empty value" do
@@ -803,16 +818,19 @@ RSpec.describe "Axn class-level schema reflection" do
       end
     end
 
-    # A gated entry MAY be open on a given call, so its floor is emitted as if the gate were open —
-    # static-maximal, which can leave the input schema stricter than a closed-gate runtime but never looser,
-    # and is the policy for every gated constraint here.
+    # A gated entry is skipped on the calls its gate closes, so its floor is left out — emitted, it would reject
+    # the empty value those calls accept — and named in the description instead.
     describe "an entry a gate may skip" do
-      it "emits the floor of a gated presence:, which a call may run" do
-        expect(schema_for(type: Array, presence: { if: :flag })).to eq(type: "array", minItems: 1)
+      it "leaves out the floor of a gated presence:, and names it" do
+        prop = schema_for(type: Array, presence: { if: :flag })
+        expect(prop.except(:description)).to eq(type: "array")
+        expect(prop[:description]).to include("applies only on the calls its condition opens", '"minItems":1')
       end
 
-      it "emits the floor of a gated length:, which a call may run" do
-        expect(schema_for(type: Array, presence: false, length: { minimum: 3, if: :flag })).to eq(type: "array", minItems: 3)
+      it "leaves out the floor of a gated length:, and names it" do
+        prop = schema_for(type: Array, presence: false, length: { minimum: 3, if: :flag })
+        expect(prop.except(:description)).to eq(type: "array")
+        expect(prop[:description]).to include("applies only on the calls its condition opens", '"minItems":3')
       end
     end
 
@@ -869,9 +887,14 @@ RSpec.describe "Axn class-level schema reflection" do
         expect(prop[:items]).to include(type: "object")
       end
 
-      it "leaves an unshaped unmappable type on its permissive fallback" do
-        expect(shaped_schema_for(type: bag)).to eq(type: "string", minLength: 1)
-        expect(schema_for(type: Set)).to eq(type: "string", minLength: 1)
+      # A class JSON has no type for asserts none; the required position still rejects every blank, and the
+      # class itself is named in the description.
+      it "leaves an unshaped unmappable type untyped, floored by value, and named" do
+        [shaped_schema_for(type: bag), schema_for(type: Set)].each do |prop|
+          expect(prop).not_to have_key(:type)
+          expect(prop[:not]).to eq(enum: ["", [], {}, false, nil])
+          expect(prop[:description]).to include('"type":{"klass":')
+        end
       end
     end
 
@@ -910,8 +933,10 @@ RSpec.describe "Axn class-level schema reflection" do
     # Never emit a constraint the contract accepts (the rule the uuid-format relaxation follows): a
     # blank-tolerant entry admits the empty value, and "empty or at least N" is not expressible as a floor.
     describe "blank tolerance" do
-      it "emits no floor for an explicit length minimum the field tolerates blank around" do
-        expect(schema_for(type: String, length: { minimum: 3 }, allow_blank: true)).to eq(type: %w[string null])
+      it "emits no floor for an explicit length minimum the field tolerates blank around, and names it" do
+        prop = schema_for(type: String, length: { minimum: 3 }, allow_blank: true)
+        expect(prop.except(:description)).to eq(type: %w[string null])
+        expect(prop[:description]).to include('"length":{"minimum":3')
       end
 
       it "emits no floor for a blank-tolerant presence check" do
@@ -957,16 +982,18 @@ RSpec.describe "Axn class-level schema reflection" do
           expect(schema_for(**opts)).to eq(type: "string", minLength: 3)
         end
 
-        it "emits no floor when nothing else rejects the empty value" do
+        it "emits no floor when nothing else rejects the empty value, and names it" do
           opts = { type: String, optional: true, length: { minimum: 3, allow_blank: true } }
           expect(action_for(**opts).call(v: "")).to be_ok
-          expect(schema_for(**opts)).to eq(type: %w[string null])
+          expect(schema_for(**opts).except(:description)).to eq(type: %w[string null])
+          expect(schema_for(**opts)[:description]).to include('"length":{"minimum":3')
         end
 
-        it "emits no floor when the only other check is one that is switched off" do
+        it "emits no floor when the only other check is one that is switched off, and names it" do
           opts = { type: String, presence: false, length: { minimum: 3, allow_blank: true } }
           expect(action_for(**opts).call(v: "")).to be_ok
-          expect(schema_for(**opts)).to eq(type: "string")
+          expect(schema_for(**opts).except(:description)).to eq(type: "string")
+          expect(schema_for(**opts)[:description]).to include('"length":{"minimum":3')
         end
       end
     end
@@ -989,8 +1016,10 @@ RSpec.describe "Axn class-level schema reflection" do
           .to eq(type: %w[array null], minItems: 3)
       end
 
-      it "still drops the floor when allow_empty: is not declared at all" do
-        expect(schema_for(type: Array, optional: true, length: { minimum: 3 })).to eq(type: %w[array null])
+      it "still drops the floor when allow_empty: is not declared at all, and names it" do
+        prop = schema_for(type: Array, optional: true, length: { minimum: 3 })
+        expect(prop.except(:description)).to eq(type: %w[array null])
+        expect(prop[:description]).to include('"length":{"minimum":3')
       end
     end
 

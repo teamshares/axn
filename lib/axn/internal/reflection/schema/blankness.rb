@@ -158,7 +158,7 @@ module Axn
           # therefore be satisfiability-usable AND not a blank literal. A Proc default stays optimistic
           # (unknowable at declaration), matching usable_default?'s satisfiability doctrine.
           def usable_id_token_default?(config)
-            return false unless usable_default?(config, subfield: true, satisfiability: true)
+            return false unless usable_default?(config, subfield: true)
 
             value = declared_attribute(config, :default)
             return true if value.is_a?(Proc)

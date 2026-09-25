@@ -75,7 +75,7 @@ module Axn
           # land beside the `anyOf` at this node rather than inside each branch. Existing behavior, preserved
           # deliberately rather than corrected here.
           def contents_node_schema(bag, for_output:, ancestry: nil)
-            constraints = bag_value_constraints(bag, for_output:)
+            constraints = bag_value_constraints(bag)
             # A declared `klass:` decides the type, exactly as `type:` does at a field. With none, the type is
             # INFERRED from the bag's own validators — through `json_type_for`, the function the field path
             # already uses for that, rather than a second inference beside it. Without this a validator-only bag
@@ -96,15 +96,16 @@ module Axn
             # the bag — a `klass:` naming NilClass admits it until another validator on the same bag rejects it.
             # Hard-coding it left `of: { klass: [String, NilClass], presence: true }` advertising a `null` branch
             # the runtime rejects, and stripped nil from an enum at a position that accepts it.
-            nullable = bag_nullable?(bag, for_output:)
+            nullable = bag_nullable?(bag)
             node = reconcile_contents_nullability(node, nullable:, for_output:)
             # The bag's value validators (PRO-3193), through the same projector a named position uses. Applied
             # before the member/contents merges below so a `type:` those steps install cannot be read as the type
             # a keyword should key off — the node's type here is the bag's own `klass:`, which is what the
             # validators constrain.
             apply_value_constraints!(node, constraints, nullable:, for_output:, declared_klass: bag[:klass])
+            node = with_bag_gating_residues(node, bag) unless for_output
             node = contents_member_schema(node, bag, for_output:, ancestry:)
-            inner = emitted_contents_edge(bag, :of, for_output:)
+            inner = emitted_contents_edge(bag, :of)
             return node if nil.equal?(inner)
 
             guard_contents_descent(inner, ancestry, edge: INNER_CONTRACT_EDGE) do |child|
@@ -122,6 +123,26 @@ module Axn
                 contents = contents_node_schema(inner, for_output:, ancestry: child)
                 contents.empty? ? node : node.merge(items: contents)
               end
+            end
+          end
+
+          # A bag's self-gated entries are reduced away with their gate closed (`bag_value_constraints`,
+          # `emitted_contents_edge`), exactly as a field's are; inbound, each is named on the node it would have
+          # constrained. A validator is rendered as written; a gated `of:`/`shape:` edge by name, since its value
+          # is a nested contract rather than a constraint a reader can act on.
+          def with_bag_gating_residues(node, bag)
+            Axn::Internal::ShapeGraph::INNER_CONTRACT_EDGES.each do |edge|
+              entry = Axn::Internal::ShapeGraph.hash_or_nil(bag[edge])
+              next if nil.equal?(entry) || !entry_self_gated?(entry)
+
+              node = record_residue(node, "#{GATED_RESIDUE} (its `#{edge}:` contract)", kind: :conditional)
+            end
+            gated = Axn::Validation::Base.validator_entries(bag)
+                                         .except(*Axn::Internal::ShapeGraph::POSITION_DESCRIPTION_KEYS,
+                                                 *Axn::Internal::ShapeGraph::INNER_CONTRACT_EDGES)
+                                         .select { |_key, opt| entry_self_gated?(opt) }
+            gated.sort_by { |key, _opt| key.to_s }.reduce(node) do |acc, (key, opt)|
+              record_residue(acc, "#{GATED_RESIDUE} (#{render_constraint({ key => ungated_options(opt) })})", kind: :conditional)
             end
           end
 
@@ -187,7 +208,7 @@ module Axn
           # type and validates members against it without ever emitting them, and on OUTPUT a class that is not
           # provably member-keyed is left untyped rather than promising an object the serializer will not produce.
           def contents_member_schema(node, bag, for_output:, ancestry: nil)
-            shape = emitted_contents_edge(bag, :shape, for_output:)
+            shape = emitted_contents_edge(bag, :shape)
             return node if nil.equal?(shape)
             return node unless shape_overlay_applies?(bag, for_output:)
 
@@ -220,7 +241,7 @@ module Axn
             #     ActiveModel lets it override the position per key: `of: { allow_nil: true, shape: { …,
             #     allow_nil: false } }` runs `ShapeValidator` on the nil and rejects it as unreadable.
             shape_tolerance = Axn::Validation::Base.effective_entry_options(shape, Axn::Validation::Base.tolerance_options(bag))
-            nullable = bag_nullable?(bag, for_output:) &&
+            nullable = bag_nullable?(bag) &&
                        !!(shape_tolerance[:allow_nil] || shape_tolerance[:allow_blank])
             merged = node.merge(type: type_with_nullability("object", nullable:),
                                 properties: (node[:properties] || {}).merge(member_props))
@@ -228,19 +249,18 @@ module Axn
             merged
           end
 
-          # One edge of a bag, reduced on OUTPUT exactly as a field's entries are (`effective_validations`): an
-          # entry carrying a per-validator gate of its own can be skipped on any given call, so what it
-          # constrains cannot be promised outbound and the schema must not describe it. A bag's `of:`/`shape:`
+          # One edge of a bag, reduced exactly as a field's entries are (`effective_validations`): an entry
+          # carrying a per-validator gate of its own can be skipped on any given call, so what it constrains
+          # cannot be promised in either direction and the schema must not describe it. A bag's `of:`/`shape:`
           # ARE the next level's ActiveModel entries — `OfValidator#inner_contract_validations` hands them over
           # verbatim — so a gate written on one gates it exactly as the same gate at a field does. Asked here
           # rather than only at the top level because a distributing `shape:` is canonicalized INTO a bag
           # (PRO-3166), so the gated node the field-level reduction used to drop now arrives one rung down.
           #
-          # INPUT is untouched, for the reason `effective_validations` leaves it untouched: static-maximal is the
-          # safe direction there, since a gate can only relax enforcement at runtime.
-          def emitted_contents_edge(bag, key, for_output:)
+          # Inbound, the edge left out is named on the node (`with_bag_gating_residues`).
+          def emitted_contents_edge(bag, key)
             edge = Axn::Internal::ShapeGraph.hash_or_nil(bag[key])
-            return nil if !nil.equal?(edge) && for_output && entry_self_gated?(edge)
+            return nil if !nil.equal?(edge) && entry_self_gated?(edge)
 
             edge
           end
@@ -331,7 +351,7 @@ module Axn
             # own, and an axis that constrained nothing reduces to `{}` and emits no `propertyNames` at all.
             node = { type: "string" }
             apply_value_constraints!(node, key_axis_constraints(axis, for_output:), nullable: false, for_output:, property_names: true)
-            admit_empty_wire_key!(node) if for_output && bag_nullable?(axis, for_output:)
+            admit_empty_wire_key!(node) if for_output && bag_nullable?(axis)
             node.except(:type)
           end
 
@@ -363,7 +383,7 @@ module Axn
           # reach that mismatch: an inbound key is the wire string itself, and the reachability gate above has
           # already turned the whole projection away for an axis that could not be satisfied from JSON at all.
           def key_axis_constraints(axis, for_output:)
-            constraints = bag_value_constraints(axis, for_output:)
+            constraints = bag_value_constraints(axis)
             return constraints unless for_output
             return constraints if own_wire_form?(axis[:klass])
 
@@ -373,8 +393,8 @@ module Axn
           # Whether the value at a bag's position may be nil — `Base.nil_accepted?`, the same seam a field's
           # `nil_allowed?` reads, asked of the bag's own `klass:` and validators. A bag that constrains nothing at
           # all admits nil, exactly as an empty validator set does at a field.
-          def bag_nullable?(bag, for_output:)
-            validations = bag_value_constraints(bag, for_output:)
+          def bag_nullable?(bag)
+            validations = bag_value_constraints(bag)
             klass = bag[:klass]
             # Synthesized in the CANONICAL `type:` shape a field's stored validations carry. A bare token would be
             # normalized as a validator scalar and read under the wrong key entirely, so `type_admits_nil?` would
@@ -443,7 +463,7 @@ module Axn
           # The other shared options do NOT come through. A gate is reduced away by `effective_validations` on
           # output and means nothing to the document on input, and the context/strict options are refused at
           # declaration.
-          def bag_value_constraints(bag, for_output:)
+          def bag_value_constraints(bag)
             constraints = Axn::Validation::Base.validator_entries(bag)
                                                .except(*Axn::Internal::ShapeGraph::POSITION_DESCRIPTION_KEYS,
                                                        *Axn::Internal::ShapeGraph::INNER_CONTRACT_EDGES)
@@ -468,7 +488,7 @@ module Axn
             # the bag's own runtime never acts on and put `minLength: 1` on a position that accepts `""`. Nothing
             # downstream distinguishes "false" from "absent" — every reader here asks a truthy question — so
             # dropping it costs no other case its answer.
-            effective_validations(constraints, for_output:)
+            effective_validations(constraints)
               .merge(Axn::Validation::Base.true_tolerance_options(bag))
           end
 
@@ -513,14 +533,16 @@ module Axn
             named_members(members).each do |m, name|
               key = name.to_sym
               props[key] = build_property(m, for_output:, ancestry:).compact
-              # On OUTPUT, a member whose presence obligation can be gated off — either wholesale by a
-              # declaration-level gate, or because every nil-rejecting entry is nil-tolerant or covered by a
-              # per-validator (nested) gate — can legitimately be skipped or emitted without a value by a
-              # closed gate (the serializer emits no key, or a nil/blank one, for it). requiredness_conditionally_relaxable?
-              # (superset of conditionally_gated?) subsumes both cases, so requiredness is dropped along with
-              # (already-handled) gated constraints. INPUT stays static-maximal (a client is still expected to
-              # send the member) — stricter, and safe.
-              required << key.to_s unless optional_for_schema?(m) || (for_output && requiredness_conditionally_relaxable?(m))
+              if !for_output && !optional_for_schema?(m) && requiredness_conditionally_relaxable?(m)
+                props[key] = record_residue(props[key], GATED_REQUIRED_RESIDUE, kind: :conditional)
+              end
+              # A member whose presence obligation can be gated off — either wholesale by a declaration-level
+              # gate, or because every nil-rejecting entry is nil-tolerant or covered by a per-validator (nested)
+              # gate — can legitimately be omitted on a call whose gate is closed (outbound, the serializer emits
+              # no key, or a nil/blank one, for it). requiredness_conditionally_relaxable? (superset of
+              # conditionally_gated?) subsumes both cases, so requiredness is dropped in both directions along with
+              # the gated constraints; inbound, the conditional requirement is named on the member above.
+              required << key.to_s unless optional_for_schema?(m) || requiredness_conditionally_relaxable?(m)
             end
             [props, required]
           end

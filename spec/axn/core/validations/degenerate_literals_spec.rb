@@ -205,7 +205,9 @@ RSpec.describe "a degenerate literal" do
       # rescues the runtime leaves nothing for a schema consumer to reject. Locked here rather than reasoned
       # about, so an emitter that started projecting a comparison bound fails on this example.
       comparison = build_axn { expects :v, type: Array, presence: false, comparison: { equal_to: 1, allow_blank: true } }
-      expect(comparison.input_schema[:properties][:v]).to eq({ type: "array" })
+      expect(comparison.input_schema[:properties][:v].except(:description)).to eq({ type: "array" })
+      # No keyword compares an array against a number, so the check is named rather than stated.
+      expect(comparison.input_schema[:properties][:v][:description]).to include('"comparison":{"equal_to":1')
 
       acceptance = build_axn { expects :v, type: Array, presence: false, acceptance: { allow_blank: true } }
       expect(acceptance.input_schema[:properties][:v]).to eq({ type: "array" })

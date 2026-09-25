@@ -70,11 +70,11 @@ module Axn
         # children are dropped (a scalar or `model:` route at the id key) raises nothing here — an unreachable
         # segment is `check_unanswerable_segments!`'s to report, and it runs first.
         #
-        # THE CLAIM IS THE ONE THE EMITTER WRITES. That scope is what makes this check answerable at
-        # declaration, and it is why no `if:`/`unless:` is consulted anywhere below: input reflection is
-        # static-maximal, so a gated declaration is advertised exactly as an ungated one is and the document
-        # carries the collision either way. A member reached through an EXPLICIT intermediate is such a claim
-        # like any other: the emitter conjoins it with the node's own property rather than replacing it
+        # THE CLAIM IS THE ONE THE EMITTER WRITES, ungated. That scope is what makes this check answerable at
+        # declaration. No `if:`/`unless:` is consulted anywhere below, so a gated claim — which the emitter
+        # reflects with its gate closed, and so does not write — is judged as though it were written: the
+        # conservative reading for a refusal that only protects schema precision (PRO-3507 retires it). A member
+        # reached through an EXPLICIT intermediate is such a claim like any other: the emitter conjoins it with the node's own property rather than replacing it
         # (PRO-3399), so nothing here has to ask whether a runtime-only claim is enforced on a given call —
         # a question about ActiveModel's gate resolution that would have had to be re-derived here, and the
         # reason the case was once out of scope.
@@ -211,9 +211,8 @@ module Axn
         # carries members of its own, so `apply_structured_schema!` merges an object property at that key before
         # `apply_model_id_child!` ever runs.
         #
-        # No gate is consulted, deliberately: every claim this guard reads is one the emitter WRITES, and
-        # input reflection is static-maximal — a gated member is advertised exactly as an ungated one is, so
-        # the document carries the collision either way.
+        # No gate is consulted: a gated member is judged as though the emitter wrote it (see
+        # `check_model_id_claims!` above).
         def claiming_shape_member(parent_configs, id_key)
           Axn::Internal::Reflection::Schema.shape_members_at(parent_configs, id_key).find do |member|
             object_contents_of(member)
@@ -399,7 +398,7 @@ module Axn
           # The model's OWN usable default supplies a record on omission, so the tolerance is
           # exercisable regardless of a required descendant — mirrors field_optional?'s parent-default
           # short-circuit (checked BEFORE the child test, not gated behind it).
-          return true if Axn::Internal::Reflection::Schema.usable_default?(config, subfield: false, satisfiability: true)
+          return true if Axn::Internal::Reflection::Schema.usable_default?(config, subfield: false)
 
           Axn::Internal::Reflection::Schema.optional_for_schema?(config, satisfiability: true) &&
             !Axn::Internal::Reflection::Schema.children_require_presence?(node.children, ann)
