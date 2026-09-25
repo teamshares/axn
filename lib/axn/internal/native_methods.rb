@@ -474,13 +474,19 @@ module Axn
       #
       # Frozen is NOT one of those cases — an ordinary frozen object hands back a frozen singleton class — which
       # matters because re-raising a frozen exception is supported and asks this question first.
+      #
+      # Public (unlike the readers it once sat privately behind) for one caller that needs the Module itself
+      # rather than a question already answered about it: a verdict that must be computed identically for a
+      # DECLARED class and for a VALUE's own table — e.g. "does this ownership rule pick out the same method
+      # here as it would on the class?" — is one function called with a class in one place and with this
+      # Module in the other, rather than two functions that could drift. Read-only: nothing may define,
+      # undefine, or otherwise install onto what this returns — the value's dispatch table is the caller's,
+      # not this reader's, to change.
       def self.method_table(value)
         KERNEL_SINGLETON_CLASS.bind_call(value)
       rescue ::TypeError
         KERNEL_CLASS.bind_call(value)
       end
-
-      private_class_method :method_table
 
       # Whether this NAME renders through Ruby's own code, which is the condition for "the property a rule judged
       # is the property every consumer reads".

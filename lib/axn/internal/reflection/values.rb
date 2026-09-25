@@ -93,6 +93,24 @@ module Axn
                                           "Declare the field under a UTF-8 name."
         private_constant :UNRENDERABLE_FIELD_BYTES_REASON
 
+        # One position in `output_schema` whose properties were reflected from a Data/Struct's own members
+        # (PRO-3284) — built by `Schema.output_render_guards`, which this module never calls; Values only
+        # ever RECEIVES one, threaded alongside the value being serialized, and descends it in lockstep.
+        #
+        # `classes` are the declared Data/Struct tokens this position's schema was reflected from — checked
+        # against the value in hand via `displacing_projection` below. `members`/`items`/`values` are how the
+        # renderer continues into a Hash's named keys, an Array's elements, or a Hash's `additionalProperties`
+        # axis; each is nil where that axis carries nothing further to check. `members` is a Hash rather than
+        # only checked-by-presence: a KEY present with a nil value means "this shaped key exists and needs no
+        # check of its own", which `entry` below relies on to avoid misrouting it to `values`.
+        RenderGuard = Data.define(:classes, :members, :items, :values) do
+          # The child guard for a Hash entry at `wire_key`: the shaped key's OWN guard if this position
+          # declared one (nil included — see `members`' own comment), else the map's `values` axis. A
+          # PRESENT key wins over `values` even when its own guard is nil, which `Hash#fetch`'s default block
+          # (invoked only for an ABSENT key) makes exact.
+          def entry(wire_key) = members.key?(wire_key) ? members[wire_key] : values
+        end
+
         module_function
 
         # Result → JSON-safe Hash keyed by wire key (string), over declared outbound configs.
@@ -109,7 +127,7 @@ module Axn
         # `field_configs` is the action's own declared config list rather than caller-supplied data, so the
         # each-only rule the container walks below follow does not bind here: this list cannot be a subclass
         # whose `each_with_object` substitutes configs.
-        def serialize_exposed(result, field_configs, reject_opaque: false)
+        def serialize_exposed(result, field_configs, reject_opaque: false, guards: nil)
           claimed = {}
 
           field_configs.each_with_object({}) do |config, hash|
@@ -125,7 +143,8 @@ module Axn
             raise_colliding_fields!(wire_key, claimed.fetch(wire_key), config.field) if claimed.key?(wire_key)
 
             claimed[wire_key] = config.field
-            hash[wire_key] = serialize_value(result.public_send(config.field), path: wire_key, reject_opaque:)
+            guard = guards && guards[wire_key]
+            hash[wire_key] = serialize_value(result.public_send(config.field), path: wire_key, reject_opaque:, guard:)
           end
         end
 
@@ -144,7 +163,11 @@ module Axn
         # Public for one caller outside this module: Reflection::Schema renders a literal `default:`
         # through it, so a schema's wire form and the serializer's agree by construction. Not part of
         # the adapter surface — a whole result renders through Axn::Extensions::Serialization.render.
-        def serialize_value(value, path: "(exposed value)", seen: nil, reject_opaque: false)
+        #
+        # `guard:` is this position's `RenderGuard` (PRO-3284), or nil at a position `Schema.output_render_guards`
+        # never built one for — the ordinary case, and every existing caller (the schema's own `default:`
+        # literals, every pre-PRO-3284 spec) passes none and behaves exactly as it always has.
+        def serialize_value(value, path: "(exposed value)", seen: nil, reject_opaque: false, guard: nil)
           case value
           when nil, Integer, TrueClass, FalseClass
             value
@@ -176,7 +199,8 @@ module Axn
               # list it walks is the capture's own, so `each_with_object` here is Array's own.
               entries = capture_hash_entries(value, path, reject_opaque:)
               rendered = entries.each_with_object({}) do |(wire_key, _key, element), acc|
-                acc[wire_key] = serialize_value(element, path: "#{path}.#{wire_key}", seen: nested, reject_opaque:)
+                acc[wire_key] = serialize_value(element, path: "#{path}.#{wire_key}", seen: nested, reject_opaque:,
+                                                         guard: guard&.entry(wire_key))
               end
 
               no_entries_lost!(rendered.size, entries.size, path)
@@ -190,7 +214,7 @@ module Axn
               # element per captured one, so the counts cannot diverge. An Array has no equivalent of two keys
               # collapsing into one property — an index is a position, not a projection of a caller's object.
               capture_elements(value).each_with_index.map do |element, index|
-                serialize_value(element, path: "#{path}[#{index}]", seen: nested, reject_opaque:)
+                serialize_value(element, path: "#{path}[#{index}]", seen: nested, reject_opaque:, guard: guard&.items)
               end
             end
           when Time, DateTime, Date
@@ -199,6 +223,8 @@ module Axn
             # outside Rails, so `serialize_exposed` output validates against the reflected schema.
             encodable_string!(value.iso8601, source: value, path:)
           else
+            refuse_displaced_projection!(value, guard, path) if guard
+
             projection = projection_for(value)
 
             # Guarded on the SOURCE object, not the Hash it yields: #as_json/#to_h build a fresh Hash on
@@ -214,9 +240,12 @@ module Axn
                 raise Axn::Extensions::Serialization::UnserializableValue.new(path:, value:, reason: OPAQUE_AS_JSON_REASON)
               end
 
-              within_container(value, path, seen) { |nested| serialize_value(value.as_json, path:, seen: nested, reject_opaque:) }
+              # `guard:` rides along into the recursion: the rendered Hash's entries are the SAME position's
+              # members (a Data/Struct's own as_json/to_h projects onto the declared members' names whenever
+              # it hasn't been refused above), so the Hash arm above resumes the identical guard tree.
+              within_container(value, path, seen) { |nested| serialize_value(value.as_json, path:, seen: nested, reject_opaque:, guard:) }
             when :to_h
-              within_container(value, path, seen) { |nested| serialize_value(value.to_h, path:, seen: nested, reject_opaque:) }
+              within_container(value, path, seen) { |nested| serialize_value(value.to_h, path:, seen: nested, reject_opaque:, guard:) }
             else
               raise Axn::Extensions::Serialization::UnserializableValue.new(path:, value:, reason: OPAQUE_VALUE_REASON) if reject_opaque && default_to_s?(value)
 
@@ -603,6 +632,122 @@ module Axn
           raise Axn::Extensions::Serialization::UnserializableValue.new(path: "#{path} (hash key)", value: key, reason: OPAQUE_KEY_REASON)
         end
 
+        # The classes whose `as_json`/`to_h` are FRAMEWORK-installed, member-keyed rewrites of Ruby's own
+        # built-ins rather than a caller's override: ActiveSupport's core_ext reopens Data/Struct/Hash (and
+        # Object) with such methods, and none of the four ever emits anything but a member-keyed rendering
+        # of the values this module already renders that way. Any OTHER owner means the value's class (or
+        # an included module, or the value's own singleton) displaces the built-in.
+        #
+        # Lives here, not in Schema, because it describes what serialize_value FOLLOWS — the renderer is the
+        # source of truth this rule is about — and `displacing_projection` below is what Schema calls to ask
+        # the identical question of a declared class.
+        FRAMEWORK_PROJECTION_OWNERS = [::Data, ::Struct, ::Hash, ::Object].freeze
+        private_constant :FRAMEWORK_PROJECTION_OWNERS
+
+        # The method a receiver of `mod`'s table would serialize through INSTEAD of the built-in member-keyed
+        # `to_h` — or nil when nothing displaces it. `mod` is a Module either way: the DECLARED class itself
+        # (Schema's question, asked once per class while building `output_schema`) or
+        # `NativeMethods.method_table(value)` (asked once per render, of the runtime value actually being
+        # serialized). One predicate evaluated on two Modules, so the schema and the renderer cannot disagree
+        # about what counts as an override — the schema calls this to decide whether a shape's members are
+        # provably what serialize_value renders, and the renderer calls it again on the value in hand to
+        # catch the case where they diverge.
+        #
+        # Visibility differs by method for the reason serialize_value's own routing does: `as_json` is
+        # reached by DISPATCH (`projection_for` below gates on `respond_to?`), so only a PUBLIC override
+        # displaces anything — a protected/private one cannot be called at all, and the value falls through
+        # to the public built-in `to_h`. `to_h` is the FALLBACK, and an override at ANY visibility shadows
+        # `Struct#to_h`/`Data#to_h`: without ActiveSupport's core_ext the value then degrades to `to_s`, and
+        # with it `Struct#as_json`/`Data#as_json` is `to_h.as_json` — an implicit-receiver call, which reaches
+        # a non-public override too. Verified by serializing each case in both environments (with and
+        # without ActiveSupport's json core_ext), since the mechanism differs but the verdict does not.
+        def displacing_projection(mod)
+          return nil unless Axn::Internal::Identity.kind?(mod, ::Module)
+
+          if Axn::Internal::NativeMethods.public_instance_method?(mod, :as_json)
+            method = Axn::Internal::NativeMethods.declared_instance_method(mod, :as_json)
+            return method if method && !framework_projection_owner?(method.owner)
+          end
+
+          method = Axn::Internal::NativeMethods.declared_instance_method(mod, :to_h)
+          method && !framework_projection_owner?(method.owner) ? method : nil
+        end
+
+        def framework_projection_owner?(owner) = FRAMEWORK_PROJECTION_OWNERS.include?(owner)
+
+        # One fix per intent, appended to every DISPLACED_PROJECTION reason: whichever one applies, the
+        # author chose the override for a reason, so the message points at all three rather than guessing
+        # which the value in hand was written for.
+        DISPLACED_PROJECTION_FIX = "Fix it for the reason the override exists: to redact a member, expose a " \
+                                   "value that doesn't carry it (e.g. a plainer type without that field) and " \
+                                   "declare that type; if the value really has a different wire form, declare " \
+                                   "the type it renders as; if the override is accidental (e.g. from a mixin), " \
+                                   "remove it — or define the projection on the declared type itself, which " \
+                                   "leaves this position opaque (an empty `{}` in the schema), as any class " \
+                                   "with its own `as_json`/`to_h` already is."
+        private_constant :DISPLACED_PROJECTION_FIX
+
+        # Refuses a value whose own `as_json`/`to_h` would render something `guard`'s position in
+        # `output_schema` does not describe (PRO-3284) — the schema was reflected from a DECLARED
+        # Data/Struct's members, but this value's own table picks a different projection than the declared
+        # class's did. Runs before `projection_for` routes to that projection at all, so the divergence is
+        # caught rather than silently rendered.
+        #
+        # `guard.classes` names every declared class this position's schema could have been reflected from
+        # (more than one only at a contents union — see `Schema::RenderGuards`); the value is checked against
+        # whichever one it is actually an instance of. `Identity.kind?` is `Module#===`, undispatched.
+        #
+        # The declared class is asked the IDENTICAL question again, live, rather than trusted from when the
+        # guard was built: a class reopened with its own `as_json`/`to_h` AFTER the guard was memoized would
+        # make a rebuilt schema opaque for this position, and refusing against a stale verdict would raise
+        # where a fresh render would not.
+        def refuse_displaced_projection!(value, guard, path)
+          return if guard.classes.empty?
+
+          declared = guard.classes.find { |klass| Axn::Internal::Identity.kind?(value, klass) }
+          return if declared.nil?
+
+          table = Axn::Internal::NativeMethods.method_table(value)
+          method = displacing_projection(table)
+          return if method.nil?
+          return unless displacing_projection(declared).nil?
+
+          raise Axn::Extensions::Serialization::UnserializableValue.new(
+            path:, value:, reason: displaced_projection_reason(declared, method, table),
+          )
+        end
+
+        def displaced_projection_reason(declared, method, table)
+          "its position in `output_schema` was reflected from the declared type " \
+            "#{Axn::Internal::RenderedModuleName.of(declared)} — an object keyed by its members — but this " \
+            "value serializes through its own `##{method.name}`, " \
+            "#{displaced_projection_owner_label(method, table)}, so the rendered body would not match the " \
+            "published schema. #{DISPLACED_PROJECTION_FIX}"
+        end
+
+        # Where the displacing method came from, on the same terms `NameOwnership#owner_label` names a
+        # collision's owner. `table` is the value's OWN method table (`refuse_displaced_projection!`'s
+        # already-resolved singleton-or-class), so "defined on this value itself" is an IDENTITY comparison
+        # against it rather than a dispatched `owner.singleton_class?`, which a hostile Module could override
+        # on itself; a module Ruby can name is named and located; an anonymous module (a monkeypatch of a
+        # built-in, typically) is called that and still located — `method`'s own `source_location` needs no
+        # dispatch into anything the value or its class could override, since it is Ruby's own accessor on
+        # the UnboundMethod this module already resolved.
+        def displaced_projection_owner_label(method, table)
+          owner = method.owner
+          location = displaced_projection_location(method)
+          return "defined on this value itself (a singleton method)#{location}" if Axn::Internal::Identity.same?(owner, table)
+
+          name = Axn::Internal::NativeMethods.declared_module_name(owner)
+          named = name ? Axn::Internal::RenderedModuleName.of(owner) : "an anonymous module"
+          "defined in #{named}#{location}"
+        end
+
+        def displaced_projection_location(method)
+          file, line = method.source_location
+          file ? " (#{Axn::Internal::Text.renderable(file)}:#{line})" : ""
+        end
+
         # The projection serialize_value follows for a non-leaf object: its own `as_json` (defined on its
         # class or an included module, e.g. an ActiveRecord model), ActiveSupport's generic Object#as_json
         # (which a Rails app adds to every object, followed only when there is no `to_h` to prefer), `to_h`,
@@ -649,8 +794,10 @@ module Axn
         private_class_method :serialize_exposed, :encodable_string!, :utf8_rendering,
                              :finite_number!, :coerce_to_float, :within_container, :capture_hash_entries,
                              :own_wire_key, :no_entries_lost!, :raise_colliding_fields!, :owner_of,
-                             :capture_elements, :raise_colliding_keys!,
-                             :describe_key_classes, :check_opaque_key!, :projection_for, :default_to_s?
+                             :capture_elements, :raise_colliding_keys!, :framework_projection_owner?,
+                             :describe_key_classes, :check_opaque_key!, :projection_for, :default_to_s?,
+                             :refuse_displaced_projection!, :displaced_projection_reason,
+                             :displaced_projection_owner_label, :displaced_projection_location
       end
     end
   end

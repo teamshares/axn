@@ -85,6 +85,10 @@ RSpec.describe "reflection never dispatches to a declared type token" do
 
       action.input_schema
       action.output_schema
+      # PRO-3284: the render-time position map reuses the SAME per-node predicates the schema build above
+      # already exercised (member_keyed_object_type?, shape_serializes_to_object?, contents_object_class?,
+      # …), over the same declared tokens — so it must run under the identical no-dispatch guarantee.
+      Axn::Internal::Reflection::Schema.output_render_guards(action.external_field_configs)
 
       expect(log.uniq - ReflectionDispatchProbe::TOLERATED).to be_empty
     end

@@ -7,6 +7,7 @@ require "time"
 require "axn/internal/identity"
 require "axn/internal/native_methods"
 require "axn/internal/shape_graph"
+require "axn/internal/reflection/values"
 
 module Axn
   module Internal
@@ -110,7 +111,7 @@ module Axn
               next true unless Axn::Internal::Identity.kind?(k, ::Class)
               next true if k <= Hash
 
-              # Read from the method table, on the same terms as `custom_serialization?` and
+              # Read from the method table, on the same terms as `Values.displacing_projection` and
               # `framework_generated_reader?` — the three sites that ask this class of question now ask it one
               # way. (The `<=` comparisons around it stay dispatched: those are declared-type checks whose
               # failure mode is a self-correcting declaration error.)
@@ -150,41 +151,11 @@ module Axn
             return true if Axn::Internal::Identity.same?(klass, ::Hash)
             return false unless strict_descendant?(klass, ::Data) || strict_descendant?(klass, ::Struct)
 
-            # A Data/Struct serializes member-keyed via its built-in to_h — unless it carries a CUSTOM as_json
-            # OR a custom to_h, either of which serialize_value would follow instead (as_json first) and which
-            # may emit a scalar/array/differently-keyed hash.
-            !custom_serialization?(klass, :as_json, dispatchable_only: true) &&
-              !custom_serialization?(klass, :to_h, dispatchable_only: false)
-          end
-
-          # active_support reopens Data/Struct/Hash (and Object) with member-keyed `as_json`/`to_h`; those
-          # owners are safe. Any other owner means the value class (or an included module) overrides the
-          # method, which serialize_value would follow — so the serialized shape is no longer provably an
-          # object keyed by the declared members.
-          FRAMEWORK_SERIALIZATION_OWNERS = [Data, Struct, Hash, Object].freeze
-          # Read out of the method table (`NativeMethods`) rather than asked of the class: `klass` is the caller's
-          # declared type, and `method_defined?`/`instance_method` are as overridable as anything else — one
-          # answering wrongly inverts whether a shape is judged provable.
-          #
-          # `dispatchable_only:` is the visibility rule, and the two serializers need DIFFERENT ones because they
-          # are reached differently. Verified by serializing each case in both environments (with and without
-          # ActiveSupport's json core_ext), since the mechanism differs but the verdict does not:
-          #
-          #   `as_json` is reached by DISPATCH — `Values.projection_for` gates on `respond_to?` — so only a PUBLIC
-          #     override displaces anything. A protected/private one cannot be called at all, the value falls
-          #     through to the public built-in `to_h`, and what is emitted IS member-keyed (`{"name" => "x"}`).
-          #     Counting one as custom drops `type: object` from a schema the serializer does honour.
-          #
-          #   `to_h` is the FALLBACK, and an override at ANY visibility shadows `Struct#to_h`, so the built-in is
-          #     gone regardless: without the core_ext the value degrades to `to_s`, and with it `Struct#as_json`
-          #     is `to_h.as_json` — an implicit-receiver call, which reaches a non-public override — so the
-          #     override's own keys are emitted. Neither is keyed by the declared members.
-          def custom_serialization?(klass, method, dispatchable_only:)
-            return false unless Axn::Internal::Identity.kind?(klass, ::Module)
-            return false if dispatchable_only && !Axn::Internal::NativeMethods.public_instance_method?(klass, method)
-
-            owner = Axn::Internal::NativeMethods.declared_instance_method(klass, method)&.owner
-            !owner.nil? && !FRAMEWORK_SERIALIZATION_OWNERS.include?(owner)
+            # A Data/Struct serializes member-keyed via its built-in to_h — unless the DECLARED class carries
+            # a projection of its own that Values.serialize_value would follow instead. Asks the identical
+            # question Values asks again at render time, of the runtime value in hand — see its own comment
+            # for why one predicate answers both and what each visibility rule means.
+            Axn::Internal::Reflection::Values.displacing_projection(klass).nil?
           end
         end
       end

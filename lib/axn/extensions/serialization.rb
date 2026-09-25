@@ -5,7 +5,9 @@
 # load of this file would NameError on the first call rather than at require time.
 require "axn/internal/reflection/values"
 require "axn/internal/reflection/property_names"
+require "axn/internal/reflection/schema"
 require "axn/internal/identity"
+require "axn/internal/native_methods"
 
 module Axn
   module Extensions
@@ -27,7 +29,9 @@ module Axn
       # chose: whether that is a failure belongs to the transport, since an HTTP contract should not
       # ship it while an LLM tool result is better off ugly than failed. Everything unconditional — a
       # cycle, two names collapsing to one property, a non-finite Float, bytes with no UTF-8
-      # rendering — raises either way.
+      # rendering, and (PRO-3284) a value whose own `as_json`/`to_h` displaces the member-keyed
+      # projection its position in `output_schema` was reflected from — raises either way, since there
+      # the schema and the body would actively disagree rather than merely being unpresentable.
       #
       # Raises Axn::Extensions::Serialization::UnserializableValue (an ArgumentError) naming the path to the
       # offending value, so an adapter's existing `rescue StandardError` maps it to an error response.
@@ -51,8 +55,26 @@ module Axn
 
         # `send` because serialize_exposed is private: this facade is its only caller, and that is
         # what makes `render` the rendering path rather than one of two.
-        Axn::Internal::Reflection::Values.send(:serialize_exposed, result, configs, reject_opaque:)
+        Axn::Internal::Reflection::Values.send(:serialize_exposed, result, configs, reject_opaque:,
+                                                                                    guards: render_guards_for(action_class, configs))
       end
+
+      # The render-time position map (PRO-3284), memoized beside `validate_outbound!`'s own verdict and on
+      # the identical terms: keyed on the IDENTITY of `configs`, so a grown contract misses with no
+      # invalidation hook to keep in sync, and skipped for a frozen class (whose configs cannot grow again
+      # anyway) — the same narrow consequence `validate_outbound!` states about a retained `shape:` graph
+      # mutated after the first render. Building this once per class is the whole reason it exists: an
+      # ordinary action with no Data/Struct shape in its `exposes` gets nil back and pays nothing more per
+      # render than the identity check.
+      def render_guards_for(action_class, configs)
+        cached = action_class.instance_variable_get(:@_axn_render_guards)
+        return cached[1] if cached && configs.equal?(cached[0])
+
+        guards = Axn::Internal::Reflection::Schema.output_render_guards(configs)
+        action_class.instance_variable_set(:@_axn_render_guards, [configs, guards]) unless Axn::Internal::NativeMethods.frozen?(action_class)
+        guards
+      end
+      private_class_method :render_guards_for
     end
   end
 end
