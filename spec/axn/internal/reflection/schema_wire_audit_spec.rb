@@ -266,6 +266,52 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
     expect(wrong).to be_empty, "these schemas reject what the runtime accepts:\n  #{wrong.join("\n  ")}"
   end
 
+  # The exact core, cell by cell: a declared type JSON Schema has a spelling for, carrying only checks the core
+  # states — presence, a literal `inclusion:` set of that type, a literal numeric bound on a number, a literal
+  # `length:` on a sized type. Here the document must agree with the runtime in BOTH directions and report nothing:
+  # a residue in the core is a bug, so a keyword the core drops cannot hide behind one.
+  def tier_one_cells
+    {
+      "String" => [String, ["none", "presence", "length is:3", "incl [a,b]"]],
+      "Integer" => [Integer, ["none", "presence", "num gt:0", "cmp gt:0", "cmp equal_to:1", "incl [1,2]"]],
+      "Array" => [Array, ["none", "presence", "length is:3"]],
+      "Hash" => [Hash, ["none", "presence", "length is:3"]],
+      "TrueClass" => [TrueClass, %w[none presence]],
+    }
+  end
+
+  it "states its exact core exactly, and reports nothing there" do
+    wrong = []
+    compared = 0
+
+    tier_one_cells.each do |tname, (tklass, vnames)|
+      vnames.each do |vname|
+        klass = declare(:in, { type: tklass }.merge(validators.fetch(vname)), nil)
+        next wrong << "#{tname} / #{vname}: refused at declaration" if klass.nil?
+
+        residues = klass.input_schema_residues
+        wrong << "#{tname} / #{vname}: reports #{residues.map(&:summary).inspect}" if residues.any?
+        document = schemer(klass.input_schema)
+        (probe_values + [omitted]).each do |value|
+          runtime_ok = begin
+            (omitted.equal?(value) ? klass.call : klass.call(n: value)).ok?
+          rescue StandardError
+            false
+          end
+          accepted = document.valid?(omitted.equal?(value) ? {} : { "n" => value })
+          compared += 1
+          next if accepted == runtime_ok
+
+          wrong << "#{tname} / #{vname}: runtime #{runtime_ok ? 'accepts' : 'rejects'} #{value.inspect}, document " \
+                   "#{accepted ? 'accepts' : 'rejects'} it — #{klass.input_schema[:properties][:n].inspect}"
+        end
+      end
+    end
+
+    expect(compared).to be > 300
+    expect(wrong).to be_empty, "the exact core disagrees with the runtime:\n  #{wrong.join("\n  ")}"
+  end
+
   # Gates the looseness walk holds OPEN as well as closed: an open gate is the reading under which the
   # runtime rejects the most, so it is where a document that left a gated check out is loosest.
   def all_gates
