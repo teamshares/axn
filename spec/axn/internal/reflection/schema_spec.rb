@@ -7635,7 +7635,10 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       end
       schema = action.input_schema
       expect(schema[:required].to_a).not_to include("data")
-      expect(schema[:properties][:data][:type]).to eq(%w[object null])
+      # Untyped with only a gated child, so a non-object value reaches the child as nothing and passes: the node
+      # states its children without claiming `object`, and admits null.
+      expect(schema[:properties][:data]).not_to have_key(:type)
+      expect(schema[:properties][:data]).not_to have_key(:not)
       expect(schema[:properties][:data]).not_to have_key(:required)
       user = schema[:properties][:data][:properties][:user]
       expect(user).not_to have_key(:type)
@@ -7670,7 +7673,8 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       # data is NOT forced required by the gated route
       expect(root[:required].to_a).not_to include("data")
       data = root[:properties][:data]
-      expect(data[:type]).to eq(%w[object null])
+      expect(data).not_to have_key(:type) # untyped, with no child it cannot do without
+      expect(data).not_to have_key(:not)
       expect(data).not_to have_key(:required)
       expect(data[:properties][:user]).to include(type: %w[string null])
       expect(data[:properties][:user][:description]).to include("required on the calls its condition opens")
@@ -7694,7 +7698,10 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         end
         schema = action.input_schema
         expect(schema[:required].to_a).not_to include("data")
-        expect(schema[:properties][:data][:type]).to eq(%w[object null])
+        # Untyped with only a gated child, so a non-object value reaches the child as nothing and passes: the node
+        # states its children without claiming `object`, and admits null.
+        expect(schema[:properties][:data]).not_to have_key(:type)
+        expect(schema[:properties][:data]).not_to have_key(:not)
         expect(schema[:properties][:data]).not_to have_key(:required)
         expect(schema[:properties][:data][:properties][:user][:description])
           .to include("required on the calls its condition opens")
