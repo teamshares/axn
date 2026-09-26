@@ -569,7 +569,7 @@ module Axn
                 properties[id_field] ||= id_prop
               end
             else
-              prop = build_property(config)
+              prop = emitted_input_property(build_property(config), config)
               apply_nested_subfields!(prop, node, ann)
 
               properties[config.field] = prop.compact
@@ -1295,7 +1295,8 @@ module Axn
           # and passes, and `properties` (which JSON Schema applies to objects alone) says all there is to say.
           if nested_node_object_only?(node, node_configs, ann)
             prop[:type] = ann[node].nullable ? %w[object null] : "object"
-          elsif node_configs.any? { |c| presence_rejects_blank?(gate_closed_validations(c, c.validations)) }
+          elsif !preprocessed?(node_configs) &&
+                node_configs.any? { |c| presence_rejects_blank?(gate_closed_validations(c, c.validations)) }
             # Untyped, a presence check still rejects every blank — nil among them — as a value set.
             prop[:not] = { enum: BLANK_WIRE_VALUES }
           elsif !ann[node].nullable
@@ -1304,9 +1305,15 @@ module Axn
           prop[:required] = nil if prop[:required].empty?
         end
 
+        # Never for a node that preprocesses its value: its children read the Proc's output, so the wire value
+        # may be anything that becomes an object (a JSON String the Proc parses).
         def nested_node_object_only?(node, node_configs, ann)
+          return false if preprocessed?(node_configs)
+
           node_configs.any? { |c| gate_closed_validations(c, c.validations).key?(:type) } || children_require_presence?(node.children, ann)
         end
+
+        def preprocessed?(configs) = configs.any? { |c| c.respond_to?(:preprocess) && c.preprocess }
 
         # Emits one level of children into `prop` (which must already have :properties/:required arrays),
         # recursing into each child's own subtree. `parent_configs` are the configs whose subfields these
@@ -1456,8 +1463,9 @@ module Axn
         # property: an untyped nil-tolerant member emits no `type`, leaving no null branch to find.
         def apply_explicit_child!(prop, key, node, representative, non_model_configs, members, emitted_members, ann)
           merged_members = merged_explicit_members(node, members)
-          child_prop = build_property(representative, subfield: true)
           member_prop = prop[:properties][key]
+          child_prop = build_property(representative, subfield: true)
+          child_prop = emitted_input_property(child_prop, representative) unless member_prop
           # Descendants of a transformed value belong to its post-transform contract. Finish that
           # subtree before the collision can stand it down; otherwise descent rewrites the retained
           # wire type and attaches post-transform children to it.
@@ -2709,6 +2717,19 @@ module Axn
 
           prop = report_unstated_checks(prop, config, declared_config)
           effective.equal?(declared) ? prop : with_gating_residues(prop, declared_config)
+        end
+
+        # A `preprocess:` runs before any check, so every keyword `build_property` writes describes the Proc's
+        # output, not what the wire carries — and the wire form is unknowable (a Proc may parse, map or replace
+        # it). The property keeps only its description and default and names what applies after the transform,
+        # exactly as a transforming side stands down at a collision (`stand_down_from`). Applied where a property
+        # is emitted on its own; a colliding one reaches that stand-down through the collision instead. A
+        # `coerce:` does not stand down: coercion accepts a wire String as a courtesy the declared type still
+        # describes, which is how the `coerce:` DSL has always reflected.
+        def emitted_input_property(prop, config)
+          return prop unless config.respond_to?(:preprocess) && config.preprocess
+
+          stand_down_from(prop.slice(:description, :default), prop.except(:description, :default), TRANSFORM_RESIDUE)
         end
 
         # Every ungated check this property does not state, named as a residue — the other half of the promise
