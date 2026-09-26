@@ -73,12 +73,15 @@ module Axn
       # not the config graph), `output_schema` immediately starts publishing the member-derived shape on its
       # next call (it re-validates every build), but a cached `nil`-guarded position can't retroactively gain
       # a guard object that was never constructed for it. `Schema.output_render_guards` therefore also hands
-      # back `watched_classes` — every Data/Struct class it found opaque during the build — and a cache hit
-      # additionally requires every one of those to STILL be opaque right now. This is intentionally
-      # ONE-DIRECTIONAL: a class that GAINS an override after being guarded does not need this (`Values#
-      # refuse_displaced_projection!` already re-checks the declared class live on every guarded value, so an
-      # existing guard stands down safely rather than needing the whole plan rebuilt) — only "a position that
-      # had no guard might now need one" can't be caught any other way.
+      # back `watched_classes` — `[klass, expected_opaque]` pairs — and a cache hit additionally requires
+      # every one of those to CURRENTLY match its recorded opacity. This is mostly ONE-DIRECTIONAL: a class
+      # that GAINS an override after being guarded does not need watching (`Values#refuse_displaced_projection!`
+      # already re-checks the declared class live on every guarded value, so an existing guard stands down
+      # safely rather than needing the whole plan rebuilt) — only "a position that had no guard might now
+      # need one" can't be caught any other way. The one exception is a bare contents UNION of more than one
+      # token (Codex review, PR #296, round 6): there, every sibling's opacity — not just the already-opaque
+      # ones — decides whether the whole union stands down, so `watched_classes` carries both directions for
+      # those, and the uniform "current opacity must match what was recorded" check below covers either.
       #
       # The SAME narrow consequence `validate_outbound!` states about a retained `shape:` graph mutated
       # after the first render — but stated plainly here rather than assumed identical, because the
@@ -107,7 +110,7 @@ module Axn
         # value with the wrong shape.
         cached = Axn::Internal::NativeMethods.ivar_get(action_class, :@_axn_render_guards)
         if cached.is_a?(::Array) && cached.size == 3 && configs.equal?(cached[0]) &&
-           cached[2].all? { |klass| Axn::Internal::Reflection::Values.displacing_projection(klass) }
+           cached[2].all? { |(klass, expected_opaque)| !Axn::Internal::Reflection::Values.displacing_projection(klass).nil? == expected_opaque }
           return cached[1]
         end
 

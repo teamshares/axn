@@ -44,15 +44,26 @@ module Axn
           # String — `Values.canonical_wire_key`, the same canonicalization `serialize_exposed` keys its own
           # per-field walk with) — or nil when no position in this class's output is member-derived at all.
           #
-          # `watched_classes` names every Data/Struct class this build found OPAQUE (owns its own `as_json`/
-          # `to_h`, hence excluded from `guards` at every position it appears) — the memo this feeds
-          # (`Extensions::Serialization#render_guards_for`) re-checks each one's CURRENT opacity before
-          # trusting a cached build, because a class regaining member-keyed status after being reopened
-          # WITHOUT its own projection can't retroactively gain a guard object that was never built for it
-          # (unlike the opposite direction — a guarded class LOSING member-keyed status by GAINING a
-          # projection — which needs no such check: `Values#refuse_displaced_projection!` already re-verifies
-          # the declared class live on every guarded value, so an existing guard standing down safely
-          # under-reaches rather than needing the whole plan rebuilt).
+          # `watched_classes` is `[klass, expected_opaque]` pairs — every Data/Struct class this build's
+          # verdict depended on, paired with whether it was CURRENTLY opaque (owns its own `as_json`/`to_h`)
+          # at build time. The memo this feeds (`Extensions::Serialization#render_guards_for`) re-checks
+          # every pair's CURRENT opacity before trusting a cached build, and rebuilds the moment any of them
+          # no longer matches.
+          #
+          # Almost every entry has `expected_opaque: true` (`watch_opaque_classes!`, unchanged since round
+          # 5): a class regaining member-keyed status after being reopened WITHOUT its own projection can't
+          # retroactively gain a guard object that was never built for it, so that direction needs watching.
+          # The OPPOSITE direction — a guarded class LOSING member-keyed status by GAINING a projection —
+          # needs no entry: `Values#refuse_displaced_projection!` already re-verifies the declared class live
+          # on every guarded value, so an existing guard standing down safely under-reaches rather than
+          # needing the whole plan rebuilt.
+          #
+          # The ONE exception is a bare (no shape overlay) contents UNION of more than one token
+          # (`watch_union_classes!`, Codex review, PR #296, round 6): there, EVERY Data sibling's opacity —
+          # not just the already-opaque ones — decides whether the whole `anyOf` collapses to unconstrained
+          # (`contents_klass_render_classes`'s own stand-down check), so a currently NON-opaque sibling
+          # GAINING one also needs to invalidate the cache — the stale guard would otherwise keep refusing a
+          # value the freshly-collapsed schema no longer promises anything about at all.
           #
           # THE one entry point; everything below is a helper for it, in the same style Contents/Nestability
           # keep their own helpers unenforced-but-internal rather than `private_class_method`-listed.
@@ -67,15 +78,17 @@ module Axn
             [guards.empty? ? nil : guards, dedupe_watched_classes(watched)]
           end
 
-          # The SAME opaque declared class is pushed once per guarded position it appears at, so `watched`
-          # routinely carries duplicates -- `Array#uniq` dedupes via `hash`/`eql?`, DISPATCHED methods a
-          # caller-authored Data/Struct can define as a singleton override (Codex review, PR #296, round 5).
-          # `Identity.same?` is the bound `equal?` this codebase's no-dispatch discipline already reaches for
-          # elsewhere; an O(n^2) scan is free here, since a class list built one entry per guarded position
-          # is never large enough for the algorithmic difference to matter.
+          # The SAME declared class is pushed once per guarded position it appears at, so `watched` routinely
+          # carries duplicates -- `Array#uniq` dedupes via `hash`/`eql?`, DISPATCHED methods a caller-authored
+          # Data/Struct can define as a singleton override (Codex review, PR #296, round 5). `Identity.same?`
+          # is the bound `equal?` this codebase's no-dispatch discipline already reaches for elsewhere; an
+          # O(n^2) scan is free here, since a class list built one entry per guarded position is never large
+          # enough for the algorithmic difference to matter. A class's opacity cannot change mid-build (this
+          # whole walk runs synchronously), so two entries for the same class always agree on the second
+          # element and deduping on the class alone is sound.
           def dedupe_watched_classes(watched)
-            watched.each_with_object([]) do |klass, acc|
-              acc << klass unless acc.any? { |seen| Axn::Internal::Identity.same?(seen, klass) }
+            watched.each_with_object([]) do |entry, acc|
+              acc << entry unless acc.any? { |seen| Axn::Internal::Identity.same?(seen[0], entry[0]) }
             end
           end
 
@@ -195,7 +208,12 @@ module Axn
           # the first place, which is exactly the over-reach this module must not commit.
           def contents_klass_render_classes(klass, watched)
             tokens = Axn::Internal::ShapeGraph.type_tokens(klass)
-            watch_opaque_classes!(tokens.select { |k| strict_descendant?(k, ::Data) }, watched)
+            data_tokens = tokens.select { |k| strict_descendant?(k, ::Data) }
+            if tokens.size > 1
+              watch_union_classes!(data_tokens, watched)
+            else
+              watch_opaque_classes!(data_tokens, watched)
+            end
             return [] if tokens.size > 1 && tokens.any? { |k| single_contents_schema(k, for_output: true) == {} }
 
             tokens.select { |k| contents_object_class?(k, for_output: true) }
@@ -211,16 +229,28 @@ module Axn
           end
 
           # Records every Data/Struct token among `tokens` that is CURRENTLY opaque (owns its own projection,
-          # so `member_keyed_object_type?` is false) — the set `output_render_guards` hands back as
-          # `watched_classes`. Called from every site that decides guarded-or-not for a Data/Struct token, so
-          # the watch list and the guard-building verdict are the same computation rather than two that could
-          # disagree about which tokens were examined.
+          # so `member_keyed_object_type?` is false) as an `[klass, true]` pair — the set `output_render_guards`
+          # hands back as (part of) `watched_classes`. Called from every site that decides guarded-or-not for
+          # a Data/Struct token, so the watch list and the guard-building verdict are the same computation
+          # rather than two that could disagree about which tokens were examined.
           def watch_opaque_classes!(tokens, watched)
             tokens.each do |k|
               next unless strict_descendant?(k, ::Data) || strict_descendant?(k, ::Struct)
+              next if member_keyed_object_type?(k)
 
-              watched << k unless member_keyed_object_type?(k)
+              watched << [k, true]
             end
+          end
+
+          # The bidirectional counterpart, for a bare (no shape overlay) contents UNION of more than one
+          # token (Codex review, PR #296, round 6): records EVERY Data token's CURRENT opacity, opaque or
+          # not, as `[klass, currently_opaque]`. Unlike every other call in this module, a union's stand-down
+          # (`contents_klass_render_classes`'s own check, just below) depends on ALL its siblings' opacity —
+          # any one of them GAINING an `as_json`/`to_h` collapses the whole `anyOf` to unconstrained, which a
+          # one-directional (opaque-only) watch would miss for whichever siblings were still intact at build
+          # time.
+          def watch_union_classes!(tokens, watched)
+            tokens.each { |k| watched << [k, !member_keyed_object_type?(k)] }
           end
 
           # Every named member of a shape, keyed by wire key — INCLUDING a member whose own guard is nil, so

@@ -644,6 +644,12 @@ module Axn
         FRAMEWORK_PROJECTION_OWNERS = [::Data, ::Struct, ::Hash, ::Object].freeze
         private_constant :FRAMEWORK_PROJECTION_OWNERS
 
+        # `displacing_projection`'s answer when `to_h` is unreachable rather than overridden — there is no
+        # UnboundMethod to name, so this is a distinct sentinel rather than one, and `displaced_projection_reason`
+        # branches on it before treating its argument as a Method.
+        UNDEFINED_PROJECTION = :undefined_to_h
+        private_constant :UNDEFINED_PROJECTION
+
         # The method a receiver of `mod`'s table would serialize through INSTEAD of the built-in member-keyed
         # `to_h` — or nil when nothing displaces it. `mod` is a Module either way: the DECLARED class itself
         # (Schema's question, asked once per class while building `output_schema`) or
@@ -670,10 +676,37 @@ module Axn
           end
 
           method = Axn::Internal::NativeMethods.declared_instance_method(mod, :to_h)
-          method && !framework_projection_owner?(method.owner) ? method : nil
+          return method if method && !framework_projection_owner?(method.owner)
+          return nil if method # a framework-owned to_h (Data#to_h/Struct#to_h) is reachable and unshadowed
+
+          # `to_h` is UNREACHABLE (Codex review, PR #296, round 6): every Data/Struct descendant inherits
+          # `Data#to_h`/`Struct#to_h`, so `method` is nil here only when a subclass explicitly removed it
+          # (`undef_method`/every `remove_method` up its own ancestry) -- never because a well-behaved
+          # descendant simply never overrode it. Outside ActiveSupport that leaves nothing for
+          # `projection_for` to route through but `#to_s`; a displacement just as real as an override, just
+          # with no overriding method to name -- `displaced_projection_reason` reports it in its own words.
+          UNDEFINED_PROJECTION if data_or_struct_descendant?(mod)
         end
 
+        # `displacing_projection`'s answer when nothing overrides `as_json`/`to_h` in the method table at
+        # all, yet `method_missing` (paired with `respond_to_missing?`) serves one of them anyway (Codex
+        # review, PR #296, round 6) -- a distinct sentinel for the identical reason `UNDEFINED_PROJECTION`
+        # is one: there is no UnboundMethod to name.
+        METHOD_MISSING_PROJECTION = :method_missing_projection
+        private_constant :METHOD_MISSING_PROJECTION
+
         def framework_projection_owner?(owner) = FRAMEWORK_PROJECTION_OWNERS.include?(owner)
+
+        # `mod` itself IS ::Data/::Struct (never true for anything `displacing_projection` is actually asked
+        # about, but excluded for the reason `strict_descendant?` elsewhere excludes it: identity, not
+        # ancestry, would otherwise call ::Data a descendant of itself), or has either strictly in its
+        # ancestry. Read via `NativeMethods.module_ancestors`, never `<`/`<=` — both are overridable.
+        def data_or_struct_descendant?(mod)
+          return false if Axn::Internal::Identity.same?(mod, ::Data) || Axn::Internal::Identity.same?(mod, ::Struct)
+
+          ancestors = Axn::Internal::NativeMethods.module_ancestors(mod)
+          ancestors.any? { |a| Axn::Internal::Identity.same?(a, ::Data) || Axn::Internal::Identity.same?(a, ::Struct) }
+        end
 
         # One fix per intent, appended to every DISPLACED_PROJECTION reason: whichever one applies, the
         # author chose the override for a reason, so the message points at all three rather than guessing
@@ -714,8 +747,20 @@ module Axn
           # the path that renders cleanly — which is every value this check ever sees, ordinarily.
           table = Axn::Internal::NativeMethods.method_table(value)
           raise Axn::Extensions::Serialization::UnserializableValue.new(
-            path:, value:, reason: displaced_projection_reason(declared, displacing_projection(table), table),
+            path:, value:, reason: displaced_projection_reason(declared, effective_displaced_method(value, table), table),
           )
+        end
+
+        # `displacing_projection(table)` when the table itself names the override, or `METHOD_MISSING_PROJECTION`
+        # when nothing in the table does but `method_missing_backed_projection?` still caught one — the same
+        # two-source answer `displacing_projection_anywhere?` already computed once to decide whether to
+        # raise at all; recomputed here (cheaply — this only runs on the path that IS raising) so the
+        # message can name WHICH of the two applies.
+        def effective_displaced_method(value, table)
+          found = displacing_projection(table)
+          return found unless found.nil?
+
+          METHOD_MISSING_PROJECTION if method_missing_backed_projection?(value, table)
         end
 
         # Whether SOMETHING in `value`'s own table displaces the built-in projection — the class's
@@ -753,17 +798,73 @@ module Axn
         # exactly as before this optimization existed at all.
         def displacing_projection_anywhere?(value)
           return true if displacing_projection(Axn::Internal::Identity.class_of(value))
+          return true if method_missing_backed_projection?(value, Axn::Internal::Identity.class_of(value))
           return false if Axn::Internal::Identity.kind?(value, ::Data) && Axn::Internal::NativeMethods.frozen?(value)
 
-          !displacing_projection(Axn::Internal::NativeMethods.method_table(value)).nil?
+          table = Axn::Internal::NativeMethods.method_table(value)
+          return true unless displacing_projection(table).nil?
+
+          method_missing_backed_projection?(value, table)
+        end
+
+        # Whether `as_json` or `to_h` is served entirely through `method_missing` (paired with
+        # `respond_to_missing?`), with no entry anywhere in `mod`'s table for either (Codex review, PR #296,
+        # round 6). `projection_for` decides the ACTUAL render route by dispatching `respond_to?` regardless
+        # of what the table shows — a supported proxy idiom `owner_of`'s own comment already documents as
+        # the value's own answer to give, not a decision a hostile class could forge by way of it — so this
+        # asks the identical question, in the identical PRECEDENCE order (`as_json` before `to_h`), rather
+        # than a second, independently-derived approximation of it. `owner_of` reports a method_missing-
+        # backed method as owner-less, never as the value's own class or a framework one, so a nil owner
+        # here can only mean method_missing served it.
+        #
+        # Gated on `respond_to_missing?` actually being overridden (checked NATIVELY, via `mod`'s table,
+        # never dispatched) so an ordinary value — no method_missing anywhere — pays for neither a
+        # dispatched `respond_to?` nor (via the CLASS-level call this runs before the frozen-Data fast path
+        # below) the singleton-class materialization that fast path exists to avoid; only a value whose
+        # class (or, on the slower path, whose full singleton-or-class table) actually overrides
+        # `respond_to_missing?` pays for the dispatch this needs.
+        def method_missing_backed_projection?(value, mod)
+          override = Axn::Internal::NativeMethods.declared_instance_method(mod, :respond_to_missing?)
+          return false unless override && !Axn::Internal::Identity.same?(override.owner, ::Kernel)
+
+          return owner_of(value, :as_json).nil? if value.respond_to?(:as_json)
+
+          value.respond_to?(:to_h) && owner_of(value, :to_h).nil?
         end
 
         def displaced_projection_reason(declared, method, table)
+          return undefined_projection_reason(declared) if Axn::Internal::Identity.same?(method, UNDEFINED_PROJECTION)
+          return method_missing_projection_reason(declared) if Axn::Internal::Identity.same?(method, METHOD_MISSING_PROJECTION)
+
           "its position in `output_schema` was reflected from the declared type " \
             "#{Axn::Internal::RenderedModuleName.of(declared)} — an object keyed by its members — but this " \
             "value serializes through its own `##{method.name}`, " \
             "#{displaced_projection_owner_label(method, table)}, so the rendered body would not match the " \
             "published schema. #{DISPLACED_PROJECTION_FIX}"
+        end
+
+        # `to_h` is unreachable rather than overridden (an ancestor `undef_method`'d it): there is no
+        # overriding method or owner to name, so this names the ABSENCE instead, and offers restoring it
+        # alongside the same "define the projection on the declared type itself" fix every other reason ends
+        # with — that one still leaves this position honestly opaque either way.
+        def undefined_projection_reason(declared)
+          "its position in `output_schema` was reflected from the declared type " \
+            "#{Axn::Internal::RenderedModuleName.of(declared)} — an object keyed by its members — but this " \
+            "value's own class has no `#to_h` at all (it was removed, e.g. via `undef_method`), so it would " \
+            "render through `#to_s` instead, and the rendered body would not match the published schema. " \
+            "Restore `#to_h`, or if the removal is intentional, define the projection you want on the " \
+            "declared type itself, which leaves this position honestly opaque (an empty `{}` in the schema)."
+        end
+
+        # `as_json`/`to_h` is served through `method_missing` rather than a real method: there is no
+        # UnboundMethod, owner, or source location to name, so this names the ROUTE instead — `owner_label`'s
+        # job here has nothing to point at.
+        def method_missing_projection_reason(declared)
+          "its position in `output_schema` was reflected from the declared type " \
+            "#{Axn::Internal::RenderedModuleName.of(declared)} — an object keyed by its members — but this " \
+            "value's own class serves `#as_json`/`#to_h` through `method_missing` (advertised via its own " \
+            "`respond_to_missing?`), which routes to a different projection than the declared type's own, " \
+            "so the rendered body would not match the published schema. #{DISPLACED_PROJECTION_FIX}"
         end
 
         # Where the displacing method came from, on the same terms `NameOwnership#owner_label` names a
@@ -838,7 +939,9 @@ module Axn
                              :capture_elements, :raise_colliding_keys!, :framework_projection_owner?,
                              :describe_key_classes, :check_opaque_key!, :projection_for, :default_to_s?,
                              :refuse_displaced_projection!, :displacing_projection_anywhere?, :displaced_projection_reason,
-                             :displaced_projection_owner_label, :displaced_projection_location
+                             :displaced_projection_owner_label, :displaced_projection_location,
+                             :data_or_struct_descendant?, :undefined_projection_reason,
+                             :method_missing_backed_projection?, :effective_displaced_method, :method_missing_projection_reason
       end
     end
   end

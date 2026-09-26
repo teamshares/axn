@@ -449,6 +449,75 @@ RSpec.describe Axn::Extensions::Serialization do
         expect(described_class.render(klass.call(value:))).to eq("d1" => { "name" => "a" }, "d2" => { "name" => "a" })
       end
 
+      # Codex review, PR #296, round 6: a bare (no shape block) union's WHOLE `anyOf` collapses to
+      # unconstrained the moment ANY Data sibling in it becomes opaque (`single_contents_schema(k) == {}`
+      # for that sibling), since an unconstrained branch matches anything regardless of which branch a
+      # given value actually took. Unlike every other watched transition here, this one needs to notice a
+      # sibling GAINING opacity (not just losing it) -- a bare union guard was built from ALL its branches'
+      # opacity, not just the ones already opaque, so only watching the already-opaque ones misses a
+      # currently-intact sibling becoming opaque later and silently leaves the stale (still-populated)
+      # guard refusing a value the current, freshly-collapsed schema no longer constrains at all.
+      it "rebuilds a bare union's memoized guard when a sibling Data branch becomes opaque after the " \
+         "first render, standing the whole anyOf down rather than refusing a value the current schema no " \
+         "longer promises anything about" do
+        a = Data.define(:x)
+        b = Data.define(:y)
+        klass = data_action_for(type: Array, of: [a, b])
+        described_class.render(klass.call(value: [a.new(x: 1)])) # warms the memo, both branches intact
+
+        a.define_method(:as_json) { { x: } } # collapses the whole anyOf to unconstrained
+        b_subclass = Class.new(b) { def as_json(*) = { y: "secret" } }
+
+        expect(described_class.render(klass.call(value: [b_subclass.new(y: 1)])))
+          .to eq("d" => [{ "y" => "secret" }])
+      end
+
+      # Codex review, PR #296, round 6: `undef_method :to_h` on a subclass makes `to_h` UNREACHABLE, which
+      # the ownership check previously read the same as "never overridden" (both return nil) -- but every
+      # Data/Struct descendant inherits a built-in `to_h`, so nil here only ever means it was removed.
+      # Outside ActiveSupport, `projection_for` then falls through to `#to_s`, silently contradicting a
+      # schema that promises a member-keyed object.
+      it "raises for a subclass that removed to_h entirely (undef_method), rather than silently rendering " \
+         "through the #to_s fallback" do
+        klass = shaped_action(type: s)
+        undefined_subclass = Class.new(s) { undef_method(:to_h) }
+
+        expect { described_class.render(klass.call(value: undefined_subclass.new(name: "a", internal_notes: "x"))) }
+          .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /no `#to_h`/)
+      end
+
+      # Codex review, PR #296, round 6: `as_json`/`to_h` served entirely through `method_missing` +
+      # `respond_to_missing?` has NO entry anywhere in the value's method table, so a table-only check sees
+      # nothing to displace -- but `projection_for` deliberately honors `respond_to?` as "the value's own
+      # answer to give" (a supported idiom a method_missing-backed proxy depends on, per `owner_of`'s own
+      # comment above) and dispatches through it regardless of what the table shows.
+      it "raises for a subclass whose own as_json is served entirely through method_missing/" \
+         "respond_to_missing? -- projection_for honors that same supported proxy idiom, so the guard must " \
+         "notice it too" do
+        klass = shaped_action(type: s)
+        method_missing_subclass = Class.new(s) do
+          def respond_to_missing?(name, include_private = false) = name == :as_json || super
+
+          def method_missing(name, *args)
+            return { name: } if name == :as_json
+
+            super
+          end
+        end
+
+        expect do
+          described_class.render(klass.call(value: method_missing_subclass.new(name: "a", internal_notes: "secret")))
+        end.to raise_error(Axn::Extensions::Serialization::UnserializableValue)
+      end
+
+      it "does not raise for an ordinary value with no as_json/to_h override and no method_missing at all " \
+         "(the method_missing check above must not spuriously flag the safe, common case)" do
+        klass = shaped_action(type: s)
+
+        expect(described_class.render(klass.call(value: s.new(name: "a", internal_notes: "x"))))
+          .to eq("d" => { "name" => "a", "internal_notes" => "x" })
+      end
+
       it "raises for a nested shape member (a Hash field whose own shaped member is such a subclass)" do
         inner_type = s
         klass = Class.new do
