@@ -5,7 +5,9 @@
 # load of this file would NameError on the first call rather than at require time.
 require "axn/internal/reflection/values"
 require "axn/internal/reflection/property_names"
+require "axn/internal/reflection/schema"
 require "axn/internal/identity"
+require "axn/internal/native_methods"
 
 module Axn
   module Extensions
@@ -27,7 +29,9 @@ module Axn
       # chose: whether that is a failure belongs to the transport, since an HTTP contract should not
       # ship it while an LLM tool result is better off ugly than failed. Everything unconditional — a
       # cycle, two names collapsing to one property, a non-finite Float, bytes with no UTF-8
-      # rendering — raises either way.
+      # rendering, and (PRO-3284) a value whose own `as_json`/`to_h` displaces the member-keyed
+      # projection its position in `output_schema` was reflected from — raises either way, since there
+      # the schema and the body would actively disagree rather than merely being unpresentable.
       #
       # Raises Axn::Extensions::Serialization::UnserializableValue (an ArgumentError) naming the path to the
       # offending value, so an adapter's existing `rescue StandardError` maps it to an error response.
@@ -51,8 +55,72 @@ module Axn
 
         # `send` because serialize_exposed is private: this facade is its only caller, and that is
         # what makes `render` the rendering path rather than one of two.
-        Axn::Internal::Reflection::Values.send(:serialize_exposed, result, configs, reject_opaque:)
+        Axn::Internal::Reflection::Values.send(:serialize_exposed, result, configs, reject_opaque:,
+                                                                                    guards: render_guards_for(action_class, configs))
       end
+
+      # The render-time position map (PRO-3284), memoized beside `validate_outbound!`'s own verdict and on
+      # the identical terms: keyed on the IDENTITY of `configs`, so a grown contract misses with no
+      # invalidation hook to keep in sync, and skipped for a frozen class (whose configs cannot grow again
+      # anyway). Building this once per class is the whole reason it exists — measured, rebuilding it on
+      # every render costs roughly as much as the render itself — so an ordinary action with no Data/Struct
+      # shape in its `exposes` gets nil back and pays nothing more per render than the identity check plus
+      # one empty-array scan.
+      #
+      # `configs.equal?` alone is not the whole cache-validity question (Codex review, PR #296, round 4): a
+      # DECLARED class that owned its own `as_json`/`to_h` at build time makes every position naming it
+      # OPAQUE — no guard is built there at all — and if that method is later REMOVED (the class reopened,
+      # not the config graph), `output_schema` immediately starts publishing the member-derived shape on its
+      # next call (it re-validates every build), but a cached `nil`-guarded position can't retroactively gain
+      # a guard object that was never constructed for it. `Schema.output_render_guards` therefore also hands
+      # back `watched_classes` — `[klass, expected_opaque]` pairs — and a cache hit additionally requires
+      # every one of those to CURRENTLY match its recorded opacity. This is mostly ONE-DIRECTIONAL: a class
+      # that GAINS an override after being guarded does not need watching (`Values#refuse_displaced_projection!`
+      # already re-checks the declared class live on every guarded value, so an existing guard stands down
+      # safely rather than needing the whole plan rebuilt) — only "a position that had no guard might now
+      # need one" can't be caught any other way. The one exception is a bare contents UNION of more than one
+      # token (Codex review, PR #296, round 6): there, every sibling's opacity — not just the already-opaque
+      # ones — decides whether the whole union stands down, so `watched_classes` carries both directions for
+      # those, and the uniform "current opacity must match what was recorded" check below covers either.
+      #
+      # The SAME narrow consequence `validate_outbound!` states about a retained `shape:` graph mutated
+      # after the first render — but stated plainly here rather than assumed identical, because the
+      # OUTCOME differs: `validate_outbound!`'s stale verdict only delays a WARNING (`output_schema` is
+      # rebuilt on every call and re-validates regardless), where a stale guard here means render can
+      # SUCCEED where a fresh build would have refused — no other layer re-checks that. Reaching this
+      # requires mutating axn's own SNAPSHOTTED shape graph (`_snapshot_declared_shape!` already deep-copies
+      # away from whatever the caller declared with) IN PLACE, through `external_field_configs` directly —
+      # the array itself is frozen and its `FieldConfig`/`ShapeConfig` elements are immutable `Data`, so the
+      # only route in is reaching past both into a nested Hash nothing in the public DSL exposes a path to.
+      # Accepted for the same reason `validate_outbound!`'s is: there is no invalidation signal cheaper than
+      # the rebuild itself for an in-place mutation, and paying that rebuild unconditionally would cost every
+      # ordinary render the ~2-3x this memo exists to avoid, to guard a route the supported API cannot reach.
+      def render_guards_for(action_class, configs)
+        # Bound ivar access (Codex review, PR #296, round 3), not a dispatched `instance_variable_get`/`set`:
+        # `action_class` is a user-authored action class, so nothing stops it defining its own singleton
+        # override of either — one returning a forged `[configs, nil]` would make the identity check
+        # succeed and disable every displaced-projection guard silently, exactly what this feature exists
+        # to prevent. `NativeMethods.ivar_get`/`ivar_set` read and write the real instance variable
+        # regardless of what the class defines. The shape check below (`cached.is_a?(::Array) &&
+        # cached.size == 3`) is a second, independent defense: it names a slot no other axn code writes
+        # (`@_axn_render_guards`, following `validate_outbound!`'s own single-underscore class-ivar
+        # precedent — `@_axn_config_sources`, `@_axn_config_overrides`, `@_axn_creating_action_class_for` are
+        # all the same convention on the same kind of object), but an ACCIDENTAL same-named ivar from some
+        # other source landing here fails safely into a rebuild rather than into `cached[1]` raising on a
+        # value with the wrong shape.
+        cached = Axn::Internal::NativeMethods.ivar_get(action_class, :@_axn_render_guards)
+        if cached.is_a?(::Array) && cached.size == 3 && configs.equal?(cached[0]) &&
+           cached[2].all? { |(klass, expected_opaque)| !Axn::Internal::Reflection::Values.displacing_projection(klass).nil? == expected_opaque }
+          return cached[1]
+        end
+
+        guards, watched_classes = Axn::Internal::Reflection::Schema.output_render_guards(configs)
+        unless Axn::Internal::NativeMethods.frozen?(action_class)
+          Axn::Internal::NativeMethods.ivar_set(action_class, :@_axn_render_guards, [configs, guards, watched_classes])
+        end
+        guards
+      end
+      private_class_method :render_guards_for
     end
   end
 end

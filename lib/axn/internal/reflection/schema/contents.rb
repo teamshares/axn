@@ -476,11 +476,23 @@ module Axn
             # A Data value serializes member-keyed via to_h, so it reflects as an object — except on OUTPUT when
             # it isn't provably member-keyed (a custom as_json/to_h serialize_value would follow); leave those
             # untyped rather than promise an object.
-            if strict_descendant?(klass, ::Data) && (!for_output || member_keyed_object_type?(klass))
+            if contents_object_class?(klass, for_output:)
               { type: "object", properties: klass.members.to_h { |m| [m, {}] } }
             else
               json_type_for({ type: klass }, for_output:)
             end
+          end
+
+          # Whether an UNNAMED contents position (an array element, a bare map value — never a shaped one;
+          # `contents_member_schema`'s overlay judges that separately, on the wider Data-OR-Struct rule
+          # `member_keyed_object_type?` names) reflects as a member-keyed object purely from its OWN class,
+          # with no `shape:` in play. Data only, deliberately narrower than `member_keyed_object_type?`: a
+          # bare Struct token here (`of: SomeStruct`, no block) has always taken the untyped `json_type_for`
+          # branch below, and widening it to include Struct would newly assert a shape a bare `of:` never
+          # promised. Shared with `Schema::RenderGuards` so the schema question and the render-time question
+          # about this same unnamed position read one definition.
+          def contents_object_class?(klass, for_output:)
+            strict_descendant?(klass, ::Data) && (!for_output || member_keyed_object_type?(klass))
           end
 
           # A DECLARED member's `field` is already the Symbol the declaration walk judged it under (`ShapeConfig`

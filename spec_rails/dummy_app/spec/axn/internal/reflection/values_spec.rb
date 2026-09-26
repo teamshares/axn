@@ -92,4 +92,129 @@ RSpec.describe Axn::Internal::Reflection::Values do
         .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /`out\.rows\[0\]`/)
     end
   end
+
+  # PRO-3284, under Rails: the SAME `Values.displacing_projection` predicate, but the mechanism a subclass's
+  # override reaches through differs from the non-Rails suite (spec/axn/extensions/serialization_spec.rb),
+  # because ActiveSupport's core_ext is loaded globally here.
+  describe "a value whose own as_json/to_h displaces a member-derived output schema (PRO-3284)" do
+    let(:s) { Data.define(:name, :internal_notes) }
+
+    def shaped_action(type:)
+      Class.new do
+        include Axn
+        auto_log false
+        expects :value
+        exposes :d, type: do
+          field :name, type: String
+          field :internal_notes, type: String
+        end
+        def call = expose(d: value)
+      end
+    end
+
+    it "raises for a subclass's own PUBLIC as_json (reached by dispatch, exactly as outside Rails)" do
+      subclass = Class.new(s) { def as_json(*) = { name: } }
+      klass = shaped_action(type: s)
+
+      expect { Axn::Extensions::Serialization.render(klass.call(value: subclass.new(name: "a", internal_notes: "x"))) }
+        .to raise_error(Axn::Extensions::Serialization::UnserializableValue)
+    end
+
+    # Outside Rails, a Data subclass's `to_h` is the FALLBACK route. Under Rails, `Data#as_json` is
+    # `to_h.as_json` (ActiveSupport's core_ext) — an IMPLICIT-RECEIVER call, which reaches a to_h override
+    # regardless of its visibility. `displacing_projection` names the same method either way (any-visibility
+    # `to_h`), so the schema and the renderer agree without knowing which mechanism is in play.
+    it "raises for a subclass's own to_h, reached here via Data#as_json = to_h.as_json rather than the " \
+       "to_s-degradation route the non-Rails suite exercises for the same override" do
+      subclass = Class.new(s) { def to_h = { name: } }
+      klass = shaped_action(type: s)
+      value = subclass.new(name: "a", internal_notes: "x")
+
+      expect(value.as_json).to eq("name" => "a") # confirms the Rails mechanism this test is actually pinning
+      expect { Axn::Extensions::Serialization.render(klass.call(value:)) }
+        .to raise_error(Axn::Extensions::Serialization::UnserializableValue)
+    end
+
+    it "raises for Enumerable mixed into a Data subclass (Enumerable is not a framework projection owner)" do
+      subclass = Class.new(s) do
+        include Enumerable
+        def each(&) = to_h.each(&)
+      end
+      klass = shaped_action(type: s)
+
+      expect { Axn::Extensions::Serialization.render(klass.call(value: subclass.new(name: "a", internal_notes: "x"))) }
+        .to raise_error(Axn::Extensions::Serialization::UnserializableValue)
+    end
+
+    it "does not raise for a plain subclass with no override, or for the exact declared class" do
+      klass = shaped_action(type: s)
+
+      expect(Axn::Extensions::Serialization.render(klass.call(value: Class.new(s).new(name: "a", internal_notes: "x"))))
+        .to eq("d" => { "name" => "a", "internal_notes" => "x" })
+      expect(Axn::Extensions::Serialization.render(klass.call(value: s.new(name: "a", internal_notes: "x"))))
+        .to eq("d" => { "name" => "a", "internal_notes" => "x" })
+    end
+
+    # KNOWN GAP, deliberately left open (see the CHANGELOG entry and PRO-3547, the follow-up ticket):
+    # ANYTHING nested inside a Data/Struct value, at any depth, is rendered by ActiveSupport's own
+    # `Data#as_json` (`to_h.as_json`) in ONE step, so a displacing override anywhere in that subtree is
+    # never reached by `serialize_value` at all — the walker only ever sees the plain Hash/Array
+    # `to_h.as_json` produces. This is WIDER than "Data directly inside Data": a Hash or an Array a
+    # further-nested member holds is inside the same one-shot rendering too (see the second example
+    # below). A Hash or an Array AT THE TOP LEVEL of an exposure (never inside a Data/Struct value first)
+    # IS covered in both environments (see the non-Rails suite's nested and array-element examples).
+    it "does NOT catch a displacing subclass nested directly inside another Data value (pinned gap)" do
+      outer = Data.define(:inner)
+      inner_type = s
+      subclass = Class.new(inner_type) { def as_json(*) = { name: } }
+      klass = Class.new do
+        include Axn
+        auto_log false
+        expects :value
+        exposes :w, type: outer do
+          field :inner, type: inner_type do
+            field :name, type: String
+            field :internal_notes, type: String
+          end
+        end
+        def call = expose(w: value)
+      end
+      value = outer.new(inner: subclass.new(name: "a", internal_notes: "x"))
+
+      expect(value.as_json).to eq("inner" => { name: "a" }) # confirms ActiveSupport renders it in one step, symbol-keyed
+      expect(Axn::Extensions::Serialization.render(klass.call(value:))).to eq("w" => { "inner" => { "name" => "a" } })
+    end
+
+    it "does NOT catch a displacing subclass inside a Hash or an Array MEMBER of a Data value either " \
+       "(the same one-shot rendering swallows those too, not just a directly-nested Data member)" do
+      outer = Data.define(:items, :meta)
+      inner_type = s
+      subclass = Class.new(inner_type) { def as_json(*) = { name: } }
+      klass = Class.new do
+        include Axn
+        auto_log false
+        expects :value
+        exposes :w, type: outer do
+          field :items, type: Array do
+            field :name, type: String
+          end
+          field :meta, type: Hash do
+            field :inner, type: inner_type do
+              field :name, type: String
+              field :internal_notes, type: String
+            end
+          end
+        end
+        def call = expose(w: value)
+      end
+      value = outer.new(
+        items: [subclass.new(name: "a", internal_notes: "x")],
+        meta: { inner: subclass.new(name: "b", internal_notes: "y") },
+      )
+
+      expect(Axn::Extensions::Serialization.render(klass.call(value:))).to eq(
+        "w" => { "items" => [{ "name" => "a" }], "meta" => { "inner" => { "name" => "b" } } },
+      )
+    end
+  end
 end

@@ -55,6 +55,10 @@ require "axn/internal/reflection/schema/sizing"
 # both read it, so neither can decide for itself.
 require "axn/internal/reflection/schema/nestability"
 
+# RenderGuards builds the render-time position map (PRO-3284) — reuses this module's own emission
+# predicates rather than re-deriving them, so it must load after everything it calls.
+require "axn/internal/reflection/schema/render_guards"
+
 module Axn
   module Internal
     module Reflection
@@ -202,6 +206,7 @@ module Axn
         extend ModelId
         extend Sizing
         extend Nestability
+        extend RenderGuards
 
         module_function
 
@@ -1096,8 +1101,8 @@ module Axn
         # that file, while a user `def` reports the declaring file. Pure introspection, side-effect-free.
         # `respond_to?(:method_defined?)` was standing in for "is this a Module" — a dispatched proxy for a
         # question `Module#===` answers directly, and one the class itself got to answer. Asked properly here,
-        # then resolved through the same single method-table lookup `custom_serialization?` uses, so the two
-        # sites no longer disagree about how this class of question is asked.
+        # then resolved through the same single method-table lookup `Values.displacing_projection` uses, so
+        # the two sites no longer disagree about how this class of question is asked.
         def framework_generated_reader?(klass, rule_name)
           return false unless Axn::Internal::Identity.kind?(klass, ::Module)
 

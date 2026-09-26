@@ -82,7 +82,8 @@ module Axn
       private_constant :SYMBOL_ENCODING, :UNBOUND_METHOD_SUPER_METHOD
       private_constant :ARRAY_EMPTY, :HASH_EMPTY, :SET_EMPTY
       private_constant :KERNEL_IVAR_GET, :KERNEL_IVAR_SET, :KERNEL_IVAR_DEFINED, :KERNEL_IVAR_REMOVE
-      private_constant :KERNEL_CLASS, :KERNEL_FROZEN, :KERNEL_SINGLETON_CLASS, :STRING_EMPTY, :STRING_ENCODING,
+      private_constant :KERNEL_CLASS, :KERNEL_FROZEN, :KERNEL_SINGLETON_CLASS,
+                       :STRING_EMPTY, :STRING_ENCODING,
                        :MODULE_ANCESTORS, :MODULE_DEFINE_METHOD, :MODULE_INCLUDE,
                        :MODULE_INSTANCE_METHOD, :MODULE_INSTANCE_METHODS, :MODULE_METHOD_DEFINED,
                        :MODULE_NAME, :MODULE_PREPEND,
@@ -474,13 +475,24 @@ module Axn
       #
       # Frozen is NOT one of those cases — an ordinary frozen object hands back a frozen singleton class — which
       # matters because re-raising a frozen exception is supported and asks this question first.
+      #
+      # Public for one caller that needs the Module itself rather than a question already answered about
+      # it: a verdict that must be computed identically for a DECLARED class and for a VALUE's own table —
+      # e.g. "does this ownership rule pick out the same method here as it would on the class?" — is one
+      # function called with a class in one place and with this Module in the other, rather than two
+      # functions that could drift. Read-only: nothing may define, undefine, or otherwise install onto what
+      # this returns — the value's dispatch table is the caller's, not this reader's, to change.
+      #
+      # NOT free for a value that had no singleton class yet: `Kernel#singleton_class` MATERIALIZES one —
+      # a permanent, real object that outlives this call. A caller checking many values for a rare
+      # condition should rule out a FROZEN value first (`frozen?` below, or any bound test of its own that
+      # implies it) — one can never carry a singleton method or an `extend`ed module at all, so it never
+      # needs this reader — and reach for this only for a value that could.
       def self.method_table(value)
         KERNEL_SINGLETON_CLASS.bind_call(value)
       rescue ::TypeError
         KERNEL_CLASS.bind_call(value)
       end
-
-      private_class_method :method_table
 
       # Whether this NAME renders through Ruby's own code, which is the condition for "the property a rule judged
       # is the property every consumer reads".
