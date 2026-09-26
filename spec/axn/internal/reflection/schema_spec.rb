@@ -265,14 +265,18 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(schema[:required] || []).not_to include("id")
     end
 
-    it "requires a Hash field with a Proc default (uninspectable — must not call it — so unprovable → conservative), " \
-       "matching runtime here where call({}) fails \"Payload can't be blank\" for `-> { {} }`" do
+    it "does NOT require a Hash field with a Proc default (it runs on the omitted call), and names the obligation " \
+       "its computed value still carries" do
+      # accepted divergence: runtime rejects the omitted call ("Payload can't be blank") because `-> { {} }`
+      # computes a blank value. The Proc cannot be evaluated during reflection, so the schema reads it as usable,
+      # exactly as it reads a non-blank literal default it cannot validate, and says so in the description.
       klass = Class.new do
         include Axn
         expects :payload, type: Hash, default: -> { {} }
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
-      expect(schema[:required]).to include("payload")
+      expect(schema[:required] || []).not_to include("payload")
+      expect(schema[:properties][:payload][:description]).to include("its `default:` is computed on the call")
     end
 
     it "does NOT require a String allow_nil field whose default is type-mismatched (123) — a non-blank default is usable" do
@@ -622,16 +626,18 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     expect(schema[:required] || []).not_to include("flag")
   end
 
-  it "marks a Proc-defaulted boolean field as required (the Proc is uninspectable in reflection — we must " \
-     "not call it — so its value can't be proven to satisfy the contract; conservative/safe direction, matching " \
-     "the file's subfield-parent Proc handling. NB runtime would actually ACCEPT the omitted call here since " \
-     "`-> { false }` yields a valid boolean, but that's only knowable by evaluating the Proc)" do
+  it "does not mark a Proc-defaulted boolean field as required (the Proc runs on the omitted call, so the field " \
+     "is omittable; reflection never calls it, so the value it computes is named in the description instead)" do
     klass = Class.new do
       include Axn
       expects :flag, type: :boolean, default: -> { false }
+      def call = nil
     end
     schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
-    expect(schema[:required]).to include("flag")
+    expect(schema[:required] || []).not_to include("flag")
+    expect(schema[:properties][:flag]).to include(type: "boolean")
+    expect(schema[:properties][:flag][:description]).to include("its `default:` is computed on the call")
+    expect(klass.call).to be_ok
   end
 
   it "does not mark a LITERAL-false-defaulted boolean field as required (a literal default IS inspectable: " \
@@ -721,7 +727,8 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
   it "does NOT map Complex (a non-Float-coercible Numeric) to a number on output — it serializes to a String" do
     # Values.serialize_value emits Complex#to_s (Float(Complex) raises), so a "number" type would
-    # contradict serialize_exposed; leave it untyped on output and permissive-string on input.
+    # contradict serialize_exposed; leave it untyped on output. On input JSON has no Complex either, so the
+    # required position is untyped too, rejects only the blanks, and names the class in its description.
     klass = Class.new do
       include Axn
       exposes :z, type: Complex
@@ -731,7 +738,9 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     out = described_class.build_output(klass.external_field_configs)
     inp = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
     expect(out[:properties][:z]).not_to have_key(:type)
-    expect(inp[:properties][:w]).to include(type: "string")
+    expect(inp[:properties][:w]).not_to have_key(:type)
+    expect(inp[:properties][:w]).to include(not: { enum: ["", [], {}, false, nil] })
+    expect(inp[:properties][:w][:description]).to include('"type":{"klass":"Complex"}')
     expect(Axn::Internal::Reflection::Values.serialize_value(Complex(1, 2))).to be_a(String)
   end
 
@@ -785,14 +794,12 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     expect(schema[:properties][:items]).not_to have_key(:properties)
   end
 
-  it "strips null from a non-nestable (Array) parent when a required DEEP descendant forbids a nil parent (PRO-2872)" do
-    # `items` is non-nestable (type: Array), so its subfield shape is omitted — but a required DEEP
-    # descendant (`items.first.sku`) still forces `items` required (field_optional?). A nil parent
-    # yields every descendant absent (PRO-2857), stranding the required sku, so `items` must also be
-    # non-nullable: type exactly "array", no null branch. The dig reads a real reader segment (`Array#first`)
-    # so the segment is answerable at declaration. The required `sku` carries a Proc default so the contract is legal under
-    # PRO-2889 (satisfiability counts the Proc); strict reflection ignores Procs, so `items` is still
-    # required + non-nullable. The Proc rescues omission at runtime — schema stricter than runtime, the safe divergence.
+  it "keeps null on a non-nestable (Array) parent whose required DEEP descendant a Proc default rescues (PRO-2872)" do
+    # `items` is non-nestable (type: Array), so its subfield shape is omitted. The deep descendant
+    # (`items.first.sku`) has no presence or nullability obligation of its own to strand on a nil parent: its Proc
+    # default runs on every call that leaves it absent, so a nil or omitted `items` passes, and the schema keeps
+    # `items` nullable and omittable. The dig reads a real reader segment (`Array#first`) so the segment is
+    # answerable at declaration.
     klass = Class.new do
       include Axn
       expects :items, type: Array, allow_nil: true
@@ -801,18 +808,15 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     end
     schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-    expect(schema[:properties][:items][:type]).to eq("array")
-    expect(schema[:required]).to include("items")
-    expect(klass.call(items: nil)).to be_ok # Proc default rescues omission; schema stays stricter
+    expect(schema[:properties][:items][:type]).to eq(%w[array null])
+    expect(Array(schema[:required])).not_to include("items")
+    expect(klass.call(items: nil)).to be_ok
     expect(klass.call).to be_ok
   end
 
-  it "strips the null member from a non-nestable UNION parent when a required DEEP descendant forbids nil (PRO-2872)" do
-    # A mixed union (type: [Hash, Array]) is non-nestable, so its subfield shape is omitted, but the
-    # required deep descendant forces it required and non-nullable — the anyOf must carry no `null` member.
-    # The required `sku` carries a Proc default so the contract is legal under PRO-2889 (satisfiability counts
-    # the Proc); strict reflection ignores Procs, so `items` stays required + non-nullable while the Proc
-    # rescues omission at runtime (schema stricter than runtime, the safe divergence).
+  it "keeps the null member on a non-nestable UNION parent whose required DEEP descendant a Proc default rescues (PRO-2872)" do
+    # A mixed union (type: [Hash, Array]) is non-nestable, so its subfield shape is omitted; the Proc default
+    # rescues the deep descendant on a nil parent, so the anyOf keeps its `null` member and `items` stays omittable.
     klass = Class.new do
       include Axn
       expects :items, type: [Hash, Array], allow_nil: true
@@ -822,9 +826,9 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
     members = schema[:properties][:items][:anyOf]
-    expect(members).not_to include({ type: "null" })
-    expect(schema[:required]).to include("items")
-    expect(klass.call(items: nil)).to be_ok # Proc default rescues omission; schema stays stricter
+    expect(members).to include({ type: "null" })
+    expect(Array(schema[:required])).not_to include("items")
+    expect(klass.call(items: nil)).to be_ok
   end
 
   it "keeps the null branch on a non-nestable parent when every deep descendant is optional (PRO-2872)" do
@@ -1199,18 +1203,19 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(schema[:required]).to include("payload")
     end
 
-    it "requires the model <field>_id when a nil-tolerant model field has a required shallow subfield" do
-      # `company` accepts nil, but a required `name` subfield still resolves off the record — the id must
-      # stay required despite allow_nil. `name` carries a Proc default so the contract is legal under
-      # PRO-2889 (satisfiability counts the Proc); strict reflection ignores Procs, so the override stands.
+    it "does NOT require the model <field>_id when a nil-tolerant model's required shallow subfield has a Proc default" do
+      # `company` accepts nil, and the Proc default supplies `name` on the call that resolves no record, so an
+      # omitted id strands nothing and the id stays out of `required`.
       klass = Class.new do
         include Axn
         expects :company, model: { klass: Struct.new(:id, :name), finder: :find }, allow_nil: true
         expects :name, on: :company, type: String, default: -> { "x" }
+        def call = nil
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-      expect(schema[:required]).to include("company_id")
+      expect(Array(schema[:required])).not_to include("company_id")
+      expect(klass.call).to be_ok # runtime agreement: omitting the id succeeds
     end
 
     it "does NOT require the model <field>_id when a nil-tolerant model has ONLY an optional shallow subfield" do
@@ -1287,13 +1292,14 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         expect(action.input_schema[:required].to_a).not_to include("company_id")
       end
 
-      it "keeps the id required for a Proc-defaulted descendant (strict mode: unknowable → required)" do
+      it "does not require the id for a Proc-defaulted descendant either, since the Proc runs on the omitted call" do
         action = build_axn do
           expects :company, model: { klass: SchemaCo, finder: :fetch }, allow_nil: true
           expects :name, on: :company, type: String, default: -> { "x" }
           def call = nil
         end
-        expect(action.input_schema[:required]).to include("company_id")
+        expect(action.input_schema[:required].to_a).not_to include("company_id")
+        expect(action.call).to be_ok
       end
     end
   end
@@ -2594,18 +2600,20 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(klass.internal_field_configs.find { |c| c.field == :status }.validations[:inclusion][:in]).to eq(%w[open closed])
     end
 
-    it "types an allow_nil parent as plain object when it has a REQUIRED subfield (a nil parent can't yield it)" do
-      # `name` carries a Proc default so the contract is legal under PRO-2889 (satisfiability counts the
-      # Proc); strict reflection ignores Procs, so the required-subfield override still types payload object.
+    it "types an allow_nil parent as [object, null] when its subfield's Proc default yields it off a nil parent" do
+      # `name` has no `optional:`, but its Proc default runs whenever it is absent, so a nil `payload` strands
+      # nothing and the parent keeps its null branch.
       klass = Class.new do
         include Axn
         expects :payload, type: Hash, allow_nil: true
         expects :name, on: :payload, type: String, default: -> { "x" }
+        def call = nil
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-      expect(schema[:properties][:payload][:type]).to eq("object")
+      expect(schema[:properties][:payload][:type]).to eq(%w[object null])
       expect(schema[:properties][:payload][:properties]).to have_key(:name)
+      expect(klass.call(payload: nil)).to be_ok
     end
   end
 
@@ -2623,17 +2631,18 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(schema[:properties][:payload][:type]).to eq(%w[object null])
     end
 
-    it "keeps a nil-tolerant parent object-only when a required subfield can't be yielded by nil" do
-      # `nick` carries a Proc default so the contract is legal under PRO-2889 (satisfiability counts the
-      # Proc); strict reflection ignores Procs, so the required subfield still keeps payload object-only.
+    it "keeps a nil-tolerant parent nullable when its only subfield is rescued by a Proc default" do
+      # `nick` is not optional, but its Proc default supplies it on a nil parent, so no required child is stranded.
       klass = Class.new do
         include Axn
         expects :payload, type: Hash, allow_nil: true
         expects :nick, on: :payload, type: String, default: -> { "x" }
+        def call = nil
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-      expect(schema[:properties][:payload][:type]).to eq("object")
+      expect(schema[:properties][:payload][:type]).to eq(%w[object null])
+      expect(klass.call(payload: nil)).to be_ok
     end
 
     it "keeps a non-nil-tolerant parent (type: Hash) object-only even with an all-optional subfield" do
@@ -2700,12 +2709,13 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(schema[:required] || []).not_to include("items")
     end
 
-    it "types the parent object-only + required when a defaulted subfield synthesizes it into a required shape member" do
+    it "types the parent object-only when a defaulted subfield synthesizes it into a required shape member, " \
+       "leaving omission to the parent's Proc default" do
       # A truthy-default `on:` subfield makes apply_defaults_for_subfields! materialize the nil parent, so
       # ShapeValidator no longer skips and enforces the required `status` member — runtime rejects
-      # `payload: null`/omitted. Schema must agree: non-nullable AND required (unlike the no-default case).
-      # The parent Proc default keeps the contract legal under PRO-2889 (satisfiability counts the Proc as a
-      # rescue), while strict reflection ignores Procs so the shape-synthesis hazard still forces payload required.
+      # `payload: null`, and the schema agrees: non-nullable (unlike the no-default case). Omission is the parent's
+      # own Proc default to answer; it runs on the omitted call, so the schema leaves `payload` omittable and names
+      # the obligation its computed `{}` still carries (here it fails `status`, the accepted divergence).
       klass = Class.new do
         include Axn
         expects :payload, type: Hash, allow_nil: true, default: -> { {} } do
@@ -2716,18 +2726,19 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
       expect(schema[:properties][:payload][:type]).to eq("object")
-      expect(schema[:required]).to include("payload")
+      expect(Array(schema[:required])).not_to include("payload")
+      expect(schema[:properties][:payload][:description]).to include("its `default:` is computed on the call")
+      expect(klass.call(payload: nil)).not_to be_ok # runtime agreement: nil fails
     end
 
-    it "types the parent object-only + required when a DEEP (via dotted on:) subfield default synthesizes it " \
-       "into a required shape member (PRO-2872)" do
+    it "types the parent object-only when a DEEP (via dotted on:) subfield default synthesizes it into a " \
+       "required shape member (PRO-2872)" do
       # `expects :zip, on: "payload.address", default: "x"` lands the defaulted config on a DEEPER node
       # (under an implicit `address`). Runtime still materializes `{}` under `payload` BEFORE writing the
       # default, so ShapeValidator no longer short-circuits on nil and enforces the required `status`
-      # member — omission AND `payload: nil` FAIL. The shape-member hazard must walk the whole subtree,
-      # not just direct children, so the schema agrees: payload required AND non-nullable.
-      # The parent Proc default keeps the contract legal under PRO-2889 (satisfiability counts the Proc as a
-      # rescue), while strict reflection ignores Procs so the shape-synthesis hazard still forces payload required.
+      # member — `payload: nil` FAILS. The shape-member hazard must walk the whole subtree, not just direct
+      # children, so the schema agrees: payload non-nullable. Omission runs the parent's Proc default, which the
+      # schema leaves omittable and names in the description.
       klass = Class.new do
         include Axn
         expects :payload, type: Hash, allow_nil: true, default: -> { {} } do
@@ -2738,33 +2749,30 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
       expect(schema[:properties][:payload][:type]).to eq("object")
-      expect(schema[:required]).to include("payload")
-      expect(klass.call).not_to be_ok                          # runtime agreement: omission fails
+      expect(Array(schema[:required])).not_to include("payload")
+      expect(schema[:properties][:payload][:description]).to include("its `default:` is computed on the call")
       expect(klass.call(payload: nil)).not_to be_ok            # runtime agreement: nil fails
       expect(klass.call(payload: { status: "ok" })).to be_ok   # a satisfying call passes
     end
 
-    it "types the parent object-only + required when a DEEP (via dotted on:) subfield PROC default synthesizes " \
-       "it (the hazard counts Procs — materialization fires before the Proc runs, PRO-2872)" do
+    it "types the parent object-only when a DEEP (via dotted on:) subfield PROC default synthesizes it (the " \
+       "hazard counts Procs — materialization fires before the Proc runs, PRO-2872)" do
       # Same as above but the default is a Proc. Runtime materializes `{}` under `payload` BEFORE the Proc
-      # is evaluated, so the required `status` member is still enforced — omission/nil FAIL. The hazard
-      # predicate counts Procs, so the schema marks payload required AND non-nullable.
-      # The parent Proc default keeps the contract legal under PRO-2889 (satisfiability counts the Proc as a
-      # rescue), while strict reflection ignores Procs so the shape-synthesis hazard still forces payload required.
+      # is evaluated, so the required `status` member is still enforced — nil FAILS. The hazard predicate counts
+      # Procs, so the schema keeps payload non-nullable; omission is again the parent's Proc default to answer.
       klass = Class.new do
         include Axn
         expects :payload, type: Hash, allow_nil: true, default: -> { {} } do
           field :status, type: String
         end
         # optional: so the zip itself isn't a required descendant — the shape-member hazard clause,
-        # not the required-child clause, must be what forces the parent.
+        # not the required-child clause, must be what removes the null branch.
         expects :zip, on: "payload.address", type: String, default: -> { "x" }, optional: true
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
       expect(schema[:properties][:payload][:type]).to eq("object")
-      expect(schema[:required]).to include("payload")
-      expect(klass.call).not_to be_ok               # runtime agreement: omission fails
+      expect(Array(schema[:required])).not_to include("payload")
       expect(klass.call(payload: nil)).not_to be_ok # runtime agreement: nil fails
     end
 
@@ -2784,12 +2792,9 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(klass.call).not_to be_ok # runtime agreement: omission fails the parent's own presence
     end
 
-    it "keeps the parent required when the only DEEP (via dotted on:) subfield default is a Proc (rescue " \
-       "excludes Procs — stricter than runtime, PRO-2872)" do
-      # A Proc default's success is what would rescue omission, and a raising Proc would make omission FAIL,
-      # so the rescue walk deliberately excludes Procs — the parent stays required. This is the safe,
-      # stricter-than-runtime direction: runtime omission may pass when the Proc behaves, but reflecting
-      # required never causes a failed call. Schema-only assertion (runtime may legitimately differ).
+    it "keeps the parent required when the only DEEP (via dotted on:) subfield default is a Proc (PRO-2903)" do
+      # A subfield default — a Proc like any other — resolves only the child on the read path and never
+      # synthesizes the parent, so the parent's own presence check still rejects its omission.
       klass = Class.new do
         include Axn
         expects :payload, type: Hash
@@ -2888,15 +2893,18 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(schema[:required] || []).not_to include("payload")
     end
 
-    it "still requires the parent when a Proc default can't be inspected for coverage, even if it would supply the key at runtime" do
+    it "does not require a parent whose Proc default runs on the omitted call, naming what its value must cover" do
       klass = Class.new do
         include Axn
         expects :payload, type: Hash, default: -> { { name: "x" } }
         expects :name, on: :payload, type: String
+        def call = nil
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-      expect(schema[:required]).to include("payload")
+      expect(schema[:required] || []).not_to include("payload")
+      expect(schema[:properties][:payload][:description]).to include("its `default:` is computed on the call")
+      expect(klass.call).to be_ok
     end
 
     it "does not require a parent whose usable (non-blank) Hash default covers only some of its required subfields" do
@@ -3311,59 +3319,61 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
   describe "a dotted `on:` PARENT or an `on:` pointing at another subfield nests recursively and forces " \
            "its ancestor chain required when a descendant is required" do
-    it "requires an allow_nil parent through both a required SHALLOW child and its dotted-deep analog" do
-      # `zip` carries a Proc default in both routes so the contracts are legal under PRO-2889 (satisfiability
-      # counts the Proc); strict reflection ignores Procs, so the required leaf still forces the chain.
+    it "leaves an allow_nil parent omittable through both a Proc-defaulted SHALLOW child and its dotted-deep analog" do
+      # `zip` carries a Proc default in both routes. It runs whenever `zip` is absent, so a nil or omitted
+      # `address` strands nothing — whether the leaf is shallow or reached through a dotted-deep chain — and the
+      # nil-tolerant parent keeps both its tolerance and its omittability.
       shallow = Class.new do
         include Axn
         expects :address, allow_nil: true
         expects :zip, on: :address, default: -> { "x" }
+        def call = nil
       end
       dotted = Class.new do
         include Axn
         expects :address, allow_nil: true
         expects :zip, on: "address.billing", default: -> { "x" }
+        def call = nil
       end
 
       shallow_schema = described_class.build_input(shallow.internal_field_configs, shallow.subfield_configs)
       dotted_schema = described_class.build_input(dotted.internal_field_configs, dotted.subfield_configs)
 
-      # A required child strands an omitted parent at runtime, so the nil-tolerant parent stays required
-      # despite allow_nil — whether the required leaf is shallow or reached through a dotted-deep chain
-      # (a required descendant at any depth forces the ancestor chain required, PRO-2857).
-      expect(shallow_schema[:required] || []).to include("address")
-      expect(dotted_schema[:required] || []).to include("address")
+      expect(shallow_schema[:required] || []).not_to include("address")
+      expect(dotted_schema[:required] || []).not_to include("address")
+      expect(shallow.call).to be_ok
+      expect(dotted.call(address: {})).to be_ok
 
-      # The dotted parent nests through an implicit :billing intermediate carrying the required :zip leaf.
+      # The dotted parent nests through an implicit :billing intermediate carrying the :zip leaf.
       billing = dotted_schema[:properties][:address][:properties][:billing]
-      expect(billing[:type]).to eq("object")
+      expect(billing[:type]).to eq(%w[object null])
       expect(billing[:properties]).to have_key(:zip)
-      expect(billing[:required]).to eq(["zip"])
+      expect(billing).not_to have_key(:required)
     end
 
-    it "requires the top-level root when only a DEEP leaf (subfield-of-a-subfield) is required" do
-      # A required descendant (:leaf) at any depth forces its whole ancestor chain required: the nil
-      # parent (:foo) can't yield the descendant. `leaf` carries a Proc default so the contract is legal
-      # under PRO-2889 (satisfiability counts the Proc); strict reflection ignores Procs, so the override stands.
+    it "leaves the top-level root omittable when its only DEEP leaf (subfield-of-a-subfield) has a Proc default" do
+      # The Proc default answers for :leaf at any depth, so neither :mid nor :foo is forced required by it.
       klass = Class.new do
         include Axn
         expects :foo, optional: true
         expects :mid, on: :foo, optional: true
         expects :leaf, on: :mid, default: -> { "x" }
+        def call = nil
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-      expect(schema[:required] || []).to include("foo")
+      expect(schema[:required] || []).not_to include("foo")
+      expect(klass.call).to be_ok
       # :mid nests under :foo, and :leaf nests recursively under :mid.
       mid = schema[:properties][:foo][:properties][:mid]
       expect(mid[:properties]).to have_key(:leaf)
     end
 
-    it "requires a nil-tolerant root when its shallow child is required, even alongside a deep chain" do
-      # The shallow child :mid is required, so an omitted :foo strands it at runtime — the parent is
-      # required on that basis alone; the deeper :leaf (which also nests under :mid) merely reinforces it.
-      # `mid` carries a Proc default so the contract is legal under PRO-2889 (satisfiability counts the Proc);
-      # strict reflection ignores Procs, so :mid stays required and still forces :foo required.
+    it "leaves a nil-tolerant root omittable when its shallow child's Proc default answers for it, even alongside a " \
+       "deep chain" do
+      # :mid has a Proc default, so its absence is the default's to answer and it forces nothing above it; the
+      # deeper :leaf is still required inside :mid. The `-> { {} }` here computes a blank value the runtime
+      # rejects ("Mid can't be blank"), the accepted Proc-default divergence, which :mid's description names.
       klass = Class.new do
         include Axn
         expects :foo, optional: true
@@ -3372,7 +3382,10 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-      expect(schema[:required] || []).to include("foo")
+      expect(schema[:required] || []).not_to include("foo")
+      mid = schema[:properties][:foo][:properties][:mid]
+      expect(mid[:required]).to eq(["leaf"])
+      expect(mid[:description]).to include("its `default:` is computed on the call")
     end
 
     it "still requires a defaulted top-level root whose only descendant is an optional dotted-parent subfield " \
@@ -3787,14 +3800,18 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(schema[:required] || []).not_to include("role")
     end
 
-    it "still requires a field with a dynamic (Proc) exclusion set, since nil-membership can't be determined (stays conservative)" do
+    # Whether the set holds nil is unknowable without running the Proc, so the schema may not read it as
+    # rejecting nil (that would be stricter than a runtime whose set does not): the field is optional, and the
+    # exclusion is named.
+    it "leaves a field with a dynamic (Proc) exclusion set optional, naming the set, since its nil-membership can't be determined" do
       klass = Class.new do
         include Axn
         expects :role, presence: false, exclusion: { in: -> { %w[admin] } }
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-      expect(schema[:required]).to include("role")
+      expect(Array(schema[:required])).not_to include("role")
+      expect(schema.dig(:properties, :role, :description)).to include("exclusion")
     end
 
     it "still requires a field when a bare non-nil-tolerant validator is active alongside a nil-tolerant exclusion (all validators must tolerate nil)" do
@@ -4232,7 +4249,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       end
 
       expect { klass.input_schema }.not_to raise_error
-      # unknown nil-membership ⇒ treated as nil-rejecting (stricter, safe direction) ⇒ not nullable
+      # a set reflection may not ask about nil is read as nil-rejecting ⇒ not nullable
       expect(Array(klass.input_schema[:properties][:b][:type])).not_to include("null")
     end
 
@@ -4481,23 +4498,26 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     end
 
     describe "transitive requiredness/nullability (a required descendant strands every nil/omitted ancestor)" do
-      it "forces an optional: intermediate AND its nil-tolerant top-level parent required when a deep leaf " \
-         "is required (fixes the old shallow-only divergence)" do
-        # `id` carries a Proc default so the contract is legal under PRO-2889 (satisfiability counts the
-        # Proc); strict reflection ignores Procs, so the transitive-requiredness override still stands.
+      it "leaves an optional: intermediate AND its nil-tolerant top-level parent omittable and nullable when the " \
+         "deep leaf has a Proc default" do
+        # `id` has a Proc default, which runs whenever it is absent, so neither a nil `meta` nor a nil `payload`
+        # strands it and every ancestor keeps its own tolerance.
         klass = Class.new do
           include Axn
           expects :payload, type: Hash, allow_nil: true
           expects :meta, on: :payload, type: Hash, optional: true
           expects :id, on: :meta, type: Integer, default: -> { 1 }
+          def call = nil
         end
         schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-        expect(schema[:required]).to include("payload")
+        expect(Array(schema[:required])).not_to include("payload")
         payload = schema[:properties][:payload]
-        expect(payload[:type]).to eq("object")                       # null stripped: nil payload strands id
-        expect(payload[:required]).to eq(["meta"])                   # optional: meta is overridden by its required child
-        expect(payload[:properties][:meta][:type]).to eq("object")   # meta likewise non-nullable
+        expect(payload[:type]).to eq(%w[object null])
+        expect(payload).not_to have_key(:required)
+        expect(payload[:properties][:meta][:type]).to eq(%w[object null])
+        expect(klass.call(payload: nil)).to be_ok
+        expect(klass.call(payload: { meta: nil })).to be_ok
       end
 
       it "keeps implicit intermediates required and non-nullable above a required deep leaf" do
@@ -4531,27 +4551,28 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         expect(payload[:properties][:meta][:required]).to eq(["id"])
       end
 
-      it "counts a required deep leaf below a NON-OBJECT intermediate toward ancestor requiredness even " \
-         "though its shape is omitted (runtime still validates it)" do
+      it "reads a Proc-defaulted deep leaf below a NON-OBJECT intermediate as rescuing its ancestors even " \
+         "though its shape is omitted" do
         # `first` reads a real reader segment (Array#first — answerable at declaration) and carries a Proc
-        # default so the contract is legal under PRO-2889 (satisfiability counts the Proc); strict
-        # reflection ignores Procs, so the deep-leaf-forces-ancestors override still stands.
+        # default, which runs whenever it is absent, so it strands neither `items` nor `payload`.
         klass = Class.new do
           include Axn
           expects :payload, type: Hash, allow_nil: true
           expects :items, on: :payload, type: Array, optional: true
           expects :first, on: :items, type: String, default: -> { "x" }
+          def call = nil
         end
         schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-        # first is dropped from the schema shape (non-object parent) but runtime requires it,
-        # which requires items present, which requires payload present.
+        # first is dropped from the schema shape (non-object parent), and each ancestor keeps its own tolerance.
         payload = schema[:properties][:payload]
-        expect(payload[:required]).to eq(["items"])
-        expect(payload[:type]).to eq("object")
-        expect(schema[:required]).to include("payload")
-        expect(payload[:properties][:items][:type]).to eq("array")
+        expect(payload).not_to have_key(:required)
+        expect(payload[:type]).to eq(%w[object null])
+        expect(Array(schema[:required])).not_to include("payload")
+        expect(payload[:properties][:items][:type]).to eq(%w[array null])
         expect(payload[:properties][:items]).not_to have_key(:properties)
+        expect(klass.call(payload: {})).to be_ok
+        expect(klass.call(payload: nil)).to be_ok
       end
     end
 
@@ -4613,10 +4634,9 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         expect(Array(meta[:required]).count("company_id")).to eq(1)
       end
 
-      it "requires the top-level model <field>_id when the model has a REQUIRED deep subfield (an omitted record strands it at runtime)" do
-        # `theme` carries a Proc default so the contract is legal under PRO-2889 (satisfiability counts the
-        # Proc); strict reflection ignores Procs, so the id stays required. The Proc rescues omission at
-        # runtime — schema stricter than runtime, the safe divergence.
+      it "does NOT require the top-level model <field>_id when the model's deep subfield has a Proc default" do
+        # `theme` has no `optional:`, but its Proc default supplies it when no record resolves, so an omitted id
+        # strands nothing.
         klass = Class.new do
           include Axn
           expects :company, model: { klass: Struct.new(:id, :settings), finder: :find }, allow_nil: true
@@ -4625,8 +4645,8 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         end
         schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-        expect(schema[:required]).to include("company_id")
-        expect(klass.call).to be_ok # Proc default rescues omission; schema stays stricter
+        expect(Array(schema[:required])).not_to include("company_id")
+        expect(klass.call).to be_ok # runtime agreement: omitting the id succeeds
       end
 
       it "does NOT require the model <field>_id when a nil-tolerant model has ONLY an optional deep subfield" do
@@ -5482,9 +5502,9 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             expect(klass.call(payload: { inner: {} })).not_to be_ok # the ancestor's required `a` still enforced
           end
 
-          # Two approximate hints beside each other never contradict — nothing is lost by conjoining them
-          # normally, so this is the one combination where the plain conjoin still runs.
-          it "conjoins normally when BOTH sides are approximate, since two string hints cannot contradict" do
+          # Two unknown-class sides beside each other never contradict — neither asserts a type, so nothing is
+          # lost by conjoining them normally, and this is the one combination where the plain conjoin still runs.
+          it "conjoins normally when BOTH sides are unknown classes, since two untyped sides cannot contradict" do
             klass = Class.new do
               include Axn
               expects :payload, type: Hash do
@@ -5496,8 +5516,12 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
             inner = schema[:properties][:payload][:properties][:inner]
-            expect(inner[:type]).to eq("string")
-            expect(inner[:allOf]).to eq([{ type: "string", minLength: 1 }])
+            expect(inner).not_to have_key(:type)
+            expect(inner[:allOf]).to include({ not: { enum: ["", [], {}, false, nil] } })
+            expect(inner[:description]).to include('"type":{"klass":"Enumerable"}')
+            validator = JSONSchemer.schema(JSON.parse(JSON.generate(inner)))
+            expect(validator.valid?([1])).to be(true)
+            expect(klass.call(payload: { inner: [1] })).to be_ok
           end
 
           # A mixed union with ONE exact branch is still approximate as a WHOLE: `Object` alone already
@@ -5929,7 +5953,10 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
             inner = schema[:properties][:payload][:properties][:inner]
-            expect(constraints(inner)).to eq(type: "string", minLength: 1)
+            expect(inner).not_to have_key(:type)
+            expect(inner[:allOf]).to eq([{ not: { enum: ["", [], {}, false, nil] } }])
+            expect(inner[:description]).to include('({"type":"integer"})')
+            expect(JSONSchemer.schema(JSON.parse(JSON.generate(inner))).valid?("5")).to be(true)
             expect(klass.call(payload: { inner: "5" })).to be_ok
           end
 
@@ -6110,7 +6137,13 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
             inner = schema[:properties][:payload][:properties][:inner]
-            expect(inner).to eq(description: "some description", type: "string", minLength: 3)
+            expect(constraints(inner)).to include(minLength: 3, minItems: 3, minProperties: 3)
+            expect(inner).not_to have_key(:type)
+            expect(inner[:description]).to start_with("some description")
+            expect(inner[:description]).to include('"length":{"minimum":3}')
+            validator = JSONSchemer.schema(JSON.parse(JSON.generate(inner)))
+            expect(validator.valid?("abc")).to be(true)
+            expect(validator.valid?("a")).to be(false)
             expect(klass.call(payload: { inner: "abc" })).to be_ok
             expect(klass.call(payload: { inner: "a" })).not_to be_ok
           end
@@ -6222,7 +6255,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
               end
               inner = klass.input_schema[:properties][:payload][:properties][:inner]
 
-              expect(inner[:description]).to start_with("the caller's own words ")
+              expect(inner[:description]).to start_with("the caller's own words. ")
               expect(inner[:description]).to include('{"type":"integer"}')
             end
 
@@ -6241,10 +6274,9 @@ RSpec.describe Axn::Internal::Reflection::Schema do
               expect(inner[:description]).to be_nil
             end
 
-            # Reflection is static-maximal, so a gated bound is normally emitted as though its gate were
-            # open — stricter than the runtime, which is licensed. It stops being licensed when the
-            # conjunction admits NOTHING, because the contract still does: every call the gate closes
-            # accepts a Hash here. So the gated side stands down on the type axis and is reported.
+            # A gated check is reflected with its gate closed: every call the gate closes accepts a Hash
+            # here, so the gated side stands down on the type axis and is reported, and the node stays
+            # satisfiable.
             it "keeps the node satisfiable when a gated member's type cannot hold beside the node's" do
               klass = Class.new do
                 include Axn
@@ -6450,7 +6482,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
               end
               inner = klass.input_schema[:properties][:payload][:properties][:inner]
 
-              expect(inner[:description]).to start_with("numeric identifier ")
+              expect(inner[:description]).to start_with("numeric identifier. ")
               expect(inner[:description]).to include("cannot express")
             end
 
@@ -6792,16 +6824,14 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           end
         end
 
-        # DELIBERATELY the inverse of what this asserted before: reflection is static-maximal everywhere
-        # else, but at a COLLISION a conditional declaration is reflected by what it enforces on every call.
-        # Pretending the condition holds states something false about a position two declarations bind — it
-        # can describe a value nothing satisfies while the runtime accepts values on every call the
-        # condition closes — so the conditional half is reported rather than asserted.
+        # A conditional declaration is reflected by what it enforces on every call. Pretending the condition
+        # holds states something false about a position two declarations bind — it can describe a value
+        # nothing satisfies while the runtime accepts values on every call the condition closes — so the
+        # conditional half is reported rather than asserted.
         #
         # The cost is visible here and is the trade: the gated member's nested shape (`properties`/`required`
-        # for `a`) no longer reaches the document, so a client is told less about that position than before.
-        # It is told nothing FALSE, which is the direction that matters, and the `description` carries what
-        # was withheld.
+        # for `a`) does not reach the document, so a client is told less about that position. It is told
+        # nothing FALSE, which is the direction that matters, and the `description` carries what was withheld.
         it "reflects a gated member by what it enforces on every call, not as an ungated one" do
           gated = Class.new do
             include Axn
@@ -7004,7 +7034,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           expects :account, on: :payload, type: Hash
           expects :user, on: :account, model: { klass: MergedRouteUser, finder: :find }, optional: true # model route
           # `name` carries a Proc default so the contract is legal under PRO-2889 (the nil-tolerant :user
-          # model strands it otherwise); strict reflection ignores Procs, so the drop/nesting behavior is unchanged.
+          # model strands it otherwise); the drop/nesting behavior under test does not depend on it.
           expects :name, on: :user, type: String, default: -> { "x" } # deep grandchild
           def call = nil
         end
@@ -7018,13 +7048,12 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     end
   end
 
-  # The schema's deep requiredness claims must AGREE with runtime outcomes (or diverge only in the
-  # stricter direction). Each example asserts both sides against the same class.
+  # The schema's deep requiredness claims must AGREE with runtime outcomes. Each example asserts both sides
+  # against the same class.
   describe "runtime agreement for deep subfields" do
-    it "required deep leaf with a Proc default: schema requires the chain (strict), the Proc rescues omission at runtime" do
-      # `id` carries a Proc default so the contract is legal under PRO-2889 (satisfiability counts the Proc).
-      # Strict reflection ignores Procs, so the schema still requires the whole chain, while the Proc rescues
-      # an omitted/nil-meta call at runtime — the ALLOWED stricter divergence (schema never rejects a valid call).
+    it "required deep leaf with a Proc default: schema leaves the chain omittable, and the Proc rescues omission at runtime" do
+      # `id` carries a Proc default, which runs on every call that leaves it absent, so neither an omitted
+      # payload nor a nil meta strands it.
       klass = Class.new do
         include Axn
         expects :payload, type: Hash, allow_nil: true
@@ -7034,7 +7063,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
-      expect(schema[:required]).to include("payload")
+      expect(Array(schema[:required])).not_to include("payload")
       expect(klass.call).to be_ok                                       # Proc default rescues omission
       expect(klass.call(payload: { meta: nil })).to be_ok               # Proc default rescues nil meta
       expect(klass.call(payload: { meta: { id: 7 } })).to be_ok
@@ -7314,9 +7343,8 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     it "emits the same input_schema for the shape-member synthesis hazard: a nil-tolerant Hash parent " \
        "with a required do...end shape member plus a defaulted shallow on: subfield " \
        "(required_child?'s surviving second disjunct)" do
-      # The parent Proc default keeps the contract legal under PRO-2889 (satisfiability counts the Proc as a
-      # rescue) while strict reflection ignores Procs — the emitted schema is unchanged (Proc defaults are
-      # never serialized, and the hazard still forces payload required + non-nullable).
+      # The hazard keeps payload non-nullable; the parent's Proc default leaves it omittable (it is never
+      # serialized, and its obligation is named in payload's description, compared separately here).
       klass = Class.new do
         include Axn
         expects :payload, type: Hash, allow_nil: true, default: -> { {} } do
@@ -7324,8 +7352,11 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         end
         expects :note, on: :payload, optional: true, type: String, default: "x"
       end
+      schema = klass.input_schema
+      payload = schema[:properties][:payload]
 
-      expect(klass.input_schema).to eq(
+      expect(payload[:description]).to include("its `default:` is computed on the call")
+      expect(schema.merge(properties: { payload: constraints(payload) })).to eq(
         type: "object",
         properties: {
           payload: {
@@ -7337,15 +7368,13 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             required: ["status"],
           },
         },
-        required: ["payload"],
       )
     end
 
     it "emits the same input_schema for the shape-member synthesis hazard triggered by a DEEP " \
        "(dotted-on:) default" do
-      # The parent Proc default keeps the contract legal under PRO-2889 (satisfiability counts the Proc as a
-      # rescue) while strict reflection ignores Procs — the emitted schema is unchanged (Proc defaults are
-      # never serialized, and the hazard still forces payload required + non-nullable).
+      # The hazard keeps payload non-nullable; the parent's Proc default leaves it omittable (it is never
+      # serialized, and its obligation is named in payload's description, compared separately here).
       klass = Class.new do
         include Axn
         expects :payload, type: Hash, allow_nil: true, default: -> { {} } do
@@ -7353,8 +7382,11 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         end
         expects :zip, on: "payload.address", default: "x"
       end
+      schema = klass.input_schema
+      payload = schema[:properties][:payload]
 
-      expect(klass.input_schema).to eq(
+      expect(payload[:description]).to include("its `default:` is computed on the call")
+      expect(schema.merge(properties: { payload: constraints(payload) })).to eq(
         type: "object",
         properties: {
           payload: {
@@ -7371,13 +7403,12 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             required: ["status"],
           },
         },
-        required: ["payload"],
       )
     end
   end
 
   describe "satisfiability mode (PRO-2889)" do
-    it "counts a Proc default as a rescue only in satisfiability mode" do
+    it "counts a Proc default as a rescue in both modes, since it runs on the omitted call" do
       action = build_axn do
         expects :payload, type: Hash, allow_nil: true
         expects :id, on: :payload, type: Integer, default: -> { 1 }
@@ -7389,7 +7420,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       strict = Axn::Internal::Reflection::Schema.derive_annotations(resolved.roots)
       sat    = Axn::Internal::Reflection::Schema.derive_annotations(resolved.roots, satisfiability: true)
 
-      expect(strict[id_node].required).to be(true)   # schema: unknowable → required (safe direction)
+      expect(strict[id_node].required).to be(false)  # schema: the field is omittable
       expect(sat[id_node].required).to be(false)     # detector: the Proc DOES apply at runtime
     end
   end
@@ -7449,25 +7480,29 @@ RSpec.describe Axn::Internal::Reflection::Schema do
   end
 
   describe "conditional validation (if:/unless:) reflection" do
-    it "reflects a bare conditional field static-maximal (required, non-null) without executing the condition" do
+    # A closed gate skips every check the declaration carries, so a bare conditional field is reflected with its
+    # gate closed: optional and untyped, with what the open gate enforces named in the description.
+    it "reflects a bare conditional field with its gate closed (optional, untyped) without executing the condition" do
       ran = false
       action = build_axn do
         expects :flag, type: :boolean
         expects :num, type: Integer, if: -> { ran = true }
       end
       schema = action.input_schema
-      expect(schema[:required]).to include("num")
-      expect(schema[:properties][:num][:type]).to eq("integer")
+      expect(schema[:required]).not_to include("num")
+      expect(schema[:properties][:num]).not_to have_key(:type)
+      expect(schema[:properties][:num][:description]).to include('({"type":"integer"})', "required on the calls its condition opens")
       expect(ran).to be false
     end
 
-    it "keeps a tolerance-flagged conditional field optional (the static tolerance is unconditional)" do
+    it "keeps a tolerance-flagged conditional field optional and names its gated type" do
       action = build_axn do
         expects :note, type: String, optional: true, if: :cond
       end
       schema = action.input_schema
       expect(schema[:required].to_a).not_to include("note")
-      expect(schema[:properties][:note][:type]).to eq(%w[string null])
+      expect(schema[:properties][:note]).not_to have_key(:type)
+      expect(schema[:properties][:note][:description]).to include('"type":["string","null"]')
     end
 
     it "leaves a gated exposes property untyped (a closed gate can emit any exposed value)" do
@@ -7496,16 +7531,19 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(action.output_schema[:properties][:num]).not_to have_key(:type)
     end
 
-    it "reflects a gated shape member static-maximal (required inside its object)" do
+    it "reflects a gated shape member with its gate closed (optional and untyped inside its object)" do
       action = build_axn do
         expects :flag, type: :boolean
         expects :payload, type: Hash do
           field :note, type: String, if: :flag
         end
+        def call = nil
       end
       prop = action.input_schema[:properties][:payload]
-      expect(prop[:required]).to include("note")
-      expect(prop[:properties][:note][:type]).to eq("string")
+      expect(prop[:required].to_a).not_to include("note")
+      expect(prop[:properties][:note]).not_to have_key(:type)
+      expect(prop[:properties][:note][:description]).to include('({"type":"string"})', "required on the calls its condition opens")
+      expect(action.call(flag: false, payload: { other: 1 })).to be_ok
     end
 
     it "drops output requiredness for a gated shape member when the outbound gate is closed" do
@@ -7527,14 +7565,16 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       payload_prop = action.output_schema[:properties][:payload]
       expect(payload_prop[:required].to_a).not_to include("note")
 
-      # INPUT stays static-maximal for the equivalent input shape: the gated member is still required.
+      # INPUT reads the same gate closed: the gated member is optional there too, its obligation named instead.
       input_action = build_axn do
         expects :flag, type: :boolean
         expects :payload, type: Hash do
           field :note, type: String, if: :flag
         end
       end
-      expect(input_action.input_schema[:properties][:payload][:required]).to include("note")
+      input_payload = input_action.input_schema[:properties][:payload]
+      expect(input_payload[:required].to_a).not_to include("note")
+      expect(input_payload[:properties][:note][:description]).to include("required on the calls its condition opens")
     end
 
     it "drops output requiredness for a shape member whose presence is only NESTED-gated" do
@@ -7556,15 +7596,16 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       payload_prop = action.output_schema[:properties][:payload]
       expect(payload_prop[:required].to_a).not_to include("note")
 
-      # INPUT stays static-maximal for the equivalent input shape: the nested-gated member is still
-      # required (a client is still expected to send it).
+      # INPUT reads the same nested gate closed: the member is optional there too, its obligation named instead.
       input_action = build_axn do
         expects :flag, type: :boolean
         expects :payload, type: Hash do
           field :note, presence: { if: :flag }
         end
       end
-      expect(input_action.input_schema[:properties][:payload][:required]).to include("note")
+      input_payload = input_action.input_schema[:properties][:payload]
+      expect(input_payload[:required].to_a).not_to include("note")
+      expect(input_payload[:properties][:note][:description]).to include("required on the calls its condition opens")
     end
 
     it "keeps output requiredness for a shape member with an UNGATED presence alongside a nested-gated type" do
@@ -7587,16 +7628,21 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(payload_prop[:required]).to include("note")
     end
 
-    it "does not force a gated required subfield's ancestors (own-level nested required kept)" do
+    it "does not force a gated required subfield's ancestors, nor list it in its own object's required" do
       action = build_axn do
         expects :data, optional: true
         expects :user, type: String, on: :data, if: -> { data.present? }
       end
       schema = action.input_schema
       expect(schema[:required].to_a).not_to include("data")
-      expect(schema[:properties][:data][:type]).to eq(%w[object null])
-      expect(schema[:properties][:data][:required]).to eq(["user"])
-      expect(schema[:properties][:data][:properties][:user][:type]).to eq("string")
+      # Untyped with only a gated child, so a non-object value reaches the child as nothing and passes: the node
+      # states its children without claiming `object`, and admits null.
+      expect(schema[:properties][:data]).not_to have_key(:type)
+      expect(schema[:properties][:data]).not_to have_key(:not)
+      expect(schema[:properties][:data]).not_to have_key(:required)
+      user = schema[:properties][:data][:properties][:user]
+      expect(user).not_to have_key(:type)
+      expect(user[:description]).to include('({"type":"string"})', "required on the calls its condition opens")
     end
 
     it "keeps ancestor-forcing when any config at the node is ungated" do
@@ -7607,13 +7653,15 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       end
       schema = action.input_schema
       expect(schema[:required]).to include("data")
-      expect(schema[:properties][:data][:required]).to match_array(%w[user role])
+      # The gated sibling is reflected with its gate closed; only the ungated one is listed.
+      expect(schema[:properties][:data][:required]).to eq(%w[role])
+      expect(schema[:properties][:data][:properties][:user][:description]).to include("required on the calls its condition opens")
     end
 
     it "reflects a merged node's parent per its UNGATED optional route (ancestor-forcing ignores the gated route)" do
       # `root.data.user` merges an UNGATED optional route and a gated required route. Ancestor-forcing
-      # uses the ungated subset, so the ungated-optional route leaves `data` omittable while the gated
-      # route's own-level obligation is still emitted in the node's nested `required`.
+      # uses the ungated subset, so the ungated-optional route leaves `data` omittable, and the gated route's
+      # own-level obligation is named on `user` rather than listed in the node's nested `required`.
       action = build_axn do
         expects :strict, type: :boolean, default: false
         expects :root, type: Hash, allow_blank: true
@@ -7625,9 +7673,12 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       # data is NOT forced required by the gated route
       expect(root[:required].to_a).not_to include("data")
       data = root[:properties][:data]
-      expect(data[:type]).to eq(%w[object null])
-      # the gated route's own-level nested requiredness is kept static-maximal
-      expect(data[:required]).to eq(["user"])
+      expect(data).not_to have_key(:type) # untyped, with no child it cannot do without
+      expect(data).not_to have_key(:not)
+      expect(data).not_to have_key(:required)
+      expect(data[:properties][:user]).to include(type: %w[string null])
+      expect(data[:properties][:user][:description]).to include("required on the calls its condition opens")
+      expect(action.call(root: { data: {} })).to be_ok
     end
 
     it "reflects a blank `if:` as no gate at all: required, with no allOf clause emitted" do
@@ -7640,15 +7691,20 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     end
 
     describe "per-validator (nested) gates reach reflection" do
-      it "does not force ancestors for a subfield gated by a nested presence condition (own-level required kept)" do
+      it "does not force ancestors for a subfield gated by a nested presence condition, nor list it as required" do
         action = build_axn do
           expects :data, optional: true
           expects :user, on: :data, presence: { if: -> { data.present? } }
         end
         schema = action.input_schema
         expect(schema[:required].to_a).not_to include("data")
-        expect(schema[:properties][:data][:type]).to eq(%w[object null])
-        expect(schema[:properties][:data][:required]).to eq(["user"]) # own-level static-maximal
+        # Untyped with only a gated child, so a non-object value reaches the child as nothing and passes: the node
+        # states its children without claiming `object`, and admits null.
+        expect(schema[:properties][:data]).not_to have_key(:type)
+        expect(schema[:properties][:data]).not_to have_key(:not)
+        expect(schema[:properties][:data]).not_to have_key(:required)
+        expect(schema[:properties][:data][:properties][:user][:description])
+          .to include("required on the calls its condition opens")
       end
 
       it "still forces ancestors when a nested-gated presence sits alongside an ungated nil-rejecting type" do
@@ -7690,14 +7746,18 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         expect(prop).not_to have_key(:type) # untyped → null admissible
       end
 
-      it "keeps INPUT static-maximal for a nested-gated type (the gate only relaxes at runtime)" do
+      it "leaves a nested-gated type out of INPUT too, keeping the ungated presence's requiredness" do
         action = build_axn do
           expects :flag, type: :boolean
           expects :amount, type: { klass: Integer, if: :flag }
+          def call = nil
         end
         schema = action.input_schema
         expect(schema[:required]).to include("amount")
-        expect(schema[:properties][:amount][:type]).to eq("integer")
+        expect(schema[:properties][:amount]).not_to have_key(:type)
+        expect(schema[:properties][:amount][:description]).to include('({"type":"integer"})')
+        expect(action.call(flag: false, amount: "x")).to be_ok # the closed gate skips the type check
+        expect(action.call(flag: false)).not_to be_ok          # presence is ungated
       end
 
       it "output schema is a superset: a closed nested gate lets a wrong-typed value through while the property is untyped" do
@@ -7721,14 +7781,19 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         end
         schema = action.input_schema
         expect(schema[:required].to_a).not_to include("coupon_code")
+        # The clause carries the gate-open property as well as the requiredness; the top-level property is the
+        # gate-closed reading, which constrains nothing.
         expect(schema[:allOf]).to eq([{
                                        if: {
                                          required: ["promo_enabled"],
                                          properties: { promo_enabled: { not: { enum: [false, nil] } } },
                                        },
-                                       then: { required: ["coupon_code"] },
+                                       then: {
+                                         required: ["coupon_code"],
+                                         properties: { coupon_code: { type: "string", minLength: 1 } },
+                                       },
                                      }])
-        expect(schema[:properties][:coupon_code][:type]).to eq("string")
+        expect(schema[:properties][:coupon_code]).to eq({})
       end
 
       it "emits else for unless:" do
@@ -7738,15 +7803,15 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         end
         clause = action.input_schema[:allOf].first
         expect(clause[:if][:required]).to eq(["skip_check"])
-        expect(clause[:else]).to eq({ required: ["coupon_code"] })
+        expect(clause[:else]).to eq({ required: ["coupon_code"], properties: { coupon_code: { type: "string", minLength: 1 } } })
         expect(clause).not_to have_key(:then)
       end
 
       it "falls back for an unless: gate when boolean coercion can flip the referenced truthiness" do
         # The referenced field admits both boolean coercion and a String wire form: wire "false" is
         # schema-admissible (String branch) and truthy to the emitted `if`, but runtime coerces it to
-        # `false`, opening the unless-gate and requiring coupon_code. An emitted `else` clause would be
-        # looser than runtime, so fall back to unconditional required.
+        # `false`, opening the unless-gate and requiring coupon_code. No clause states that, so the field falls
+        # back to optional, with its conditional requiredness named in the description.
         action = build_axn do
           expects :skip_check, coerce: [:boolean, String]
           expects :coupon_code, type: String, unless: :skip_check
@@ -7754,18 +7819,21 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         end
         schema = action.input_schema
         expect(schema[:allOf]).to be_nil
-        expect(schema[:required]).to include("coupon_code")
+        expect(schema[:required]).not_to include("coupon_code")
+        expect(schema[:properties][:coupon_code][:description]).to include("required on the calls its condition opens")
       end
 
-      it "STILL emits for an if: gate with the same flippable reference (stricter direction)" do
-        # A truthy->falsey flip on an if: gate keeps the emitted `then` requiring the field while the
-        # runtime gate closes — schema stricter than runtime, the safe direction, so the clause stays.
+      it "falls back for an if: gate with the same flippable reference too" do
+        # A truthy->falsey flip on an if: gate would leave the emitted `then` requiring the field while the
+        # runtime gate closes — rejecting a call the runtime takes — so the clause is not emitted either.
         action = build_axn do
           expects :skip_check, coerce: [:boolean, String]
           expects :coupon_code, type: String, if: :skip_check
           def call; end
         end
-        expect(action.input_schema[:allOf]).not_to be_nil
+        expect(action.input_schema[:allOf]).to be_nil
+        expect(action.input_schema[:required]).not_to include("coupon_code")
+        expect(action.call(skip_check: "false")).to be_ok
       end
 
       it "STILL emits for a plain boolean unless: gate (a String wire value is schema-rejected)" do
@@ -7790,7 +7858,8 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         end
         schema = action.input_schema
         expect(schema[:allOf]).to be_nil
-        expect(schema[:required]).to include("coupon_code")
+        expect(schema[:required]).not_to include("coupon_code")
+        expect(schema[:properties][:coupon_code][:description]).to include("required on the calls its condition opens")
       end
 
       it "falls back for an unless: gate on a Symbol-branch reference (schema emits Symbol as string)" do
@@ -7806,16 +7875,18 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         end
         schema = action.input_schema
         expect(schema[:allOf]).to be_nil
-        expect(schema[:required]).to include("coupon_code")
+        expect(schema[:required]).not_to include("coupon_code")
+        expect(schema[:properties][:coupon_code][:description]).to include("required on the calls its condition opens")
       end
 
-      it "STILL emits for an if: gate with the same Symbol-branch reference (stricter direction)" do
+      it "falls back for an if: gate with the same Symbol-branch reference too" do
         action = build_axn do
           expects :skip_check, type: [:boolean, Symbol]
           expects :coupon_code, type: String, if: :skip_check
           def call; end
         end
-        expect(action.input_schema[:allOf]).not_to be_nil
+        expect(action.input_schema[:allOf]).to be_nil
+        expect(action.input_schema[:required]).not_to include("coupon_code")
       end
 
       it "falls back for an unless: gate on a Float-coercible reference (runtime coerces integer 0 to false)" do
@@ -7831,16 +7902,19 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         end
         schema = action.input_schema
         expect(schema[:allOf]).to be_nil
-        expect(schema[:required]).to include("coupon_code")
+        expect(schema[:required]).not_to include("coupon_code")
+        expect(schema[:properties][:coupon_code][:description]).to include("required on the calls its condition opens")
       end
 
-      it "STILL emits for an if: gate with the same Float-coercible reference (stricter direction)" do
+      it "falls back for an if: gate with the same Float-coercible reference too" do
         action = build_axn do
           expects :skip_check, coerce: [:boolean, Float]
           expects :coupon_code, type: String, if: :skip_check
           def call; end
         end
-        expect(action.input_schema[:allOf]).not_to be_nil
+        expect(action.input_schema[:allOf]).to be_nil
+        expect(action.input_schema[:required]).not_to include("coupon_code")
+        expect(action.call(skip_check: 0)).to be_ok # 0 coerces to false, closing the gate
       end
 
       it "falls back for an unless: gate on an Integer-coercible reference (same integer-0 hazard)" do
@@ -7851,14 +7925,16 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         end
         schema = action.input_schema
         expect(schema[:allOf]).to be_nil
-        expect(schema[:required]).to include("coupon_code")
+        expect(schema[:required]).not_to include("coupon_code")
+        expect(schema[:properties][:coupon_code][:description]).to include("required on the calls its condition opens")
       end
 
-      it "falls back to unconditional required when any guard fails" do
+      it "falls back to optional, naming the conditional requiredness, when any guard fails" do
         fallback_required = lambda do |&decl|
           schema = build_axn(&decl).input_schema
           expect(schema[:allOf]).to be_nil
-          expect(schema[:required]).to include("coupon_code")
+          expect(schema[:required].to_a).not_to include("coupon_code")
+          expect(schema[:properties][:coupon_code][:description]).to include("required on the calls its condition opens")
         end
 
         # Proc condition (opaque)
@@ -7921,7 +7997,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         end
         schema = pre.input_schema
         expect(schema[:allOf]).to be_nil
-        expect(schema[:required]).to include("coupon_code")
+        expect(schema[:required]).not_to include("coupon_code")
 
         # (a') user defines its own predicate AFTER the field declaration.
         post_pred = build_axn do
@@ -7931,7 +8007,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         end
         schema = post_pred.input_schema
         expect(schema[:allOf]).to be_nil
-        expect(schema[:required]).to include("coupon_code")
+        expect(schema[:required]).not_to include("coupon_code")
 
         # (b) user redefines the PLAIN reader after expects: same hazard, the def shadows the reader.
         plain = build_axn do
@@ -7941,7 +8017,8 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         end
         schema = plain.input_schema
         expect(schema[:allOf]).to be_nil
-        expect(schema[:required]).to include("coupon_code")
+        expect(schema[:required]).not_to include("coupon_code")
+        expect(schema[:properties][:coupon_code][:description]).to include("required on the calls its condition opens")
       end
 
       it "still emits for the generated readers (source_location check does not false-positive)" do
@@ -8007,7 +8084,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
       it "falls back when a non-blank nested gate ties a nil-rejecting entry to a DIFFERENT condition" do
         # `presence: { if: :other }` gates presence on `other`, not the declaration's `flag`, so an allOf
-        # keyed on `flag` would mis-model requiredness. Fall back to unconditional required.
+        # keyed on `flag` would mis-model requiredness. Fall back to optional, naming the conditional requiredness.
         action = build_axn do
           expects :flag, :other, type: :boolean
           expects :name, type: String, if: :flag, presence: { if: :other }
@@ -8015,7 +8092,8 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         end
         schema = action.input_schema
         expect(schema[:allOf]).to be_nil
-        expect(schema[:required]).to include("name")
+        expect(schema[:required]).not_to include("name")
+        expect(schema[:properties][:name][:description]).to include("required on the calls its condition opens")
       end
 
       it "STILL emits when the nested-gated entry is nil-TOLERANT (harmless for requiredness)" do
@@ -8033,9 +8111,11 @@ RSpec.describe Axn::Internal::Reflection::Schema do
                                          required: ["flag"],
                                          properties: { flag: { not: { enum: [false, nil] } } },
                                        },
-                                       then: { required: ["name"] },
+                                       then: { required: ["name"], properties: { name: { type: "string", minLength: 1 } } },
                                      }])
         expect(schema[:required].to_a).not_to include("name")
+        # The length check gated on a different condition is left out of the clause and named instead.
+        expect(schema[:properties][:name][:description]).to include('({"minLength":2})')
       end
     end
   end
@@ -8113,10 +8193,9 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
     # A bag hands its `of:`/`shape:` to the next level as ActiveModel entries verbatim
     # (`OfValidator#inner_contract_validations`), so a per-validator gate written on one really can skip that
-    # level on a given call. OUTPUT therefore drops it, exactly as `effective_validations` drops a gated entry
-    # at a field — an output schema must not promise what a closed gate may not enforce. INPUT keeps it, for
-    # the same reason `effective_validations` leaves input untouched: static-maximal is the safe direction
-    # there, since a gate can only relax enforcement at runtime.
+    # level on a given call. Both directions therefore drop it, exactly as a gated entry at a field is dropped —
+    # a schema must not promise what a closed gate may not enforce. INPUT names the dropped rung in the
+    # description.
     describe "a gate on an inner rung" do
       let(:action) do
         build_axn do
@@ -8129,10 +8208,12 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         expect(action.output_schema.dig(:properties, :rows, :items)).to eq({ type: "array" })
       end
 
-      it "keeps it on INPUT" do
+      it "drops it from INPUT too, and names it" do
         inbound = build_axn { expects :rows, type: Array, of: { klass: Array, of: { klass: Integer, if: :flag } } }
+        items = inbound.input_schema.dig(:properties, :rows, :items)
 
-        expect(inbound.input_schema.dig(:properties, :rows, :items)).to eq({ type: "array", items: { type: "integer" } })
+        expect(constraints(items)).to eq({ type: "array" })
+        expect(items[:description]).to include("applies only on the calls its condition opens (its `of:` contract)")
       end
 
       it "keeps an UNgated rung on output" do
@@ -8455,7 +8536,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         end
       end
 
-      expect(described_class.single_type_for(token, for_output: false)).to eq({ type: "string" })
+      expect(described_class.single_type_for(token, for_output: false)).to eq({})
       expect(described_class.single_type_for(token, for_output: true)).to eq({})
       expect(dispatched).to eq([])
     end
@@ -8670,7 +8751,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     it "emits a node nothing satisfies where the narrowing empties the union" do
       action = build_axn { expects :n, type: Float, numericality: { only_integer: true } }
 
-      expect(action.input_schema[:properties][:n]).to eq(enum: [])
+      expect(constraints(action.input_schema[:properties][:n])).to eq(enum: [])
       expect(action.call(n: 1.5)).not_to be_ok
       expect(action.call(n: 2.0)).not_to be_ok
       expect(action.call(n: 2)).not_to be_ok
@@ -8693,7 +8774,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         expects :n, type: String, numericality: { only_integer: true, only_numeric: true }
       end
 
-      expect(action.input_schema[:properties][:n]).to eq(enum: [])
+      expect(constraints(action.input_schema[:properties][:n])).to eq(enum: [])
       expect(action.call(n: "2")).not_to be_ok
     end
 
@@ -8713,7 +8794,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       it "empties a lone String position it leaves nothing to hold" do
         action = build_axn { expects :n, type: String, numericality: { only_numeric: true } }
 
-        expect(action.input_schema[:properties][:n]).to eq(enum: [])
+        expect(constraints(action.input_schema[:properties][:n])).to eq(enum: [])
         expect(action.call(n: "1")).not_to be_ok
       end
 
@@ -8746,7 +8827,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       it "still empties completely where the position is NOT nullable" do
         action = build_axn { expects :n, type: String, numericality: { only_numeric: true } }
 
-        expect(action.input_schema[:properties][:n]).to eq(enum: [])
+        expect(constraints(action.input_schema[:properties][:n])).to eq(enum: [])
       end
 
       # A MISSING emitted type is not evidence the branch is non-Numeric. `type: Numeric` emits `{}` on output
@@ -8776,7 +8857,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         action = build_axn { expects :n, type: String, numericality: { only_numeric: true } }
 
         expect(action.call(n: "1")).not_to be_ok
-        expect(action.input_schema[:properties][:n]).to eq(enum: [])
+        expect(constraints(action.input_schema[:properties][:n])).to eq(enum: [])
       end
 
       it "keeps an untyped branch, whose absent type proves nothing" do
@@ -8788,7 +8869,8 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
         expect(result).to be_ok
         expect(Axn::Extensions::Serialization.render(result)["n"]).to eq(1)
-        expect(action.output_schema[:properties][:n]).to eq({})
+        # No type is asserted; the required position still rejects every blank, none of which a Numeric renders to.
+        expect(action.output_schema[:properties][:n]).to eq(not: { enum: ["", [], {}, false, nil] })
       end
 
       it "still names the type on input, where Numeric has one wire form to advertise" do
@@ -8892,12 +8974,13 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       # An option-less entry is not the only spelling that reaches here: an entry whose options carry no
       # emittable bound leaves `restrict_union_to_bounded_branches!` nothing to narrow on, so the drop is the
       # only thing standing between the document and a branch the runtime rejects.
-      it "drops the branch under an entry whose only option emits no bound" do
+      it "drops the branch under an entry whose only option emits no bound, and names the option" do
         action = build_axn { expects :n, type: [TrueClass, Integer], numericality: { other_than: 5 } }
 
         expect(action.call(n: 1)).to be_ok
         expect(action.call(n: true)).not_to be_ok
-        expect(action.input_schema[:properties][:n]).to eq(type: "integer")
+        expect(constraints(action.input_schema[:properties][:n])).to eq(type: "integer")
+        expect(action.input_schema[:properties][:n][:description]).to include('"other_than":5')
       end
 
       # The string branch is the one this may not touch: bare `numericality:` really does accept a numeric
@@ -8919,7 +9002,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
         expect(action.call(n: true)).not_to be_ok
         expect(action.call(n: false)).not_to be_ok
-        expect(action.input_schema[:properties][:n]).to eq(enum: [])
+        expect(constraints(action.input_schema[:properties][:n])).to eq(enum: [])
       end
 
       # Nullability owns the nil, and a narrowing that empties every TYPE branch has said nothing about it —
@@ -8929,17 +9012,21 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
         expect(action.call(n: nil)).to be_ok
         expect(action.call(n: true)).not_to be_ok
-        expect(action.input_schema[:properties][:n]).to eq(enum: [nil])
+        expect(constraints(action.input_schema[:properties][:n])).to eq(enum: [nil])
       end
 
-      # A broad token still shields the branch, for the reason it always has: `single_type_for` renders `Object`
-      # APPROXIMATELY as a `"string"` branch, so that branch's emitted type is no evidence about what the
-      # position holds, and dropping it would empty a contract a plain `1` satisfies.
-      it "keeps the branch a broad token reaches a Numeric through" do
+      # A broad token still shields the position: `single_type_for` asserts no type for `Object`, so there is no
+      # branch whose type is evidence about what the position holds, and emptying it would refuse a contract a
+      # plain `1` satisfies. The required position rejects only the blanks, and the check is named.
+      it "keeps the position a broad token reaches a Numeric through" do
         action = build_axn { expects :n, type: Object, numericality: true }
+        prop = action.input_schema[:properties][:n]
 
         expect(action.call(n: 1)).to be_ok
-        expect(action.input_schema[:properties][:n]).to eq(type: "string", minLength: 1)
+        expect(prop).not_to have_key(:type)
+        expect(prop).to include(not: { enum: ["", [], {}, false, nil] })
+        expect(prop[:description]).to include('({"numericality":true})')
+        expect(JSONSchemer.schema(JSON.parse(JSON.generate(prop))).valid?(1)).to be(true)
       end
 
       # A tolerated BLANK never reaches the validator — ActiveModel skips a blank before `is_number?` runs — so a
@@ -8970,7 +9057,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           # `true` is not blank, so nothing skips the validator there; `false` is, so that branch stays.
           expect(action.call(n: false)).to be_ok
           expect(action.call(n: true)).not_to be_ok
-          expect(action.input_schema[:properties][:n]).to eq(type: %w[boolean null], enum: [false, nil])
+          expect(constraints(action.input_schema[:properties][:n])).to eq(type: %w[boolean null], enum: [false, nil])
         end
 
         it "narrows an Array branch to the empty array a tolerant position admits" do
@@ -9422,11 +9509,13 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       end
     end
 
-    # A gated entry is counted as if its gate were open — the static-maximal policy every constraint in this
-    # emitter follows, since a condition can only relax enforcement at runtime, never tighten it.
-    it "emits a gated bound, static-maximally" do
-      expect(prop_for { expects :n, type: Integer, numericality: { greater_than: 0, if: -> { false } } })
-        .to include(exclusiveMinimum: 0)
+    # A gated entry is skipped on the calls its gate closes, so its bound is left out — emitted, it would reject
+    # the values those calls accept — and named in the description instead.
+    it "leaves out a gated bound, and names it" do
+      prop = prop_for { expects :n, type: Integer, numericality: { greater_than: 0, if: -> { false } } }
+
+      expect(constraints(prop)).to eq(type: "integer")
+      expect(prop[:description]).to include("applies only on the calls its condition opens", '"exclusiveMinimum":0')
     end
 
     it "agrees with the runtime on the same value" do
@@ -10242,10 +10331,13 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
         # No TYPE is inferred at either position, which is the claim — neither a pattern nor a size names one
         # JSON type. The element node is not EMPTY, though: the position still rejects nil (`nil.to_s` is `""`,
-        # which this pattern refuses), so it says that much and nothing more.
-        expect(bagged.input_schema.dig(:properties, :f, :items)).to eq(not: { type: "null" })
+        # which this pattern refuses), so it says that much, and names the pattern it cannot state for the
+        # non-string values it admits.
+        expect(constraints(bagged.input_schema.dig(:properties, :f, :items))).to eq(not: { type: "null" })
+        expect(bagged.input_schema.dig(:properties, :f, :items, :description)).to include('"format":')
         expect(bagged.input_schema.dig(:properties, :f, :items)).not_to have_key(:type)
-        expect(fielded.input_schema[:properties][:f]).to eq({})
+        expect(constraints(fielded.input_schema[:properties][:f])).to eq({})
+        expect(fielded.input_schema[:properties][:f][:description]).to include('"format":{"with":')
       end
     end
 
@@ -10372,7 +10464,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         bag = { klass: String, container: Array, message: "m", of: { klass: Integer },
                 shape: { members: [] }, format: { with: /a/ }, allow_nil: true }
 
-        expect(described_class.send(:bag_value_constraints, bag, for_output: false))
+        expect(described_class.send(:bag_value_constraints, bag))
           .to eq(format: { with: /a/ }, allow_nil: true)
       end
 
@@ -10384,27 +10476,30 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       it "drops a FALSE tolerance, which the position's own runtime never sees" do
         bag = { klass: String, format: { with: /a/ }, allow_nil: false, allow_blank: false }
 
-        expect(described_class.send(:bag_value_constraints, bag, for_output: false)).to eq(format: { with: /a/ })
+        expect(described_class.send(:bag_value_constraints, bag)).to eq(format: { with: /a/ })
       end
     end
 
     describe "constraints that stay unemitted" do
-      it "emits nothing for exclusion:, as at a field" do
+      it "emits nothing for exclusion:, as at a field, and names it" do
         prop = prop_for(:roles) { expects :roles, type: Array, of: { klass: String, exclusion: { in: %w[admin] } } }
 
-        expect(prop[:items]).to eq(type: "string")
+        expect(constraints(prop[:items])).to eq(type: "string")
+        expect(prop[:items][:description]).to include('"exclusion":{"in":["admin"]}')
       end
 
-      it "emits nothing for a validate: callable" do
+      it "emits nothing for a validate: callable, and names it" do
         prop = prop_for(:codes) { expects :codes, type: Array, of: { klass: String, validate: ->(v) { "no" if v == "x" } } }
 
-        expect(prop[:items]).to eq(type: "string")
+        expect(constraints(prop[:items])).to eq(type: "string")
+        expect(prop[:items][:description]).to include("`validate:`")
       end
 
-      it "emits nothing for acceptance:" do
+      it "emits nothing for acceptance:, and names it" do
         prop = prop_for(:flags) { expects :flags, type: Array, of: { klass: String, acceptance: { accept: %w[yes] } } }
 
-        expect(prop[:items]).to eq(type: "string")
+        expect(constraints(prop[:items])).to eq(type: "string")
+        expect(prop[:items][:description]).to include('"acceptance":{"accept":["yes"]}')
       end
     end
   end
@@ -10464,16 +10559,16 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         .to eq([{ type: "integer", exclusiveMinimum: 0 }, { type: "number", exclusiveMinimum: 0 }])
     end
 
-    # A branch that cannot carry the bound was left advertising values the validator rejects: the string branch
-    # accepted "abc" while ActiveModel rejected it on every call. Input reflection may be stricter than the
-    # runtime but never looser, and dropping the branch is the licensed direction — it says less than the runtime
-    # allows (ActiveModel does accept the numeric string "5"), and it cannot say more, no `minimum` applying to a
-    # JSON string. One survivor is no longer a union, so the node collapses rather than emit a one-branch anyOf.
-    it "drops a union branch that cannot carry the bound, rather than leave it lying" do
+    # A string branch cannot carry the bound, but it is not dropped: ActiveModel accepts the numeric string "5",
+    # so dropping it would reject a call the runtime takes. The branch stays with only what JSON Schema can say
+    # about it, and the numeric check it cannot state ("abc" is still refused at runtime) is named instead.
+    it "keeps a union branch that cannot carry the bound, and names the check it leaves unstated" do
       action = build_axn { expects :n, type: [Integer, String], numericality: { greater_than: 0 } }
       prop = action.input_schema[:properties][:n]
 
-      expect(prop).to eq(type: "integer", exclusiveMinimum: 0)
+      expect(constraints(prop)).to eq(anyOf: [{ type: "integer", exclusiveMinimum: 0 }, { type: "string", minLength: 1 }])
+      expect(prop[:description]).to include('"numericality":{"greater_than":0')
+      expect(action.call(n: "5")).to be_ok
       expect(action.call(n: "abc")).not_to be_ok
       expect(action.call(n: 5)).to be_ok
     end
@@ -10484,7 +10579,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       action = build_axn { expects :n, type: [Integer, String], numericality: { greater_than: 0 }, optional: true }
 
       expect(action.input_schema.dig(:properties, :n, :anyOf))
-        .to eq([{ type: "integer", exclusiveMinimum: 0 }, { type: "null" }])
+        .to eq([{ type: "integer", exclusiveMinimum: 0 }, { type: "string" }, { type: "null" }])
       expect(action.call(n: nil)).to be_ok
     end
 

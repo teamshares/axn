@@ -4654,9 +4654,8 @@ module Axn
         #
         # Both bounds come from `Reflection::Schema`'s own derivations rather than from a re-reading beside
         # them — the guard/projection rule in AGENTS.md — so what this refuses is exactly the pair of bounds
-        # that would have been emitted. That is also why an `if:`/`unless:` gate does not stand it down:
-        # reflection is static-maximal, so a gated bound is still emitted, and the node still carries a floor
-        # above its own ceiling.
+        # the ungated reading carries. A gate on any bound-bearing entry stands it down
+        # (`_bound_bearing_entry_gated?`), because this rule weighs two entries it cannot prove run together.
         #
         # A nil tolerance DOES stand it down, and the same reasoning as the value-constraint guard applies: a
         # tolerated nil is a passing value, and the emitted node stays satisfiable through the null branch its
@@ -4721,17 +4720,18 @@ module Axn
         end
 
         # The validator entries that can supply a bound to the size rules below, or the set they scan. Kept as a
-        # list rather than asked of each derivation in turn, because the derivations are the EMITTER's and are
-        # rightly static-maximal — the question here is a different one.
+        # list rather than asked of each derivation in turn, because the derivations read a bound as written
+        # whatever gates it — the question here is a different one.
         # `absence` is deliberately NOT here, though it does supply a ceiling. Its derivation
         # (`Schema.absence_bounds_size?`) asks the gate question itself and answers "no ceiling" for a gated
         # entry, so naming it here only made a gated `absence:` stand down bounds it never contributed —
         # measured, that suppressed 21 correct refusals in the guard's product, every one of them a gated
         # `absence:` beside an `inclusion:` set whose member the EMPTINESS floor excludes, which is a
         # contradiction the absence entry plays no part in. The other three belong here because their
-        # derivations are the emitter's and rightly static-maximal: `declared_length_floor`/`_ceiling` count a
-        # gated bound as written, `presence_rejects_blank?` reads a gated entry's tolerance as live, and the set
-        # scan does not consult the `inclusion:` entry's own gate.
+        # derivations do not ask the gate question: `declared_length_floor`/`_ceiling` count a gated bound as
+        # written, `presence_rejects_blank?` reads a gated entry's tolerance as live, and the set scan does not
+        # consult the `inclusion:` entry's own gate. (The emitter hands them gate-closed validations, so for it
+        # the question never arises.)
         BOUND_BEARING_VALIDATOR_KEYS = %i[presence length inclusion].freeze
 
         # Whether any entry that could supply a bound can be skipped on a given call — its OWN gate and any it
@@ -4751,11 +4751,8 @@ module Axn
         # only the bound it supplies — and deliberately so: under-restriction leaves a broken contract
         # declaring, while over-restriction rejects a working one, and only the second is unrecoverable.
         #
-        # This is where the size rules part company with the EMITTER, which is static-maximal and will still
-        # emit `{minItems: 3, maxItems: 2}` for the gated entry above. That node is unsatisfiable while its
-        # contract is not, which is a real defect — but it is the emitter's gate policy, it predates this
-        # guard (a gated `length:` ceiling has emitted that way since PRO-3192), and the corollary this rule
-        # enforces is about refusing a CONTRACT that admits nothing.
+        # The emitter agrees: it reflects a gated bound with its gate closed, so the gated entry above emits no
+        # bound at all and names it instead.
         def _bound_bearing_entry_gated?(validations)
           gates = _shared_validation_options(validations)
           keys = BOUND_BEARING_VALIDATOR_KEYS + [Internal::FieldConfig::NON_EMPTINESS_KEY]
@@ -4788,12 +4785,11 @@ module Axn
         # naming only `absence:` — and why `allow_empty: true` / `presence: false`, which suppress that check,
         # are the fix rather than a workaround.
         #
-        # A GATE on either entry stands the rule down, and this is the one place in this file where a gate
-        # rescues rather than being counted static-maximally. The reason is that the gated pair has a legitimate
-        # reading the ungated pair does not: `presence: { unless: :archived? }, absence: { if: :archived? }` is
-        # a working contract, and no structural test can tell complementary conditions from identical ones
-        # (two Procs are never comparable). Refusing it would reject a declaration that works, which this guard
-        # must never do — so it under-restricts here, and the emitted node is unaffected either way.
+        # A GATE on either entry stands the rule down, because this rule weighs two entries it cannot prove run
+        # on the same call — the gated pair has a legitimate reading the ungated pair does not:
+        # `presence: { unless: :archived? }, absence: { if: :archived? }` is a working contract, and no structural
+        # test can tell complementary conditions from identical ones (two Procs are never comparable). Refusing it
+        # would reject a declaration that works, which this guard must never do — so it under-restricts here.
         #
         # EFFECTIVE gates, not each entry's own: the question is whether both checks run on every call, and a
         # DECLARATION-level `if:` stops them both just as surely as a nested one stops either. (That is the

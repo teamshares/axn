@@ -55,7 +55,8 @@ RSpec.describe "declared type tokens are read without dispatching to_ary" do
       hostile_schema = build_axn { expects :f, type: hostile, absence: true, optional: true }.input_schema.dig(:properties, :f)
 
       expect(dispatched).to eq([])
-      expect(hostile_schema).to eq(honest_schema)
+      # The residue naming each class differs by the class's own name, which is the point of it.
+      expect(hostile_schema.except(:description)).to eq(honest_schema.except(:description))
     end
 
     it "does not run a hostile to_ary while deciding whether a field is :boolean (contract.rb boolean?)" do

@@ -1,10 +1,11 @@
 # frozen_string_literal: true
 
-# The direction invariant from the design doc: for INPUT, the schema may reject inputs the runtime
-# accepts (stricter) but must never accept an input the runtime rejects (looser) — outside the two
-# documented exceptions. Each case runs a REAL call and checks the schema's verdict by hand
-# (required-array membership + the allOf conditional), so schema and runtime are compared on the
-# same concrete input.
+# The direction invariant for a GATED requirement: the schema never rejects an input the runtime accepts —
+# a requirement a closed gate lifts is left out of `required` — and wherever that leaves it accepting an
+# input the runtime rejects, it says so in a residue. Where a Symbol gate names a sibling the clause can
+# read exactly, it is exact both ways. Each case runs a REAL call and checks the schema's verdict by hand
+# (required-array membership + the allOf conditional), so schema and runtime are compared on the same
+# concrete input.
 RSpec.describe "conditional validation direction audit" do
   # Minimal hand-rolled check: does the input schema (top-level required + allOf clauses +
   # property-level nested required) permit omitting the named keys for this payload?
@@ -20,16 +21,20 @@ RSpec.describe "conditional validation direction audit" do
     end
   end
 
-  it "top-level Proc gate: schema strictly requires; runtime accepts omission when the gate is closed" do
+  def residue_paths(action) = action.input_schema_residues.map(&:path)
+
+  it "top-level Proc gate: schema leaves the field optional and names the conditional requirement" do
     action = build_axn do
       expects :flag, type: :boolean
       expects :num, type: Integer, if: -> { flag }
       def call; end
     end
     schema = action.input_schema
-    expect(schema_accepts_omission?(schema, { flag: false }, :num)).to be false # stricter
-    expect(action.call(flag: false).ok?).to be true                             # runtime relaxes
-    expect(action.call(flag: true).ok?).to be false                             # and schema agrees when open
+    expect(schema_accepts_omission?(schema, { flag: false }, :num)).to be true # never stricter
+    expect(action.call(flag: false).ok?).to be true
+    expect(schema_accepts_omission?(schema, { flag: true }, :num)).to be true  # looser, and reported
+    expect(action.call(flag: true).ok?).to be false
+    expect(residue_paths(action)).to include([:num])
   end
 
   it "declarative Symbol gate: schema and runtime agree on every quadrant" do
@@ -45,7 +50,7 @@ RSpec.describe "conditional validation direction audit" do
     expect(action.call(flag: true).ok?).to be false
   end
 
-  it "gated subfield, canonical parent-presence condition: exact agreement" do
+  it "gated subfield, canonical parent-presence condition: the nested requirement is reported, not listed" do
     action = build_axn do
       expects :data, optional: true
       expects :user, type: String, on: :data, if: -> { data.present? }
@@ -54,8 +59,11 @@ RSpec.describe "conditional validation direction audit" do
     schema = action.input_schema
     expect(schema_accepts_omission?(schema, {}, :data)).to be true
     expect(action.call.ok?).to be true
-    expect(schema[:properties][:data][:required]).to include("user") # bound when data sent
+    # A Proc gate cannot be read by the schema, so `user` is not listed as required under `data`; the
+    # conditional requirement is named on the property instead.
+    expect(Array(schema[:properties][:data][:required])).not_to include("user")
     expect(action.call(data: { role: "x" }).ok?).to be false
+    expect(residue_paths(action)).to include(%i[data user])
   end
 
   it "gated subfield, non-parent condition: the documented looser corner, and only that corner" do
@@ -109,24 +117,36 @@ RSpec.describe "conditional validation direction audit" do
     expect(action.call(flag: true).ok?).to be false
   end
 
-  it "coerced-boolean unless: reference: schema is now stricter-or-exact, never looser" do
+  it "coerced-boolean unless: reference: the inexact clause falls back to optional, never to required" do
     action = build_axn do
       expects :skip, coerce: [:boolean, String]
       expects :coupon, type: String, unless: :skip
       def call; end
     end
     schema = action.input_schema
-    # The fix: the unless: clause falls back to unconditional required rather than emitting a looser
-    # `else`. So coupon is in top-level required and the schema never accepts its omission — the
-    # direction invariant holds for the wire value that used to slip through.
-    expect(schema[:required]).to include("coupon")
-    # wire "false" coerces to false at runtime -> gate opens -> coupon required. Schema rejects the
-    # omission too (stricter-or-exact), where the pre-fix schema wrongly accepted it (looser).
-    expect(schema_accepts_omission?(schema, { skip: "false" }, :coupon)).to be false
-    expect(action.call(skip: "false").ok?).to be false
-    # wire "true" coerces to true -> gate closes -> coupon unvalidated at runtime, but the schema
-    # still requires it: stricter, the documented safe direction.
-    expect(schema_accepts_omission?(schema, { skip: "true" }, :coupon)).to be false
+    # Boolean coercion reads the wire value differently from the emitted `if`, so no clause is exact, and an
+    # unconditional `required` would reject `{skip: "true"}`, which the runtime accepts.
+    expect(schema[:allOf]).to be_nil
+    expect(Array(schema[:required])).not_to include("coupon")
+    expect(schema_accepts_omission?(schema, { skip: "true" }, :coupon)).to be true
     expect(action.call(skip: "true").ok?).to be true
+    # wire "false" coerces to false, the gate opens and coupon is required: looser, and reported.
+    expect(schema_accepts_omission?(schema, { skip: "false" }, :coupon)).to be true
+    expect(action.call(skip: "false").ok?).to be false
+    expect(residue_paths(action)).to include([:coupon])
+  end
+
+  it "coerced-boolean if: reference: falls back the same way, since the flip makes the clause stricter" do
+    action = build_axn do
+      expects :flag, coerce: [:boolean, String]
+      expects :coupon, type: String, if: :flag
+      def call; end
+    end
+    schema = action.input_schema
+    # wire "false" is truthy to the emitted `if` and falsey once coerced, closing the runtime gate.
+    expect(schema[:allOf]).to be_nil
+    expect(schema_accepts_omission?(schema, { flag: "false" }, :coupon)).to be true
+    expect(action.call(flag: "false").ok?).to be true
+    expect(residue_paths(action)).to include([:coupon])
   end
 end

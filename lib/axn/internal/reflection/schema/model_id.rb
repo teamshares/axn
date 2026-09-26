@@ -3,6 +3,8 @@
 require "axn/internal/field_config"
 # A model id renders through the same serializer every other emitted literal does.
 require "axn/internal/reflection/values"
+# A gated id's requirement is named with the shared residue sentence.
+require "axn/internal/reflection/schema/vocabulary"
 
 module Axn
   module Internal
@@ -14,6 +16,8 @@ module Axn
         # own primary key where it can be, reconciled against an explicitly-declared `id_type:` or an explicit
         # sibling field where those exist, and refused at declaration where they disagree.
         module ModelId
+          include Vocabulary
+
           # Which token `model_id_type_token` infers for each ActiveRecord primary-key attribute type
           # (`klass.type_for_attribute(klass.primary_key).type`). Every value here is one of
           # `Internal::FieldConfig::MODEL_ID_TYPE_TOKENS` — that constant, not a copy of it here, is what
@@ -49,7 +53,9 @@ module Axn
             id_field = Axn::Internal::FieldConfig.model_id_key(config.field)
             prop = { description: config.description || "ID of the #{klass_name} record" }
 
-            apply_single_type!(prop, single_type_for(id_type, for_output: false), config, nullable: nil_allowed?(config)) if id_type
+            # Nullable with gates closed: a gated model's id may arrive nil on the calls its gate closes. A required
+            # id has its null branch stripped again once requiredness is known.
+            apply_single_type!(prop, single_type_for(id_type, for_output: false), config, nullable: nil_admitted_with_gates_closed?(config)) if id_type
 
             [id_field, prop.compact]
           end
@@ -170,7 +176,7 @@ module Axn
           # KNOWN LIMITATION (accepted divergence): this covers a shallow model field and its explicit shallow
           # id sibling. Self-referential id/model contracts nested under a parent (a `model:` subfield with a
           # sibling defaulted `<field>_id` subfield) are not reconciled here — the parent may reflect as
-          # required though runtime synthesizes it. That is the safe direction (stricter than runtime).
+          # required though runtime synthesizes it — a known stricter divergence in requiredness, tier 1.
           def apply_model_id_requiredness!(config, children, field_configs, properties, required, ann)
             # The key alone, not `model_id_property(config)` — this pass runs for EVERY model config
             # regardless of whether an explicit sibling exists, so re-deriving the whole property here
@@ -187,8 +193,15 @@ module Axn
             # A default at ANY depth under the model applies at read time (value-level defaults,
             # PRO-2889) — no synthesis is involved — so descendant omittability is the ordinary
             # annotation-derived rule, same as every other parent.
-            model_omittable = optional_for_schema?(config) && !children_require_presence?(children, ann)
-            return if model_omittable || (explicit_id && usable_default?(explicit_id, subfield: false))
+            stranded = children_require_presence?(children, ann)
+            return if (optional_for_schema?(config) && !stranded) || (explicit_id && usable_default?(explicit_id, subfield: false))
+
+            # Only a gate imposes the requirement: the id is left out of `required`, and the conditional
+            # requirement is named on it, exactly as an ordinary field's is.
+            if requiredness_conditionally_relaxable?(config) && !stranded
+              properties[id_field] = record_residue(properties[id_field], GATED_REQUIRED_RESIDUE, kind: :conditional) if properties[id_field]
+              return
+            end
 
             key = id_field.to_s
             required << key unless required.include?(key)
@@ -364,7 +377,8 @@ module Axn
             # the sibling's emission, so its own `allow_nil:`/`allow_blank:` govern whether `"null"` joins
             # the merged type and whether a blank-tolerant `:uuid`'s `format:` stands down (the same rule
             # `apply_single_type!` already applies for every other property).
-            apply_single_type!(target_property, single_type_for(declared, for_output: false), explicit_id, nullable: nil_allowed?(explicit_id))
+            apply_single_type!(target_property, single_type_for(declared, for_output: false), explicit_id,
+                               nullable: nil_admitted_with_gates_closed?(explicit_id))
             # `reject_null!` already ran on this (untyped) property earlier in the same build and, finding
             # no `:type` to narrow, fell back to its `not: { type: "null" }` marker — now redundant (a real
             # `:type` excludes null on its own, and `apply_single_type!` just decided that question fresh)

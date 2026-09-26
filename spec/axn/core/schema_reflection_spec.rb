@@ -296,10 +296,9 @@ RSpec.describe "Axn class-level schema reflection" do
       expect(Array(klass.input_schema[:required])).to include("v")
     end
 
-    # A Proc default is unknowable at declaration (schema resolves it toward required) and a blank literal
-    # default is rejected by the default `presence: true`, so neither widens the divergence above.
+    # A blank literal default is rejected by the default `presence: true`, so it does not widen the divergence
+    # above.
     {
-      "a Proc default" => { type: Integer, default: -> { 1 } },
       "a blank literal default" => { type: Array, default: [] },
     }.each do |label, opts|
       it "still agrees for #{label}, which the schema cannot use to omit the field" do
@@ -314,6 +313,21 @@ RSpec.describe "Axn class-level schema reflection" do
         expect(Array(klass.input_schema[:required])).to include("v")
       end
     end
+  end
+
+  # A Proc default is unknowable at declaration, but it runs on the omitted call, so listing the field as
+  # required would reject a call the runtime takes. Requiredness is exact both ways, so the schema leaves it
+  # optional; a Proc whose value fails the field's own checks is the same accepted divergence as a non-blank
+  # invalid literal default.
+  it "leaves a field with a Proc default optional, since the default runs on the omitted call" do
+    klass = Class.new do
+      include Axn
+      def call = nil
+    end
+    klass.expects :v, type: Integer, default: -> { 1 }
+
+    expect(klass.call).to be_ok
+    expect(Array(klass.input_schema[:required])).not_to include("v")
   end
 
   # THE nil axis across axn's whole validator vocabulary: every key a declaration may carry, in the option
@@ -471,17 +485,18 @@ RSpec.describe "Axn class-level schema reflection" do
       expect(Array(klass.input_schema[:required])).to eq(["v_id"])
     end
 
-    # A custom `validate:` is user code, which reflection may never run — so its verdict on a nil is unknown,
-    # and unknown resolves to nil-REJECTING. The runtime here accepts the omitted value (the block returns no
-    # error), leaving both mirrors deliberately stricter than the runtime: the safe direction, and the same
-    # trade the Proc-default divergence makes.
-    it "reads a custom validate: as nil-rejecting, which is stricter than its runtime" do
+    # A custom `validate:` is user code, which reflection may never run — so its verdict on a nil is unknown.
+    # `optional?` stays conservative and reads it as nil-rejecting, but the schema may not err stricter than the
+    # runtime: it leaves the field optional and names the check. The runtime here does accept the omitted value
+    # (the block returns no error). The one row where `optional?` and the schema disagree, so it has its own title.
+    it "leaves a field with a custom validate: optional in the schema, naming the check" do
       klass = declare(presence: false, validate: ->(_value) {}) # no error returned: the value passes
 
       expect(klass.call).to be_ok
       config = klass.internal_field_configs.find { _1.field == :v }
       expect(config.optional?).to be(false)
-      expect(Array(klass.input_schema[:required])).to include("v")
+      expect(Array(klass.input_schema[:required])).not_to include("v")
+      expect(klass.input_schema_residues.map(&:summary)).to include(a_string_including("`validate:`"))
     end
 
     # `uniqueness:` has no nil axis to read, because it never reaches the validator set: ActiveModel ships no
@@ -491,6 +506,146 @@ RSpec.describe "Axn class-level schema reflection" do
     it "never gets to judge uniqueness:, which is refused at declaration" do
       expect { declare(presence: false, uniqueness: true) }
         .to raise_error(ArgumentError, /uniqueness: on :v is not supported/)
+    end
+  end
+
+  describe "input_schema_residues" do
+    it "is empty for a contract the schema states in full" do
+      expect(klass.input_schema_residues).to eq([])
+    end
+
+    it "names each constraint input_schema leaves out, by the property keys the schema uses" do
+      gapped = build_axn do
+        expects :payload, type: Hash, of: { values: { klass: Array, of: Integer } }
+        expects :inner, on: :payload
+      end
+      residues = gapped.input_schema_residues
+
+      expect(residues.map { |r| [r.path, r.kind] }).to eq([[%i[payload inner], :unfixed]])
+      expect(gapped.input_schema.dig(:properties, :payload, :properties, :inner, :description))
+        .to include(residues.first.summary)
+    end
+
+    it "hands back frozen values a caller cannot mutate into the next read" do
+      gapped = build_axn do
+        expects :payload, type: Hash, of: { values: { klass: Array, of: Integer } }
+        expects :inner, on: :payload
+      end
+      residues = gapped.input_schema_residues
+
+      expect(residues).to be_frozen
+      expect(residues.first.path).to be_frozen
+      expect(residues.first).to be_a(Axn::Core::SchemaReflection::Residue)
+    end
+  end
+
+  describe "a gate" do
+    let(:user_class) { Struct.new(:id) { def self.find(id) = id.nil? ? nil : new(id) } }
+
+    # A blank nested gate overrides the declaration's for its own key, so that entry runs on every call and is
+    # stated; only what the declaration gate still reaches is left out.
+    it "states an entry whose blank nested gate overrides the declaration gate" do
+      klass = build_axn { expects :n, type: { klass: Integer, if: nil }, if: -> { false } }
+
+      expect(klass.call(n: "x")).not_to be_ok
+      expect(klass.input_schema[:properties][:n]).to include(type: "integer")
+      expect(klass.input_schema[:required]).to eq(["n"])
+    end
+
+    it "names a gated model: field's generated id requirement rather than listing it" do
+      user = user_class
+      klass = build_axn { expects :user, model: { klass: user, finder: :find }, if: -> { true } }
+
+      expect(klass.call).not_to be_ok
+      expect(Array(klass.input_schema[:required])).not_to include("user_id")
+      expect(klass.input_schema_residues.map { |r| [r.path, r.summary] })
+        .to include([[:user_id], "required on the calls its condition opens"])
+    end
+
+    it "names a nested gated model: field's generated id requirement the same way" do
+      user = user_class
+      klass = build_axn do
+        expects :payload, type: Hash
+        expects :user, on: :payload, model: { klass: user, finder: :find }, if: -> { true }
+      end
+
+      expect(Array(klass.input_schema.dig(:properties, :payload, :required))).not_to include("user_id")
+      expect(klass.input_schema_residues.map(&:path)).to include(%i[payload user_id])
+    end
+
+    # Residues are an INPUT-side report; the output schema carries none, and has no finalizer to render or strip
+    # one, so a residue recorded outbound would reach adapters as a raw internal key.
+    it "records no residue on output_schema, whatever the exposure carries" do
+      klass = build_axn do
+        exposes :at, type: Integer, default: -> { 1 }
+        exposes :codes, type: Array, of: { klass: String, inclusion: { in: ["a"], if: -> { true } } }
+        exposes :tag, type: String, format: { with: /\A\s*x\z/ }, if: -> { true }
+        exposes(:payload, type: Hash) { field :inner, type: String, if: -> { true } }
+      end
+
+      expect(JSON.generate(klass.output_schema)).not_to include("__axn_residues")
+    end
+
+    # Every nullability the input schema emits reads the gate closed — including a parent's, decided where its
+    # children are nested, and a generated model id's, typed from `id_type:`.
+    it "keeps a gated parent with a nested child nullable" do
+      klass = build_axn do
+        expects :payload, type: Hash, if: -> { false }
+        expects :x, on: :payload, type: String, optional: true
+      end
+
+      expect(klass.call(payload: nil)).to be_ok
+      expect(klass.call(payload: "s")).to be_ok
+      # Its type check is gated, so neither nil nor a non-object is ruled out: the node names its children
+      # (`properties`, which applies to objects alone) and asserts no type.
+      expect(klass.input_schema.dig(:properties, :payload)).not_to include(:type, :not)
+      expect(klass.input_schema.dig(:properties, :payload, :properties)).to have_key(:x)
+    end
+
+    it "keeps a gated model: field's typed id nullable" do
+      user = user_class
+      klass = build_axn { expects :user, model: { klass: user, finder: :find, id_type: Integer }, if: -> { false } }
+
+      expect(klass.call(user_id: nil)).to be_ok
+      expect(klass.input_schema.dig(:properties, :user_id, :type)).to eq(%w[integer null])
+    end
+
+    # A residue is appended after an author's own description, which may not end in a full stop.
+    it "closes the author's description as a sentence before the residue" do
+      user = user_class
+      klass = build_axn { expects :user, model: { klass: user, finder: :find }, if: -> { true } }
+
+      expect(klass.input_schema.dig(:properties, :user_id, :description)).to match(/record\. Additional constraints apply/)
+    end
+  end
+
+  describe "a transformed value" do
+    # A `preprocess:` runs before every check, so the checks describe the Proc's output; the wire value may be
+    # anything the Proc accepts, and the schema names the checks rather than stating them on it.
+    it "states none of a preprocessed field's checks on the wire value, and names them" do
+      klass = build_axn { expects :count, type: Integer, preprocess: ->(value) { Integer(value) } }
+
+      expect(klass.call(count: "5")).to be_ok
+      prop = klass.input_schema[:properties][:count]
+      expect(prop).not_to have_key(:type)
+      expect(prop[:description]).to include("transformed before these are checked", '"type":"integer"')
+    end
+
+    it "keeps a preprocessed parent untyped, so the wire form its Proc parses is admitted" do
+      klass = build_axn do
+        expects :payload, type: Hash, preprocess: ->(value) { JSON.parse(value) }
+        expects :a, on: :payload, type: String
+      end
+
+      expect(klass.call(payload: '{"a":"x"}')).to be_ok
+      expect(klass.input_schema[:properties][:payload]).not_to have_key(:type)
+    end
+
+    # Coercion accepts a parseable String as a courtesy; the declared type still describes the contract.
+    it "keeps a coerce: field's declared type" do
+      klass = build_axn { expects :n, type: { klass: Integer, coerce: true } }
+
+      expect(klass.input_schema[:properties][:n]).to eq(type: "integer")
     end
   end
 
@@ -521,8 +676,8 @@ RSpec.describe "Axn class-level schema reflection" do
 
     it "keeps residue diagnostics harmless and deduplicated for a frozen action class" do
       klass = build_axn do
-        expects(:payload, type: Hash) { field :inner, type: String }
-        expects :inner, on: :payload, type: Integer, preprocess: :to_i.to_proc
+        expects :payload, type: Hash, of: { values: { klass: Array, of: Integer } }
+        expects :inner, on: :payload
       end
       # Prime the legitimate schema cache without emitting diagnostics, isolating the memo failure.
       Axn::Internal::Reflection::Schema.build_input_for(klass)
@@ -763,9 +918,10 @@ RSpec.describe "Axn class-level schema reflection" do
           .to raise_error(ArgumentError, /length:.*has an option ActiveModel cannot use/m)
       end
 
-      it "carries the flag's own floor when the author's floor has no whole size to carry" do
-        expect(schema_for(type: Array, optional: true, allow_empty: false, length: { minimum: Float::INFINITY }))
-          .to eq(type: %w[array null], minItems: 1)
+      it "carries the flag's own floor when the author's floor has no whole size to carry, and names the rest" do
+        prop = schema_for(type: Array, optional: true, allow_empty: false, length: { minimum: Float::INFINITY })
+        expect(prop).to include(type: %w[array null], minItems: 1)
+        expect(prop[:description]).to include('"length":{"minimum":"Infinity"}')
       end
 
       it "emits no floor for a maximum that admits an empty value" do
@@ -773,16 +929,19 @@ RSpec.describe "Axn class-level schema reflection" do
       end
     end
 
-    # A gated entry MAY be open on a given call, so its floor is emitted as if the gate were open —
-    # static-maximal, which can leave the input schema stricter than a closed-gate runtime but never looser,
-    # and is the policy for every gated constraint here.
+    # A gated entry is skipped on the calls its gate closes, so its floor is left out — emitted, it would reject
+    # the empty value those calls accept — and named in the description instead.
     describe "an entry a gate may skip" do
-      it "emits the floor of a gated presence:, which a call may run" do
-        expect(schema_for(type: Array, presence: { if: :flag })).to eq(type: "array", minItems: 1)
+      it "leaves out the floor of a gated presence:, and names it" do
+        prop = schema_for(type: Array, presence: { if: :flag })
+        expect(prop.except(:description)).to eq(type: "array")
+        expect(prop[:description]).to include("applies only on the calls its condition opens", '"minItems":1')
       end
 
-      it "emits the floor of a gated length:, which a call may run" do
-        expect(schema_for(type: Array, presence: false, length: { minimum: 3, if: :flag })).to eq(type: "array", minItems: 3)
+      it "leaves out the floor of a gated length:, and names it" do
+        prop = schema_for(type: Array, presence: false, length: { minimum: 3, if: :flag })
+        expect(prop.except(:description)).to eq(type: "array")
+        expect(prop[:description]).to include("applies only on the calls its condition opens", '"minItems":3')
       end
     end
 
@@ -839,9 +998,14 @@ RSpec.describe "Axn class-level schema reflection" do
         expect(prop[:items]).to include(type: "object")
       end
 
-      it "leaves an unshaped unmappable type on its permissive fallback" do
-        expect(shaped_schema_for(type: bag)).to eq(type: "string", minLength: 1)
-        expect(schema_for(type: Set)).to eq(type: "string", minLength: 1)
+      # A class JSON has no type for asserts none; the required position still rejects every blank, and the
+      # class itself is named in the description.
+      it "leaves an unshaped unmappable type untyped, floored by value, and named" do
+        [shaped_schema_for(type: bag), schema_for(type: Set)].each do |prop|
+          expect(prop).not_to have_key(:type)
+          expect(prop[:not]).to eq(enum: ["", [], {}, false, nil])
+          expect(prop[:description]).to include('"type":{"klass":')
+        end
       end
     end
 
@@ -880,8 +1044,10 @@ RSpec.describe "Axn class-level schema reflection" do
     # Never emit a constraint the contract accepts (the rule the uuid-format relaxation follows): a
     # blank-tolerant entry admits the empty value, and "empty or at least N" is not expressible as a floor.
     describe "blank tolerance" do
-      it "emits no floor for an explicit length minimum the field tolerates blank around" do
-        expect(schema_for(type: String, length: { minimum: 3 }, allow_blank: true)).to eq(type: %w[string null])
+      it "emits no floor for an explicit length minimum the field tolerates blank around, and names it" do
+        prop = schema_for(type: String, length: { minimum: 3 }, allow_blank: true)
+        expect(prop.except(:description)).to eq(type: %w[string null])
+        expect(prop[:description]).to include('"length":{"minimum":3')
       end
 
       it "emits no floor for a blank-tolerant presence check" do
@@ -927,16 +1093,18 @@ RSpec.describe "Axn class-level schema reflection" do
           expect(schema_for(**opts)).to eq(type: "string", minLength: 3)
         end
 
-        it "emits no floor when nothing else rejects the empty value" do
+        it "emits no floor when nothing else rejects the empty value, and names it" do
           opts = { type: String, optional: true, length: { minimum: 3, allow_blank: true } }
           expect(action_for(**opts).call(v: "")).to be_ok
-          expect(schema_for(**opts)).to eq(type: %w[string null])
+          expect(schema_for(**opts).except(:description)).to eq(type: %w[string null])
+          expect(schema_for(**opts)[:description]).to include('"length":{"minimum":3')
         end
 
-        it "emits no floor when the only other check is one that is switched off" do
+        it "emits no floor when the only other check is one that is switched off, and names it" do
           opts = { type: String, presence: false, length: { minimum: 3, allow_blank: true } }
           expect(action_for(**opts).call(v: "")).to be_ok
-          expect(schema_for(**opts)).to eq(type: "string")
+          expect(schema_for(**opts).except(:description)).to eq(type: "string")
+          expect(schema_for(**opts)[:description]).to include('"length":{"minimum":3')
         end
       end
     end
@@ -959,8 +1127,10 @@ RSpec.describe "Axn class-level schema reflection" do
           .to eq(type: %w[array null], minItems: 3)
       end
 
-      it "still drops the floor when allow_empty: is not declared at all" do
-        expect(schema_for(type: Array, optional: true, length: { minimum: 3 })).to eq(type: %w[array null])
+      it "still drops the floor when allow_empty: is not declared at all, and names it" do
+        prop = schema_for(type: Array, optional: true, length: { minimum: 3 })
+        expect(prop.except(:description)).to eq(type: %w[array null])
+        expect(prop[:description]).to include('"length":{"minimum":3')
       end
     end
 
