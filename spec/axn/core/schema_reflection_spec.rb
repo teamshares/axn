@@ -619,6 +619,36 @@ RSpec.describe "Axn class-level schema reflection" do
     end
   end
 
+  describe "a transformed value" do
+    # A `preprocess:` runs before every check, so the checks describe the Proc's output; the wire value may be
+    # anything the Proc accepts, and the schema names the checks rather than stating them on it.
+    it "states none of a preprocessed field's checks on the wire value, and names them" do
+      klass = build_axn { expects :count, type: Integer, preprocess: ->(value) { Integer(value) } }
+
+      expect(klass.call(count: "5")).to be_ok
+      prop = klass.input_schema[:properties][:count]
+      expect(prop).not_to have_key(:type)
+      expect(prop[:description]).to include("transformed before these are checked", '"type":"integer"')
+    end
+
+    it "keeps a preprocessed parent untyped, so the wire form its Proc parses is admitted" do
+      klass = build_axn do
+        expects :payload, type: Hash, preprocess: ->(value) { JSON.parse(value) }
+        expects :a, on: :payload, type: String
+      end
+
+      expect(klass.call(payload: '{"a":"x"}')).to be_ok
+      expect(klass.input_schema[:properties][:payload]).not_to have_key(:type)
+    end
+
+    # Coercion accepts a parseable String as a courtesy; the declared type still describes the contract.
+    it "keeps a coerce: field's declared type" do
+      klass = build_axn { expects :n, type: { klass: Integer, coerce: true } }
+
+      expect(klass.input_schema[:properties][:n]).to eq(type: "integer")
+    end
+  end
+
   describe "unrepresentable-subfield omission warning" do
     let(:deep_klass) do
       Class.new do
