@@ -605,6 +605,13 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
       # the COLLIDING member's nilability and downgrades it back. Every other nil-tolerant node row here is
       # childless, so `apply_nested_subfields!` returns before ever touching `:type` and this cap has
       # nothing to correct — this row is the one place it is exercised at all.
+      # A GATED node that nests a child: its nil rejection is skipped on the calls the gate closes, so the node's
+      # own nullability — decided where children are nested, not where the property is built — must read the
+      # gate closed as well.
+      "explicit gated node with a child" => proc {
+        expects :inner, on: :payload, type: Hash, if: -> { false }
+        expects :c, on: :inner, type: String, optional: true
+      },
       "explicit nil-tolerant node with a child" => proc {
         expects :inner, on: :payload, type: Hash, allow_nil: true
         expects :c, on: :inner, type: String, optional: true

@@ -801,7 +801,9 @@ module Axn
             # read through the one owner of that rule (property_representative). A node with no non-model
             # config (a pure model: route) never nests, so its nullable is unused; false is an inert default.
             representative = property_representative(node.configs)
-            nullable = representative ? nil_allowed?(representative) && !required_child?(representative, node.children, ann) : false
+            # Read with gates closed, like every nullability the input schema emits: a gated nil-rejecting check
+            # is skipped on the calls its gate closes, so a nil reaches the node then.
+            nullable = representative ? nil_admitted_with_gates_closed?(representative) && !required_child?(representative, node.children, ann) : false
           end
 
           ann[node] = NodeAnnotation.new(required:, nullable:)
@@ -1286,8 +1288,24 @@ module Axn
           # required shape member only when the parent's OWN default materializes it). Read from the
           # precomputed annotation (derive_annotations already applied this same rule to `node`), NOT
           # `prop[:required]`, which also carries shape members that a bare nil parent never triggers.
-          prop[:type] = ann[node].nullable ? %w[object null] : "object"
+          #
+          # The node is typed `object` only where the runtime rejects every other value too: a type check that
+          # runs on every call, or a required child, which a non-object value leaves absent. Otherwise — an
+          # untyped parent, or one whose type check is gated — a String or Array reaches the children as nothing
+          # and passes, and `properties` (which JSON Schema applies to objects alone) says all there is to say.
+          if nested_node_object_only?(node, node_configs, ann)
+            prop[:type] = ann[node].nullable ? %w[object null] : "object"
+          elsif node_configs.any? { |c| presence_rejects_blank?(gate_closed_validations(c, c.validations)) }
+            # Untyped, a presence check still rejects every blank — nil among them — as a value set.
+            prop[:not] = { enum: BLANK_WIRE_VALUES }
+          elsif !ann[node].nullable
+            reject_null!(prop)
+          end
           prop[:required] = nil if prop[:required].empty?
+        end
+
+        def nested_node_object_only?(node, node_configs, ann)
+          node_configs.any? { |c| gate_closed_validations(c, c.validations).key?(:type) } || children_require_presence?(node.children, ann)
         end
 
         # Emits one level of children into `prop` (which must already have :properties/:required arrays),

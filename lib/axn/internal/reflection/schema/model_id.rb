@@ -53,7 +53,9 @@ module Axn
             id_field = Axn::Internal::FieldConfig.model_id_key(config.field)
             prop = { description: config.description || "ID of the #{klass_name} record" }
 
-            apply_single_type!(prop, single_type_for(id_type, for_output: false), config, nullable: nil_allowed?(config)) if id_type
+            # Nullable with gates closed: a gated model's id may arrive nil on the calls its gate closes. A required
+            # id has its null branch stripped again once requiredness is known.
+            apply_single_type!(prop, single_type_for(id_type, for_output: false), config, nullable: nil_admitted_with_gates_closed?(config)) if id_type
 
             [id_field, prop.compact]
           end
@@ -375,7 +377,8 @@ module Axn
             # the sibling's emission, so its own `allow_nil:`/`allow_blank:` govern whether `"null"` joins
             # the merged type and whether a blank-tolerant `:uuid`'s `format:` stands down (the same rule
             # `apply_single_type!` already applies for every other property).
-            apply_single_type!(target_property, single_type_for(declared, for_output: false), explicit_id, nullable: nil_allowed?(explicit_id))
+            apply_single_type!(target_property, single_type_for(declared, for_output: false), explicit_id,
+                               nullable: nil_admitted_with_gates_closed?(explicit_id))
             # `reject_null!` already ran on this (untyped) property earlier in the same build and, finding
             # no `:type` to narrow, fell back to its `not: { type: "null" }` marker — now redundant (a real
             # `:type` excludes null on its own, and `apply_single_type!` just decided that question fresh)

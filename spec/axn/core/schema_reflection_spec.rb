@@ -586,6 +586,30 @@ RSpec.describe "Axn class-level schema reflection" do
       expect(JSON.generate(klass.output_schema)).not_to include("__axn_residues")
     end
 
+    # Every nullability the input schema emits reads the gate closed — including a parent's, decided where its
+    # children are nested, and a generated model id's, typed from `id_type:`.
+    it "keeps a gated parent with a nested child nullable" do
+      klass = build_axn do
+        expects :payload, type: Hash, if: -> { false }
+        expects :x, on: :payload, type: String, optional: true
+      end
+
+      expect(klass.call(payload: nil)).to be_ok
+      expect(klass.call(payload: "s")).to be_ok
+      # Its type check is gated, so neither nil nor a non-object is ruled out: the node names its children
+      # (`properties`, which applies to objects alone) and asserts no type.
+      expect(klass.input_schema.dig(:properties, :payload)).not_to include(:type, :not)
+      expect(klass.input_schema.dig(:properties, :payload, :properties)).to have_key(:x)
+    end
+
+    it "keeps a gated model: field's typed id nullable" do
+      user = user_class
+      klass = build_axn { expects :user, model: { klass: user, finder: :find, id_type: Integer }, if: -> { false } }
+
+      expect(klass.call(user_id: nil)).to be_ok
+      expect(klass.input_schema.dig(:properties, :user_id, :type)).to eq(%w[integer null])
+    end
+
     # A residue is appended after an author's own description, which may not end in a full stop.
     it "closes the author's description as a sentence before the residue" do
       user = user_class
