@@ -2,6 +2,7 @@
 
 require "spec_helper"
 require "open3"
+require "benchmark"
 
 # A NAMED module, so the PRO-3284 owner-label test below can pin the "defined in <a real module name>"
 # branch of `Values.displaced_projection_owner_label` — a module built with `Module.new` inline stays
@@ -450,6 +451,22 @@ RSpec.describe Axn::Extensions::Serialization do
         value = reopenable.new(name: "a", internal_notes: "x")
 
         expect(described_class.render(klass.call(value:))).to eq("d1" => { "name" => "a" }, "d2" => { "name" => "a" })
+      end
+
+      # Codex review, PR #296, round 9: the identity-based scan above is correct but QUADRATIC -- each new
+      # class re-scans every entry already retained. `MAX_EMITTED_PROPERTIES` (property_names.rb) permits a
+      # contract up to 25,000 properties deep, so a generated contract naming many thousands of distinct
+      # Data/Struct classes could stall the first render (which builds this list) for tens of seconds.
+      # `Hash#compare_by_identity` keeps the SAME no-`hash`/`eql?`-dispatch guarantee (it compares keys by
+      # identity, at the C level, never consulting the key's own method table) while making this pass linear.
+      it "deduplicates thousands of distinct watched classes in a small fraction of a second, not the " \
+         "quadratic time a pairwise identity scan would need" do
+        classes = Array.new(10_000) { Class.new }
+        watched = classes.map { |k| [k, true] }
+
+        time = Benchmark.realtime { Axn::Internal::Reflection::Schema.dedupe_watched_classes(watched) }
+
+        expect(time).to be < 1.0
       end
 
       # Codex review, PR #296, round 6: a bare (no shape block) union's WHOLE `anyOf` collapses to

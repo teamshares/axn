@@ -87,8 +87,19 @@ module Axn
           # whole walk runs synchronously), so two entries for the same class always agree on the second
           # element and deduping on the class alone is sound.
           def dedupe_watched_classes(watched)
+            # A pairwise `Identity.same?` scan is QUADRATIC (Codex review, PR #296, round 9): a contract
+            # naming many thousands of distinct classes (`MAX_EMITTED_PROPERTIES` permits up to 25,000
+            # properties) could stall the first render for tens of seconds building this list.
+            # `Hash#compare_by_identity` keeps the identical no-`hash`/`eql?`-dispatch guarantee -- it
+            # compares keys by identity at the C level, never consulting the key's own method table -- while
+            # making the pass linear.
+            seen = {}.compare_by_identity
             watched.each_with_object([]) do |entry, acc|
-              acc << entry unless acc.any? { |seen| Axn::Internal::Identity.same?(seen[0], entry[0]) }
+              klass = entry[0]
+              next if seen.key?(klass)
+
+              seen[klass] = true
+              acc << entry
             end
           end
 
