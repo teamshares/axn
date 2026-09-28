@@ -331,6 +331,29 @@ RSpec.describe Axn::Extensions::Serialization do
           .to eq("d" => { "name" => "a", "internal_notes" => "x" })
       end
 
+      # The symmetric case `effective_projection_displaces?` also has to get right: `respond_to?` denying a
+      # REAL `to_h` (not just `as_json`) makes `projection_for` degrade all the way to `#to_s` -- Data's own
+      # inspect-style string, matching neither `as_json` nor the schema's member-keyed object -- so this
+      # must still raise, not read as "nothing overridden." Wrapped in `without_activesupport_json_core_ext`
+      # for the same reason the round-6/round-10 method_missing tests are: if ActiveSupport already gave
+      # `Data` a REAL `as_json` (`to_h.as_json`), that takes priority over this override regardless (its own
+      # internal `self.to_h` call is a normal method call, not gated by the value's overridden `respond_to?`
+      # at all), rendering cleanly and never reaching `#to_s` in the first place.
+      it "raises for a subclass whose respond_to? is overridden to deny a real to_h, since projection_for " \
+         "would degrade to #to_s (Data's own inspect string) rather than the schema's member-keyed object" do
+        klass = shaped_action(type: s)
+        denies_to_h_subclass = Class.new(s) do
+          # rubocop:disable Style/OptionalBooleanParameter -- matches Kernel#respond_to?'s own signature
+          def respond_to?(name, include_private = false) = name == :to_h ? false : super
+          # rubocop:enable Style/OptionalBooleanParameter
+        end
+
+        without_activesupport_json_core_ext do
+          expect { described_class.render(klass.call(value: denies_to_h_subclass.new(name: "a", internal_notes: "x"))) }
+            .to raise_error(Axn::Extensions::Serialization::UnserializableValue)
+        end
+      end
+
       # Codex review, PR #296: `to_h` displaces the built-in at ANY visibility (unlike `as_json`, which is
       # reached only by dispatch), including a PRIVATE singleton `to_h` or one from a privately-`extend`ed
       # module. `Kernel#singleton_methods` (an earlier, cheaper draft of the frozen-value fast path below)

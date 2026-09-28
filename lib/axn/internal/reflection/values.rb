@@ -714,6 +714,14 @@ module Axn
         METHOD_MISSING_PROJECTION = :method_missing_projection
         private_constant :METHOD_MISSING_PROJECTION
 
+        # `effective_displaced_method`'s answer when `respond_to?` is overridden and denies BOTH `as_json`
+        # and `to_h` (Codex review, PR #296, round 14's `to_h` symmetric case): `projection_for` then
+        # degrades all the way to `#to_s`, which never matches a member-keyed schema regardless of what the
+        # table shows — there is no overriding method OR method_missing route to name, only a denial, so
+        # this is a third, distinct sentinel from the other two.
+        DENIED_PROJECTION = :denied_projection
+        private_constant :DENIED_PROJECTION
+
         def framework_projection_owner?(owner) = FRAMEWORK_PROJECTION_OWNERS.include?(owner)
 
         # `mod` itself IS ::Data/::Struct (never true for anything `displacing_projection` is actually asked
@@ -801,7 +809,12 @@ module Axn
           found = displacing_projection(table)
           return found unless found.nil?
 
-          METHOD_MISSING_PROJECTION if method_missing_backed_projection?(value, table)
+          return METHOD_MISSING_PROJECTION if method_missing_backed_projection?(value, table)
+
+          # Neither a real method NOR method_missing explains the table's silence -- `respond_to?` must be
+          # denying BOTH names outright (Codex review, PR #296, round 14's `to_h` symmetric case), degrading
+          # `projection_for` all the way to `#to_s`.
+          DENIED_PROJECTION unless value.respond_to?(:as_json) || value.respond_to?(:to_h)
         end
 
         # Whether SOMETHING in `value`'s own table displaces the built-in projection — the class's
@@ -883,7 +896,13 @@ module Axn
         # itself draws from the table, just read from the dispatched answer instead.
         def effective_projection_displaces?(value)
           return !framework_projection_owner?(owner_of(value, :as_json)) if value.respond_to?(:as_json)
-          return false unless value.respond_to?(:to_h)
+
+          # `respond_to?(:to_h)` denied — same as `as_json` above, this can be a LIE hiding a real `to_h`
+          # (the exact symmetric case to the `as_json` one this function exists for) or a genuine absence —
+          # either way, `projection_for` degrades all the way to `#to_s` (Data's own inspect-style string
+          # for a well-behaved value, an address for an ordinary object), which never matches a member-keyed
+          # schema, so this is unconditionally a displacement rather than "nothing overridden."
+          return true unless value.respond_to?(:to_h)
 
           !framework_projection_owner?(owner_of(value, :to_h))
         end
@@ -930,6 +949,7 @@ module Axn
         def displaced_projection_reason(declared, method, table)
           return undefined_projection_reason(declared) if Axn::Internal::Identity.same?(method, UNDEFINED_PROJECTION)
           return method_missing_projection_reason(declared) if Axn::Internal::Identity.same?(method, METHOD_MISSING_PROJECTION)
+          return denied_projection_reason(declared) if Axn::Internal::Identity.same?(method, DENIED_PROJECTION)
 
           "its position in `output_schema` was reflected from the declared type " \
             "#{Axn::Internal::RenderedModuleName.of(declared)} — an object keyed by its members — but this " \
@@ -960,6 +980,19 @@ module Axn
             "value's own class serves `#as_json`/`#to_h` through `method_missing` (advertised via its own " \
             "`respond_to_missing?`), which routes to a different projection than the declared type's own, " \
             "so the rendered body would not match the published schema. #{DISPLACED_PROJECTION_FIX}"
+        end
+
+        # `respond_to?` is overridden to deny BOTH `as_json` and `to_h` outright (Codex review, PR #296,
+        # round 14): there is no overriding method, no method_missing route, and no owner to name — only an
+        # override that suppresses everything, degrading `projection_for` all the way to `#to_s`.
+        def denied_projection_reason(declared)
+          "its position in `output_schema` was reflected from the declared type " \
+            "#{Axn::Internal::RenderedModuleName.of(declared)} — an object keyed by its members — but this " \
+            "value's own class overrides `#respond_to?` to deny both `#as_json` and `#to_h`, degrading it " \
+            "to `#to_s` instead, so the rendered body would not match the published schema. Stop denying " \
+            "`#to_h` (or `#as_json`), or if the denial is intentional, define the projection you want on " \
+            "the declared type itself, which leaves this position honestly opaque (an empty `{}` in the " \
+            "schema)."
         end
 
         # Where the displacing method came from, on the same terms `NameOwnership#owner_label` names a
@@ -1037,7 +1070,8 @@ module Axn
                              :displaced_projection_owner_label, :displaced_projection_location,
                              :data_or_struct_descendant?, :undefined_projection_reason,
                              :method_missing_backed_projection?, :effective_displaced_method, :method_missing_projection_reason,
-                             :dynamic_respond_to?, :overridden_beyond_kernel?, :effective_projection_displaces?
+                             :dynamic_respond_to?, :overridden_beyond_kernel?, :effective_projection_displaces?,
+                             :denied_projection_reason
       end
     end
   end
