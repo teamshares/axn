@@ -23,10 +23,9 @@ module Axn
 
         def initialize(keys:, header: AUTHORIZATION)
           raise ConfigurationError, "Bearer keys must be a non-empty Hash of principal id => key(s)" unless keys.is_a?(Hash) && keys.any?
-          raise ConfigurationError, "Bearer header must be a non-empty String" unless header.is_a?(String) && !header.strip.empty?
 
-          @header = header
-          @keys = _principal_ids(keys).to_h { |id, (principal, value)| [id, _check_literals!(principal, value)] }.freeze
+          @header = _header_name(header)
+          @keys = _principal_ids(keys).to_h { |id, (_label, value)| [id, _check_literals!(id, value)] }.freeze
         end
 
         def principals = @keys.keys
@@ -67,6 +66,15 @@ module Axn
 
         def authorization? = header.casecmp?(AUTHORIZATION)
 
+        # Stored as a detached, frozen native copy: the name decides both which header is read and
+        # whether it is parsed as `Bearer <key>`, so the caller mutating its String must change neither.
+        def _header_name(header)
+          name = ::String.new(header).freeze if Internal::Identity.kind?(header, ::String)
+          return name if name && !name.strip.empty?
+
+          raise ConfigurationError, "Bearer header must be a non-empty String"
+        end
+
         def _presented_token(request)
           raw = request.header(header).to_s.strip
           if authorization?
@@ -81,15 +89,15 @@ module Axn
         # Principal ids canonicalize to Strings, so two ids that stringify alike (`:svc` and `"svc"`)
         # would silently collapse into one entry and drop a configured key — refused instead. Only a
         # String or Symbol is an id: anything else would stringify to whatever its own `to_s` says.
+        # Messages render the canonical id (or the Symbol, which carries no overrides), never the
+        # caller's String, so reporting cannot run a subclass's `inspect`.
         def _principal_ids(keys)
           keys.each_with_object({}) do |(principal, value), ids|
             id = _principal_id(principal)
-            if ids.key?(id)
-              raise ConfigurationError,
-                    "Bearer principal ids must be unique: #{ids[id].first.inspect} and #{principal.inspect} both name principal #{id.inspect}"
-            end
+            label = Internal::Identity.kind?(principal, ::Symbol) ? principal.inspect : id.inspect
+            raise ConfigurationError, "Bearer principal ids must be unique: #{ids[id].first} and #{label} both name principal #{id.inspect}" if ids.key?(id)
 
-            ids[id] = [principal, value]
+            ids[id] = [label, value]
           end
         end
 
@@ -107,22 +115,34 @@ module Axn
         # Literals are checked once, here, so a blank key fails the deploy rather than every request.
         # Each is stored as the guard's detached copy, never the caller's object (nor the caller's
         # Array), so mutating what the caller still holds cannot change which credential authenticates.
-        def _check_literals!(principal, value)
+        def _check_literals!(id, value)
           list = value.is_a?(Array) ? value : [value]
-          raise ConfigurationError, "Bearer key for #{principal.to_s.inspect} must list at least one key" if list.empty?
+          raise ConfigurationError, "Bearer key for #{id.inspect} must list at least one key" if list.empty?
 
-          checked = list.map { |entry| Auth.deferred?(entry) ? entry : Auth.require_secret!("Bearer key for #{principal.to_s.inspect}", entry) }
+          checked = list.map { |entry| Auth.deferred?(entry) ? entry : _require_key!(id, entry) }
           value.is_a?(Array) ? checked.freeze : checked.first
         end
 
-        def _candidates(principal, value, request)
+        # `require_secret!`, plus the one rule specific to reading a token out of a header: the presented
+        # token is stripped before comparison, so a key with surrounding whitespace (a secret file's
+        # trailing newline, typically) could never match. That is a misconfiguration to raise, not a
+        # permanent stream of mismatches.
+        def _require_key!(id, value)
+          key = Auth.require_secret!("Bearer key for #{id.inspect}", value)
+          return key if key.strip == key
+
+          raise ConfigurationError,
+                "Bearer key for #{id.inspect} has leading or trailing whitespace; presented tokens are stripped, so it could never match"
+        end
+
+        def _candidates(id, value, request)
           # Not Kernel#Array on the resolved value: `Array(nil)` is `[]`, which would report a Proc
           # returning an unset ENV var as "no keys" instead of naming the nil it actually returned.
           entries = value.is_a?(Array) ? value : [value]
           entries.flat_map { |entry| (resolved = Auth.resolve(entry, request)).is_a?(Array) ? resolved : [resolved] }.tap do |keys|
-            raise ConfigurationError, "Bearer key for #{principal.inspect} resolved to no keys" if keys.empty?
+            raise ConfigurationError, "Bearer key for #{id.inspect} resolved to no keys" if keys.empty?
 
-            keys.map! { |key| Auth.require_secret!("Bearer key for #{principal.inspect}", key) }
+            keys.map! { |key| _require_key!(id, key) }
           end
         end
       end

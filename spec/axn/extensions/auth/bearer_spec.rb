@@ -134,6 +134,35 @@ RSpec.describe Axn::Extensions::Auth::Bearer do
       expect { described_class.new(keys: { "" => "k" }) }.to raise_error(auth::ConfigurationError, /principal id/)
     end
 
+    # A presented token is stripped before comparison, so a padded key could never match: that is a
+    # misconfiguration (a secret file's trailing newline), not a stream of 401s.
+    it "refuses a literal key with surrounding whitespace at construction" do
+      expect { described_class.new(keys: { "svc" => "k1\n" }) }
+        .to raise_error(auth::ConfigurationError, /"svc".*leading or trailing whitespace/)
+      expect { described_class.new(keys: { "svc" => ["ok", " k2"] }) }.to raise_error(auth::ConfigurationError, /whitespace/)
+    end
+
+    it "raises when a deferred key resolves with surrounding whitespace" do
+      strategy = described_class.new(keys: { "svc" => -> { "k1\n" } })
+      expect { strategy.call(bearer("k1")) }.to raise_error(auth::ConfigurationError, /whitespace/)
+    end
+
+    it "accepts a key with inner whitespace" do
+      expect(described_class.new(keys: { "svc" => "a b" }).call(bearer("a b")).principal).to eq("svc")
+    end
+
+    it "renders a String-subclass principal id without calling its own methods" do
+      hostile = Class.new(String) do
+        def to_s = raise("to_s ran")
+        def inspect = raise("inspect ran")
+      end
+      strategy = described_class.new(keys: { hostile.new("svc") => "k" })
+      expect(strategy.call(bearer("k")).principal).to eq("svc")
+      expect { described_class.new(keys: { hostile.new("svc") => "" }) }.to raise_error(auth::ConfigurationError, /"svc"/)
+      expect { described_class.new(keys: { svc: "k1", hostile.new("svc") => "k2" }) }
+        .to raise_error(auth::ConfigurationError, /both name principal "svc"/)
+    end
+
     it "refuses a blank header name" do
       expect { described_class.new(keys: { "svc" => "k" }, header: "") }.to raise_error(auth::ConfigurationError, /header/)
     end
@@ -151,6 +180,18 @@ RSpec.describe Axn::Extensions::Auth::Bearer do
       expect(strategy.call(bearer("attacker"))).to eq(auth::CREDENTIALS_MISMATCH)
       expect(strategy.call(bearer("k1")).principal).to eq("a")
       expect(strategy.call(bearer("k2")).principal).to eq("b")
+    end
+  end
+
+  describe "the header name" do
+    it "is detached from the caller's String" do
+      name = +"X-API-Key"
+      strategy = described_class.new(keys: { "svc" => "k1" }, header: name)
+      name.replace("Authorization")
+      expect(strategy.header).to eq("X-API-Key")
+      expect(strategy.header).to be_frozen
+      expect(strategy.scheme).to be_nil
+      expect(strategy.call(bearer("k1"))).to eq(auth::CREDENTIALS_MISSING)
     end
   end
 

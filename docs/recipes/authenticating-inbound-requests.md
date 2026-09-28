@@ -39,7 +39,7 @@ Axn::Extensions::Auth::Bearer.new(keys: { "svc" => %w[old-key new-key] }, header
 - **Where it reads the key.** Each principal id names one or more keys. By default the key comes from `Authorization: Bearer <key>`. With `header:`, it's the raw value of that header instead.
 - **What a key can be.** A String, a Proc, or an Array of those. A Proc is resolved **on every request**: a zero-arity Proc is simply called, and a one-arity Proc receives the request. A Proc may return an Array. Listing the old and new key together is how a rotation overlaps.
 - **Timing.** Every candidate key of every principal is compared, with no early exit. The comparison is constant-time and length-independent.
-- **Misconfiguration raises instead of rejecting.** A blank or non-String key raises `Auth::ConfigurationError`: a literal one at construction, a deferred one on the request. So does one token authenticating as two principals, and (at construction) two principal ids that stringify alike, such as `:svc` and `"svc"`. A 401 that really means "we are misconfigured" would otherwise look like an unexplained outage.
+- **Misconfiguration raises instead of rejecting.** A blank or non-String key, or one with leading or trailing whitespace (which a stripped token could never match), raises `Auth::ConfigurationError`: a literal one at construction, a deferred one on the request. So does one token authenticating as two principals, and (at construction) two principal ids that stringify alike, such as `:svc` and `"svc"`. A 401 that really means "we are misconfigured" would otherwise look like an unexplained outage.
 - **Redaction.** `inspect` and `pp` never render a key.
 
 ## The primitives
