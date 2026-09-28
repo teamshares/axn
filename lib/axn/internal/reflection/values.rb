@@ -677,6 +677,17 @@ module Axn
 
           method = Axn::Internal::NativeMethods.declared_instance_method(mod, :to_h)
           return method if method && !framework_projection_owner?(method.owner)
+
+          # `mod` overrides `respond_to?`/`respond_to_missing?` beyond Kernel (Codex review, PR #296, round
+          # 11): a DECLARED class serving its OWN `as_json`/`to_h` through method_missing (round 6/10's
+          # render-time detection) has no REAL method for either, so the table checks above see nothing --
+          # `output_schema` would otherwise reflect it as member-keyed while the render guard now correctly
+          # refuses that same class's own instances. Whether the override actually answers `as_json`/`to_h`
+          # is unknowable without dispatching, which schema reflection must not do -- so this treats ANY
+          # such override conservatively as opaque, the same "a declared class that owns its own projection
+          # is opaque" precedent an ordinary declared `as_json` already gets, rather than asserting
+          # properties a class using this idiom can never actually deliver.
+          return METHOD_MISSING_PROJECTION if dynamic_respond_to?(mod)
           return nil if method # a framework-owned to_h (Data#to_h/Struct#to_h) is reachable and unshadowed
 
           # `to_h` is UNREACHABLE (Codex review, PR #296, round 6): every Data/Struct descendant inherits

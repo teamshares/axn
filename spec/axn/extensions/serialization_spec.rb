@@ -364,6 +364,40 @@ RSpec.describe Axn::Extensions::Serialization do
           .to eq("d" => { "name" => "a" })
       end
 
+      # Codex review, PR #296, round 11: the round-6/round-10 fixes taught the RENDER-TIME guard to detect a
+      # method_missing-backed as_json/to_h, but `member_keyed_object_type?` (the SCHEMA-BUILD-TIME
+      # predicate `displacing_projection` also answers) still only reads the method TABLE, so a class that
+      # serves its OWN as_json this way still reflects as member-keyed there. The schema then over-promises
+      # (asserts properties) while the render guard now correctly detects the dynamic projection and
+      # refuses -- meaning an instance of the EXACT declared type, no subclass involved, could never render
+      # at all. `displacing_projection` now ALSO treats a class that overrides `respond_to?`/
+      # `respond_to_missing?` beyond Kernel as opaque (conservatively: whether it actually answers `as_json`/
+      # `to_h` is unknowable without dispatching, which schema reflection must not do), matching the "a
+      # declared class that owns its own projection is opaque" precedent the ordinary as_json case above
+      # already sets -- so the schema drops to `{}` and no guard is ever built for it, standing down exactly
+      # like any other opaque declared type. Wrapped in `without_activesupport_json_core_ext` for the same
+      # reason the round-6/round-10 method_missing tests are.
+      it "does not raise when the DECLARED class itself serves as_json through method_missing/" \
+         "respond_to_missing? -- treated as opaque at the schema, the same as an ordinary declared as_json, " \
+         "rather than raising on every render of the exact declared type" do
+        dynamic_s = Data.define(:name, :internal_notes) do
+          def respond_to_missing?(method_name, include_private = false) = method_name == :as_json || super
+
+          def method_missing(method_name, *args)
+            return { name: } if method_name == :as_json
+
+            super
+          end
+        end
+        klass = shaped_action(type: dynamic_s)
+
+        without_activesupport_json_core_ext do
+          expect(klass.output_schema.dig(:properties, :d)).to eq({})
+          expect(described_class.render(klass.call(value: dynamic_s.new(name: "a", internal_notes: "x"))))
+            .to eq("d" => { "name" => "a" })
+        end
+      end
+
       it "re-checks the DECLARED class live rather than trusting a memoized verdict: reopening the " \
          "declared class with its own as_json after the first render stands the check down" do
         reopenable = Data.define(:name, :internal_notes)
