@@ -764,13 +764,24 @@ module Axn
         # guard was built: a class reopened with its own `as_json`/`to_h` AFTER the guard was memoized would
         # make a rebuilt schema opaque for this position, and refusing against a stale verdict would raise
         # where a fresh render would not.
+        #
+        # `declared`'s CONSERVATIVE opacity is checked FIRST, unconditionally — not merely as a precondition
+        # for raising (Codex review, PR #296, round 13): it answers "would a freshly rebuilt schema still
+        # describe anything at this position at all," the SAME question `member_keyed_object_type?` answers
+        # conservatively, and that answer must stand down the guard REGARDLESS of whether the CURRENT value
+        # itself actually misbehaves. A declared class gaining an UNRELATED `respond_to?`/`respond_to_missing?`
+        # override doesn't displace its own as_json/to_h (`displacing_projection_anywhere?`'s PRECISE check
+        # below would correctly say so, for THIS value), but the schema conservatively collapses the WHOLE
+        # position to `{}` regardless — so an otherwise well-behaved value here must still have its stale
+        # nested members/items/values dropped, or ITS OWN nested displacement gets checked against a schema
+        # that no longer promises anything about it either.
         def active_render_guard(value, guard, path)
           return guard if guard.classes.empty?
 
           declared = guard.classes.find { |klass| Axn::Internal::Identity.kind?(value, klass) }
           return guard if declared.nil?
+          return nil unless displacing_projection(declared, conservative: true).nil?
           return guard unless displacing_projection_anywhere?(value)
-          return nil unless displacing_projection(declared).nil?
 
           # Materialized only once we are actually about to raise: the value is being refused either way,
           # so paying for `method_table` here (rather than in the cheap check above) costs nothing extra on
@@ -826,10 +837,23 @@ module Axn
         # (round 1: it excludes PRIVATE singleton-level methods, and `to_h` displaces the built-in at ANY
         # visibility) — `NativeMethods.method_table` (via `Kernel#singleton_class`) is reached for those,
         # exactly as before this optimization existed at all.
+        #
+        # The CLASS-level checks run ONLY inside the frozen-Data branch (Codex review, PR #296, round 13):
+        # `displacing_projection`/`method_missing_backed_projection?` asked of `class_of(value)` alone answer
+        # "does the CLASS displace," which a value's own singleton table can COUNTERMAND — a singleton
+        # `undef_method`/private override removes a class-level public `as_json` for THAT INSTANCE only
+        # (`Module#public_method_defined?` still reports it at the class, since the class itself is
+        # untouched, but the value's own table correctly reports it gone) — so `class_of(value)` alone is
+        # authoritative ONLY for a frozen Data instance, which (per the invariant above) provably has no
+        # singleton-level table of its own to disagree with it. Every other value skips straight to the
+        # table-based check below, which is authoritative regardless — asking the class first there would
+        # only risk the same false positive for no savings, since the table is being materialized anyway.
         def displacing_projection_anywhere?(value)
-          return true if displacing_projection(Axn::Internal::Identity.class_of(value))
-          return true if method_missing_backed_projection?(value, Axn::Internal::Identity.class_of(value))
-          return false if Axn::Internal::Identity.kind?(value, ::Data) && Axn::Internal::NativeMethods.frozen?(value)
+          if Axn::Internal::Identity.kind?(value, ::Data) && Axn::Internal::NativeMethods.frozen?(value)
+            return true if displacing_projection(Axn::Internal::Identity.class_of(value))
+
+            return method_missing_backed_projection?(value, Axn::Internal::Identity.class_of(value))
+          end
 
           table = Axn::Internal::NativeMethods.method_table(value)
           return true unless displacing_projection(table).nil?

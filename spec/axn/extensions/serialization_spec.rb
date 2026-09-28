@@ -287,6 +287,28 @@ RSpec.describe Axn::Extensions::Serialization do
           .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /defined on this value itself \(a singleton method\)/)
       end
 
+      # Codex review, PR #296, round 13: the CLASS-level check (`displacing_projection(class_of(value))`)
+      # finds a SUBCLASS's own public `as_json` and short-circuits `displacing_projection_anywhere?` to
+      # true, WITHOUT ever consulting the VALUE's own singleton table -- but a singleton-level `undef_method`
+      # removes that name from THIS instance's effective dispatch entirely (`Module#public_method_defined?`
+      # on the class still reports it, since the CLASS itself is untouched, but the value's own table
+      # correctly reports it gone), so `projection_for` falls through to the inherited member-keyed `to_h`,
+      # matching the schema. The class-level short-circuit disagreeing with the table-level (actually
+      # effective) answer previously reached the raise path with no real displacement to name, crashing on
+      # `nil.name` inside `displaced_projection_reason` instead of rendering the valid body.
+      it "does not raise (and does not crash) for a Struct instance whose singleton undef_method removes a " \
+         "SUBCLASS's own public as_json just for that instance, falling through to the inherited " \
+         "member-keyed to_h that matches the schema" do
+        st = Struct.new(:name, :internal_notes)
+        klass = shaped_action(type: st)
+        public_as_json_subclass = Class.new(st) { def as_json(*) = { name: "redacted" } }
+        value = public_as_json_subclass.new("a", "x")
+        value.singleton_class.send(:undef_method, :as_json)
+
+        expect(described_class.render(klass.call(value:)))
+          .to eq("d" => { "name" => "a", "internal_notes" => "x" })
+      end
+
       # Codex review, PR #296: `to_h` displaces the built-in at ANY visibility (unlike `as_json`, which is
       # reached only by dispatch), including a PRIVATE singleton `to_h` or one from a privately-`extend`ed
       # module. `Kernel#singleton_methods` (an earlier, cheaper draft of the frozen-value fast path below)
@@ -664,6 +686,41 @@ RSpec.describe Axn::Extensions::Serialization do
         reopenable_s.define_method(:as_json) { { inner: displacing_t_subclass.new(x: 99) } }
 
         expect(described_class.render(klass.call(value: reopenable_s.new(inner: t.new(x: 1)))))
+          .to eq("d" => { "inner" => { "x" => "redacted" } })
+      end
+
+      # Codex review, PR #296, round 13: the round-7 fix above rechecks `declared`'s opacity PRECISELY
+      # (`conservative: false`, round 12's default) -- correct for deciding whether to RAISE, but the SAME
+      # check also decides whether the cached guard's NESTED structure is still trustworthy, which is a
+      # SCHEMA-consistency question, not a per-value one. An unrelated `respond_to?`/`respond_to_missing?`
+      # override on the declared class doesn't displace its ACTUAL as_json/to_h (the precise check correctly
+      # says "not displaced"), but `output_schema` (round 11's `conservative: true`) now collapses this
+      # WHOLE position to `{}` regardless -- so the stale nested guard must still be dropped, exactly as it
+      # would be for a real displacement, or a genuinely unrelated nested override gets refused against a
+      # schema that no longer promises anything about it either.
+      it "drops the guard for descendants once the declared parent's schema conservatively collapses to " \
+         "opaque (an UNRELATED respond_to?/respond_to_missing? override, not an actual as_json/to_h " \
+         "displacement), rather than keeping a stale nested guard the current schema no longer describes" do
+        t = Data.define(:x)
+        reopenable_s = Data.define(:inner)
+        klass = Class.new do
+          include Axn
+          auto_log false
+          expects :value
+          exposes :d, type: reopenable_s do
+            field :inner, type: t do
+              field :x, type: Integer
+            end
+          end
+          def call = expose(d: value)
+        end
+        described_class.render(klass.call(value: reopenable_s.new(inner: t.new(x: 1)))) # warms the memo, intact
+
+        reopenable_s.define_method(:respond_to_missing?) { |name, include_private = false| name == :unrelated || super(name, include_private) }
+        reopenable_s.define_method(:method_missing) { |name, *args| name == :unrelated ? "whatever" : super(name, *args) }
+        displacing_t_subclass = Class.new(t) { def as_json(*) = { x: "redacted" } }
+
+        expect(described_class.render(klass.call(value: reopenable_s.new(inner: displacing_t_subclass.new(x: 99)))))
           .to eq("d" => { "inner" => { "x" => "redacted" } })
       end
 
