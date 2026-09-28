@@ -948,7 +948,9 @@ module Axn
         # The exact clause names the calls the declaration gate opens, so what the field enforces on them can be
         # stated there too, beside the requirement: the property built with the declaration gate removed (its
         # own per-entry gates still close, and are still reported). The field's own property keeps only what
-        # holds on every call, and its residues narrow to what the clause still cannot say.
+        # holds on every call, and its residues narrow to what the clause still cannot say. Every one of those
+        # applies only on the calls the gate opens, so each is named as conditional; an `:unfixed` one keeps its
+        # kind, since axn could still close it.
         def state_gate_open_contract!(clause, prop, config)
           open_config = config.with(validations: config.validations.except(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS))
           open = emitted_input_property(build_property(open_config), config)
@@ -956,7 +958,11 @@ module Axn
           stated = open.except(:description, :default, RESIDUE_KEY)
           clause[branch] = clause[branch].merge(properties: { config.field => stated }) unless stated.empty?
           kept = prop.except(RESIDUE_KEY)
-          residues_on(open).reduce(kept) { |acc, r| record_residue(acc, r.summary, kind: r.kind, per_type: r.per_type) }
+          residues_on(open).reduce(kept) do |acc, r|
+            next record_residue(acc, r.summary, kind: r.kind, per_type: r.per_type) if r.kind == :conditional
+
+            record_residue(acc, "#{GATED_RESIDUE}; #{r.summary}", kind: r.kind == :unfixed ? :unfixed : :conditional, per_type: r.per_type)
+          end
         end
 
         # Whether a nil reaches this config's position unrejected on SOME call: it tolerates nil outright, or

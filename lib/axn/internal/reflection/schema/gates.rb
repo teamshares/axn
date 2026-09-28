@@ -105,9 +105,12 @@ module Axn
             some_gate = decl_gates.any? || entries.any? { |_key, opt| entry_self_gated?(opt) }
             return false unless some_gate
 
+            # An entry whose nil verdict is unknowable is left out here as in `nil_accepted?`: counted as rejecting
+            # an omitted value, it would keep in `required` a field the runtime accepts omitted once its gates close.
             shared = shared_validation_options(config.validations)
             entries.all? do |key, opt|
-              nil_tolerant_validation?(key, opt, shared) || entry_effective_gate_keys(opt, decl_gates).any?
+              nil_verdict_unknowable?(key, opt, shared) || nil_tolerant_validation?(key, opt, shared) ||
+                entry_effective_gate_keys(opt, decl_gates).any?
             end
           end
 

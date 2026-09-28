@@ -7796,6 +7796,19 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         expect(schema[:properties][:coupon_code]).to eq({})
       end
 
+      # A check the gate-open property still leaves out runs only on the calls the gate opens, so it is named as
+      # conditional rather than as a check that always applies.
+      it "names what the gate-open property leaves out as conditional" do
+        action = build_axn do
+          expects :promo_enabled, type: :boolean
+          expects :coupon_code, type: String, validate: ->(_) {}, if: :promo_enabled?
+        end
+        residues = action.input_schema_residues.select { |r| r.path == [:coupon_code] }
+
+        expect(residues.map(&:kind)).to eq([:conditional])
+        expect(residues.sole.summary).to start_with("a conditional validator at this position applies only on the calls")
+      end
+
       it "emits else for unless:" do
         action = build_axn do
           expects :skip_check, type: :boolean

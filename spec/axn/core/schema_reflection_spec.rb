@@ -330,6 +330,15 @@ RSpec.describe "Axn class-level schema reflection" do
     expect(Array(klass.input_schema[:required])).not_to include("v")
   end
 
+  # The only check known to reject an omitted value is gated; a `validate:` whose nil verdict reflection cannot
+  # know does not count as a second one, so the closed gate still leaves the field omittable.
+  it "leaves a field optional when a gate closes its only known nil-rejecting check beside a validate:" do
+    klass = build_axn { expects :v, presence: false, type: { klass: Integer, if: -> { false } }, validate: ->(_) {} }
+
+    expect(klass.call).to be_ok
+    expect(Array(klass.input_schema[:required])).not_to include("v")
+  end
+
   # THE nil axis across axn's whole validator vocabulary: every key a declaration may carry, in the option
   # shapes that change the answer. Each row declares the validator with the inferred presence check
   # suppressed, so the validator under test is the only thing that could reject an omitted value, then holds
