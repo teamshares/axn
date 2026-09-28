@@ -188,6 +188,12 @@ RSpec.describe Axn::Extensions::Auth::Bearer do
       expect { described_class.new(keys: { "svc" => impostor }) }.to raise_error(auth::ConfigurationError, /got Object/)
     end
 
+    it "refuses at construction a deferred key resolve could not call" do
+      expect { described_class.new(keys: { "svc" => ->(_req, _ctx) { "k" } }) }
+        .to raise_error(auth::ConfigurationError, /"svc".*neither zero arguments nor one request/)
+      expect { described_class.new(keys: { "svc" => ["k", ->(request:) { request }] }) }.to raise_error(auth::ConfigurationError, /one request/)
+    end
+
     it "refuses a blank header name" do
       expect { described_class.new(keys: { "svc" => "k" }, header: "") }.to raise_error(auth::ConfigurationError, /header/)
     end

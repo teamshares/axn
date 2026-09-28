@@ -48,7 +48,7 @@ For gems writing their own strategies:
 
 - **`Auth.secure_compare(a, b)`**: constant-time and length-independent (it hashes both sides first). Returns false on nil and never raises. For a fixed-width value such as an HMAC signature, a plain `OpenSSL.fixed_length_secure_compare` after a length check is equally safe.
 - **`Auth.require_secret!(declaration, value, label:, error:)`**: the secret guard. A blank secret is a **weak key**, not a failure: `""` compares equal to an empty credential and is a legal HMAC key. Route every secret through this, in both directions. Use its **return value**: a frozen plain-String copy, so a String subclass's overrides never run downstream and later mutation of the caller's object cannot change it. Its message names the value's type or emptiness, never its bytes.
-- **`Auth.deferred?(value)` / `Auth.resolve(value, request)`**: per-request resolution of a Proc. Everything else, including a Symbol, is a literal. Resolving a Symbol against the request is a DSL convention your gem can layer on top (axn-webhooks does), not something core guesses at.
+- **`Auth.deferred?(value)` / `Auth.resolve(value, request)`**: per-request resolution of a Proc. Everything else, including a Symbol, is a literal. Resolving a Symbol against the request is a DSL convention your gem can layer on top (axn-webhooks does), not something core guesses at. Check a deferred value with `Auth.resolvable?(value)` when the strategy is built: it is false for a Proc `resolve` could not call (one needing a second argument or a required keyword), which would otherwise raise `ArgumentError` on every request.
 
 ## Observability
 

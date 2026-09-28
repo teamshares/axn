@@ -102,7 +102,23 @@ module Axn
       def deferred?(value) = Internal::Identity.kind?(value, ::Proc)
 
       PROC_ARITY = ::Proc.instance_method(:arity)
-      private_constant :PROC_ARITY
+      PROC_PARAMETERS = ::Proc.instance_method(:parameters)
+      private_constant :PROC_ARITY, :PROC_PARAMETERS
+
+      # Whether `resolve` can call `value`: true for a literal, and for a Proc it would call bare (arity
+      # zero) or with the request as its single positional argument. False for a Proc that needs a
+      # second argument, a required keyword, or takes keywords only — each of which `resolve` could
+      # only answer with an ArgumentError on every request. For a strategy to check at construction,
+      # so that shape fails the deploy (read through Proc's own methods, like `resolve`).
+      def resolvable?(value)
+        return true if !deferred?(value) || PROC_ARITY.bind_call(value).zero?
+
+        parameters = PROC_PARAMETERS.bind_call(value)
+        return false if parameters.any? { |type, _| type == :keyreq }
+
+        required = parameters.count { |type, _| type == :req }
+        required == 1 || (required.zero? && parameters.any? { |type, _| %i[opt rest].include?(type) })
+      end
 
       def resolve(value, request)
         return value unless deferred?(value)

@@ -127,13 +127,19 @@ module Axn
           list = _key_list(value)
           raise ConfigurationError, "Bearer key for #{id.inspect} must list at least one key" if list.empty?
 
-          checked = list.map { |entry| Auth.deferred?(entry) ? entry : _require_key!(id, entry) }
+          checked = list.map { |entry| Auth.deferred?(entry) ? _require_resolvable!(id, entry) : _require_key!(id, entry) }
           Internal::Identity.kind?(value, ::Array) ? checked.freeze : checked.first
         end
 
         # One key or a list of them, the list copied natively (`Module#===`, then `Array.new`), so a
         # value claiming to be an Array is one key and an Array subclass's own iteration never runs.
         def _key_list(value) = Internal::Identity.kind?(value, ::Array) ? ::Array.new(value) : [value]
+
+        def _require_resolvable!(id, value)
+          return value if Auth.resolvable?(value)
+
+          raise ConfigurationError, "Bearer key for #{id.inspect} is a Proc that takes neither zero arguments nor one request argument"
+        end
 
         # `require_secret!`, plus the one rule specific to reading a token out of a header: the presented
         # token is stripped before comparison, so a key with surrounding whitespace (a secret file's

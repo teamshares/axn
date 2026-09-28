@@ -95,6 +95,13 @@ RSpec.describe Axn::Extensions::Auth do
       expect(described_class.resolve(sneaky, request)).to eq("zero")
     end
 
+    it "reports whether resolve can call a deferred value with zero arguments or one request" do
+      callable = [-> {}, ->(_req) {}, ->(_req, _opt = nil) {}, ->(*_args) {}, proc { |_a, _b| }, "literal"]
+      uncallable = [->(_req, _ctx) {}, ->(request:) { request }, ->(**_opts) {}, proc { |request:| request }]
+      callable.each { |value| expect(described_class.resolvable?(value)).to be(true), value.inspect }
+      uncallable.each { |value| expect(described_class.resolvable?(value)).to be(false), value.inspect }
+    end
+
     it "calls a zero-arity Proc with no arguments" do
       expect(described_class.resolve(-> { "zero" }, request)).to eq("zero")
     end
