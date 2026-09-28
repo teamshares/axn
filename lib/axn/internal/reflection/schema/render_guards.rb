@@ -124,12 +124,42 @@ module Axn
             in_items = Array(json_type_for(validations, for_output: true)[:type]).include?("array")
 
             if in_items
-              combine_render_guard(items: of ? contents_render_guard(of, ancestry, watched:) : nil)
+              combine_render_guard(items: array_items_render_guard(of, shape, ancestry, watched:))
             elsif ::Hash.equal?(of_container(validations))
               hash_field_render_guard(shape, validations, of, ancestry, watched:)
             elsif shape
               shape_field_render_guard(shape, validations, ancestry, watched:)
             end
+          end
+
+          # An array's `items` guard: `of`'s own contribution, PLUS a field-level `shape:` sitting ALONGSIDE
+          # `of` at this SAME node (Codex review, PR #296, round 17) — the ordinary `expects`/`exposes` DSL
+          # always folds a block's shape into `of`'s own nested `:shape` key (`_fold_distributing_shape!`),
+          # which `contents_render_guard` already reads, so `shape` is normally nil here and this reduces to
+          # `contents_render_guard(of, ...)` alone. But a config assigned directly (`external_field_configs=`,
+          # a documented, public escape hatch bypassing that fold — exercised elsewhere in this repo's own
+          # specs) can carry `:shape` at the top level instead, exactly as `apply_structured_schema!`
+          # (schema.rb) still merges it into `items` regardless of which key it lives under — so this must
+          # too, or a config built that way gets a schema promising a shaped member's guard the render never
+          # checks. Gated on `shape_overlay_applies?(of, for_output: true)`, the IDENTICAL condition
+          # `apply_structured_schema!` gates that same merge on, and its dependency is watched unconditionally
+          # (matching `shape_field_render_guard`'s own pattern) since it decides which branch even applies.
+          def array_items_render_guard(of, shape, ancestry, watched:) # rubocop:disable Naming/MethodParameterName -- matches the DSL kwarg it forwards
+            items_guard = of ? contents_render_guard(of, ancestry, watched:) : nil
+            return items_guard unless shape && of
+
+            watch_opaque_classes!(Axn::Internal::ShapeGraph.type_tokens(of[:klass]), watched)
+            return items_guard unless shape_overlay_applies?(of, for_output: true)
+
+            members = member_render_guards(shape[:members], ancestry, watched:)
+            return items_guard unless members
+
+            combine_render_guard(
+              classes: items_guard&.classes || [],
+              members: (items_guard&.members || {}).merge(members),
+              items: items_guard&.items,
+              values: items_guard&.values,
+            )
           end
 
           # The non-array, non-map branch: a field (or member) whose own declared type is a single

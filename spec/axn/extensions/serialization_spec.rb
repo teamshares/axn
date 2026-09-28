@@ -354,6 +354,57 @@ RSpec.describe Axn::Extensions::Serialization do
         end
       end
 
+      # Codex review, PR #296, round 17 (finding 1): `type: Array, of: Outer do ... end` through the
+      # ordinary `expects`/`exposes` DSL always folds the block's shape into `of`'s OWN nested `:shape` key
+      # (`_fold_distributing_shape!` in contract.rb), which `contents_render_guard` already reads correctly
+      # -- so this combination is UNREACHABLE through the DSL alone. But `external_field_configs=` (a
+      # documented, public escape hatch other specs already exercise -- property_name_collision_spec.rb --
+      # for a config built directly, bypassing the declaration walk) can carry the shape at the TOP level,
+      # sibling to `of:`, exactly like `apply_structured_schema!` (schema.rb) still merges into `items`
+      # regardless of which key it lives under -- but the render guard builder's `in_items` branch only
+      # ever reads `of`, never the field-level `shape`, silently dropping this entire class of guarded
+      # positions for a downstream consumer building configs programmatically (tool adapters, generators).
+      it "raises for a shaped member's displacing class when a config directly carries the shape at the " \
+         "TOP level alongside of: (reachable only via external_field_configs=, never via the ordinary " \
+         "DSL, which always folds shape into of[:shape] instead)" do
+        inner_type = Data.define(:x)
+        # A Data, not a Struct: Struct natively includes Enumerable, which ActiveSupport separately gives
+        # its own `as_json` (array-shaped, via `to_a`) -- surviving even `without_activesupport_json_core_ext`
+        # below (that helper only strips Data/Struct/Object's OWN, not an included module's). Using Data
+        # for the outer type sidesteps that unrelated contamination path entirely.
+        outer_type = Data.define(:inner)
+        klass = Class.new do
+          include Axn
+          auto_log false
+          expects :value
+          exposes :d, type: Array, of: outer_type do
+            field :inner, type: inner_type do
+              field :x, type: Integer
+            end
+          end
+          def call = expose(d: value)
+        end
+
+        declared_config = klass.external_field_configs.first
+        folded_shape = declared_config.validations[:of][:shape]
+        bypassed_validations = declared_config.validations.merge(shape: folded_shape)
+        bypassed_validations[:of] = bypassed_validations[:of].except(:shape)
+        klass.external_field_configs = [declared_config.with(validations: bypassed_validations)].freeze
+
+        displacing_inner = Class.new(inner_type) { def as_json(*) = { x: "redacted" } }
+        value = [outer_type.new(inner: displacing_inner.new(x: 1))]
+
+        # Wrapped in `without_activesupport_json_core_ext`: outside this, ActiveSupport's own contaminated
+        # `Data#as_json` (`to_h.as_json`) would render the ARRAY ELEMENT itself in ONE step, recursing into
+        # `displacing_inner`'s `as_json` internally before our own guard ever sees it -- the SAME already-
+        # pinned "Rails one-shot rendering" gap the file-level comments and PRO-3547 already document, not a
+        # new failure mode this fix introduces.
+        without_activesupport_json_core_ext do
+          expect { described_class.render(klass.call(value:)) }
+            .to raise_error(Axn::Extensions::Serialization::UnserializableValue)
+        end
+      end
+
       # Codex review, PR #296: `to_h` displaces the built-in at ANY visibility (unlike `as_json`, which is
       # reached only by dispatch), including a PRIVATE singleton `to_h` or one from a privately-`extend`ed
       # module. `Kernel#singleton_methods` (an earlier, cheaper draft of the frozen-value fast path below)
