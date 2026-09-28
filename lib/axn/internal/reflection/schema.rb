@@ -839,7 +839,7 @@ module Axn
         #     default or nil-accepting) — own-level only, because the model subtree is satisfied via the
         #     resolved record; it's the non-model route's OWN wire value the id can't supply (a pure-model
         #     node has no non-model route, so the empty set trivially satisfies this); AND
-        #   * a sibling `<key>_id` route that this model's lookup would read the token from
+        #   * for EVERY model route, a sibling `<key>_id` route that its lookup would read the token from
         #     (FieldConfig.id_token_routes) carries a default usable as one (usable_id_token_default?
         #     rejects a blank literal — the model resolver blank-guards the id).
         # `siblings` is the children map holding both `node` (keyed by `key`) and the id sibling.
@@ -855,8 +855,10 @@ module Axn
           # Credited only through the route the LOOKUP will actually read the token from, asked per model
           # route on the node via the one precedence both layers share — otherwise this credits a rescue
           # that never happens, and a nil-tolerant model whose subtree needs it would be accepted at
-          # declaration and resolve nil at run time.
-          node.configs.select { |c| c.validations[:model] }.any? do |model_config|
+          # declaration and resolve nil at run time. EVERY model route must be rescued: the runtime enforces
+          # each, so one route the id does not reach (another `on:` spelling, an `as:` reader) still resolves
+          # nil and strands what reads through it.
+          node.configs.select { |c| c.validations[:model] }.all? do |model_config|
             Internal::FieldConfig.id_token_routes(model_config, sibling.configs).any? { |c| usable_id_token_default?(c) }
           end
         end

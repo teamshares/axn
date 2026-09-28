@@ -1205,6 +1205,26 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(schema[:required].to_a).not_to include("payload")
     end
 
+    # Two model routes merge onto one node, and the id default is declared beside only the first; the aliased
+    # route on another `on:` spelling gets no token from it, so the id stays required for that route's sake.
+    it "keeps the id required when the default rescues only one of two merged model routes" do
+      stub_const("SiblingCo", Struct.new(:id, :name) { def self.find(id) = id.nil? ? nil : new(id, "n") })
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash
+        expects :meta, on: :payload, type: Hash
+        expects :company_id, on: :meta, type: Integer, default: 42
+        expects :company, on: :meta, model: { klass: SiblingCo, finder: :find }
+        expects :company, on: "payload.meta", as: :meta_company, model: { klass: SiblingCo, finder: :find }
+        expects :name, on: :meta_company, type: String
+        def call = nil
+      end
+
+      expect(klass.call(payload: { meta: { x: 1 } })).not_to be_ok
+      expect(klass.call(payload: { meta: { company_id: 5 } })).to be_ok
+      expect(klass.input_schema.dig(:properties, :payload, :properties, :meta, :required)).to include("company_id")
+    end
+
     it "keeps a required parent of a nested model: subfield with a sibling defaulted id required" do
       stub_const("SiblingCo", Struct.new(:id) { def self.find(id) = id.nil? ? nil : new(id) })
       klass = Class.new do
