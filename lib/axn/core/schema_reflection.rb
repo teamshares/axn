@@ -203,8 +203,9 @@ module Axn
       # Built through `PropertyNames.validate_inbound!`, the same build the reader performs, for the same
       # reason setup uses it — the class's own `input_schema` may not be axn's.
       #
-      # A deep subfield with no JSON representation is left out of the document entirely, so no node carries its
-      # residue; it is reported here at the root, under the same once-per-class warning `input_schema` gives.
+      # A subfield with no JSON representation, at any depth, is left out of the document entirely, so no node
+      # carries its residue; it is reported here at the root. A deep one also gets the once-per-class warning
+      # `input_schema` gives.
       module InputSchemaResiduesMethod
         include DroppedSubfieldReporting
 
@@ -213,13 +214,20 @@ module Axn
             Residue.new(path: path.freeze, summary: residue.summary, kind: residue.kind)
           end
           _warn_dropped_deep_subfields
-          (node_residues + _dropped_deep_subfield_residues).freeze
+          (node_residues + _unrepresented_subfield_residues).freeze
         end
 
         private
 
-        def _dropped_deep_subfield_residues
-          _resolved_subfields.dropped.map do |config|
+        # Every subfield whose ancestor path the emitter blocks — `Schema.path_blocked?`, the predicate property
+        # attribution and the deep-drop list already ask — so a depth-1 child of an Array or `model:` parent is
+        # named exactly as a deep one is.
+        def _unrepresented_subfield_residues
+          tree = _resolved_subfields.tree
+          subfield_configs.filter_map do |config|
+            path = tree.index[config]
+            next unless path && !path.ancestors.empty? && Axn::Internal::Reflection::Schema.path_blocked?(path.ancestors)
+
             summary = "#{_schema_name_label(config.field)} (on: #{_schema_name_label(config.on)}) is validated at runtime " \
                       "but absent from the schema: it is nested under a model: or non-object parent"
             Residue.new(path: [].freeze, summary: summary.freeze, kind: :inherent)

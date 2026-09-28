@@ -593,6 +593,19 @@ RSpec.describe "Axn class-level schema reflection" do
       expect(klass.input_schema_residues).to eq([])
     end
 
+    # A subfield directly under a non-object or `model:` parent is not nested into the document, so it is named at
+    # the root, as a deeper one is.
+    it "names a depth-1 subfield the schema leaves out under a non-object parent" do
+      action = build_axn do
+        expects :items, type: Array
+        expects :first, on: :items, type: String
+      end
+
+      expect(action.call(items: [1])).not_to be_ok
+      expect(action.input_schema_residues.map { |r| [r.path, r.kind] }).to eq([[[], :inherent]])
+      expect(action.input_schema_residues.sole.summary).to include("first (on: items)")
+    end
+
     # A gated check with no keyword is reached by two passes on a field's own property and by one at a
     # collision; it is named once either way, and its callable is named rather than rendered (an address would
     # change the document on every boot).
