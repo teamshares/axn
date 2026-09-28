@@ -85,6 +85,8 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
       # The tier-2 checks the emitter leaves out and names: a pattern with no faithful ECMA spelling (`\s`), the
       # `without:` spelling, an exclusion set, and the blank axis on its own.
       "format \\s" => { format: { with: /\A\s*[a-z]+\z/ } },
+      # Ruby LINE anchors: against `"a\nb"` the runtime matches a line, and an ECMA input anchor would not.
+      "format ^$ multiline" => { format: { with: /^[a-z]+$/, multiline: true } },
       "format without" => { format: { without: /\d/ } },
       "exclusion [a]" => { exclusion: { in: %w[a] } },
       "absence" => { presence: false, absence: true },

@@ -2633,8 +2633,8 @@ module Axn
         # exactly one numeric class — which is what keeps `type: Integer, inclusion: { in: [200, 404] }`
         # reflecting. Anything else — a Time, a Date, an arbitrary object — stands the set down.
         #
-        # INPUT needs no gate: there the emitted set is the values a client may SEND, and a set narrower than the
-        # runtime's equality is stricter, which is the licensed direction.
+        # INPUT needs no gate: a value a client sends is a JSON primitive, whose Ruby equality with a member is
+        # JSON Schema's own (`1 == 1.0` both ways), so the set is exact for everything the wire can carry.
         def output_enum_exact?(members, validations, declared_klass)
           members.all? do |member|
             case member
@@ -3210,7 +3210,7 @@ module Axn
           # to. A KEY is exempt: `canonical_wire_key` dispatches `to_s`, the same subject the validator used.
           return if for_output && !property_names && !own_wire_form?(declared_type_tokens(validations, declared_klass))
 
-          pattern = Pattern.ecma_source(Axn::Validation::Base.validator_entry_options(entry)[:with], for_output:)
+          pattern = Pattern.ecma_source(Axn::Validation::Base.validator_entry_options(entry)[:with])
           write_pattern_to_string_nodes!(prop, pattern) if pattern
         end
 
@@ -3621,7 +3621,7 @@ module Axn
             # floor/nullability an untyped node carries apply to it whole rather than to one branch of it.
             type_hashes = [{}] if type_hashes.any?(&:empty?)
             node = type_hashes.size == 1 ? type_hashes.first : { anyOf: type_hashes }
-            return narrow_node_under_numericality(node, validations, tokens, for_output:)
+            return narrow_node_under_numericality(node, validations, tokens)
           end
 
           # Outbound, the SET names a type only where it passes the same equality-safety test the `enum` itself
@@ -3631,8 +3631,8 @@ module Axn
           # which an inferred `"integer"` then rejects. A String/Symbol/boolean/nil member settles it alone —
           # their `==` never matches a foreign class — while a numeric member asks the position to pin its class,
           # which nothing reaching here has declared (a `type:` returns above, and a bag with a `klass:` takes the
-          # other branch), so a numeric set always stands down outbound. Input needs no gate: a set narrower than
-          # the runtime's equality is the licensed direction there.
+          # other branch), so a numeric set always stands down outbound. Input needs no gate: a wire value is a
+          # JSON primitive, which no foreign `==` can reach.
           if validations[:inclusion]
             enum_values = inclusion_enum_values(validations[:inclusion])
             if enum_values&.any? && (!for_output || output_enum_exact?(enum_values, validations, nil))
@@ -3662,7 +3662,7 @@ module Axn
           tokens = only_numeric ? [::Numeric] : [::Numeric, ::String]
           type_hashes = tokens.map { |k| single_type_for(k, for_output: false) }.uniq
           node = type_hashes.size == 1 ? type_hashes.first : { anyOf: type_hashes }
-          narrow_node_under_numericality(node, validations, tokens, for_output: false)
+          narrow_node_under_numericality(node, validations, tokens)
         end
 
         # A `numericality:` entry reaches a node's branches four different ways, and each is decided from the
@@ -3685,7 +3685,7 @@ module Axn
         # Narrowing both branches of `[Integer, Float]` converges them, so the node collapses; deduping is a
         # CONSEQUENCE of that convergence and never a tidy-up of its own, so a union that narrows nothing comes
         # back untouched, duplicate branches included.
-        def narrow_node_under_numericality(node, validations, tokens, for_output:)
+        def narrow_node_under_numericality(node, validations, tokens)
           entry = Axn::Validation::Base.validator_entries(validations)[:numericality]
           return node unless entry
 
@@ -3730,7 +3730,7 @@ module Axn
           # See `numeric_reachable_through_broad_token?` — the emitted type is not evidence on its own.
           drop = !numeric_reachable_through_broad_token?(tokens)
           mapped = branches.filter_map do |branch|
-            numericality_branch(branch, admits, numeric_only:, only_integer:, for_output:, drop:, blank_tolerated:,
+            numericality_branch(branch, admits, numeric_only:, only_integer:, drop:, blank_tolerated:,
                                                 empty_rejected:)
           end
           # Every branch dropping is the CONTRACT, not a case to fall back from: `type: Float, numericality:
@@ -3775,7 +3775,7 @@ module Axn
           end
         end
 
-        def numericality_branch(branch, admits_integer, numeric_only:, only_integer:, for_output:, drop: true, blank_tolerated: false,
+        def numericality_branch(branch, admits_integer, numeric_only:, only_integer:, drop: true, blank_tolerated: false,
                                 empty_rejected: false)
           # A branch `only_numeric:` may drop is one whose emitted type NAMES values that are not Numerics.
           # Everything else is left exactly as built — including the `"null"` branch nullability owns, a branch
@@ -3800,7 +3800,7 @@ module Axn
 
           case branch[:type]
           when "number" then only_integer ? number_branch_as_integer(branch, admits_integer) : branch
-          when "string" then string_branch_under_numericality(branch, numeric_only:, only_integer:, for_output:, drop:)
+          when "string" then string_branch_under_numericality(branch, numeric_only:, only_integer:, drop:)
           else branch
           end
         end
@@ -3856,15 +3856,15 @@ module Axn
         # unreachable rather than merely narrower.
         def number_branch_as_integer(branch, admits_integer) = admits_integer ? branch.merge(type: "integer") : nil
 
-        def string_branch_under_numericality(branch, numeric_only:, only_integer:, for_output:, drop: true)
+        def string_branch_under_numericality(branch, numeric_only:, only_integer:, drop: true)
           return nil if numeric_only && drop
           return branch unless only_integer
 
-          merge_integer_literal_pattern(branch, for_output:)
+          merge_integer_literal_pattern(branch)
         end
 
-        def merge_integer_literal_pattern(branch, for_output:)
-          source = Pattern.ecma_source(Axn::Validation::Base.integer_literal_regexp, for_output:)
+        def merge_integer_literal_pattern(branch)
+          source = Pattern.ecma_source(Axn::Validation::Base.integer_literal_regexp)
           return branch unless source
 
           composed = branch.dup
@@ -3911,9 +3911,9 @@ module Axn
         # `only_numeric:` needs no such test, being the one option here ActiveModel reads truthily instead of
         # resolving per call.
         #
-        # On INPUT none of this applies: an inferred numeric type is merely STRICTER there, which is licensed —
-        # a client is told to send `1` rather than `"1"`, and the runtime would have taken either. A declared
-        # `type:` is unaffected in both directions, being read before this and proving the class itself.
+        # On INPUT none of this applies: `numericality_input_node` types the node as the Number-or-numeric-String
+        # union the validator accepts. A declared `type:` is unaffected in both directions, being read before this
+        # and proving the class itself.
         def numericality_type_provable?(numericality, for_output:)
           return true unless for_output
           return false unless Axn::Validation::Base.validator_entry_options(numericality)[:only_numeric]

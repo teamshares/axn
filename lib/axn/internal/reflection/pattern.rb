@@ -37,9 +37,8 @@ module Axn
         # includes NBSP, the Unicode Zs category and the line/paragraph separators, so emitting it would accept
         # strings the runtime rejects. `d`/`D` and `w`/`W` ARE the same set in both and stay.
         #
-        # `.` is a knowing exception rather than an oversight: ECMA's excludes `\r` and U+2028/9 where Ruby's
-        # excludes only `\n`, so an emitted `.` matches FEWER strings — stricter, the licensed direction, and
-        # standing down on it would cost the keyword for most real patterns.
+        # `.` needs no escape entry: ECMA's excludes `\r` and U+2028/9 where Ruby's excludes only `\n`, and it can
+        # match an astral character, so it stands down through CODE_UNIT_SENSITIVE below at both positions.
         # `b`/`B` are absent for a difference INSIDE Ruby that is easy to miss: Ruby's `\w` is ASCII-only
         # (`/\w/` does not match "é") but its `\b` is Unicode-aware (`/\A\bé/` DOES match "é"), while ECMA's
         # unflagged `\b` is defined through its ASCII `\w`. So `/\A\Bé\B\z/` rejects "é" in Ruby and
@@ -90,20 +89,11 @@ module Axn
 
         module_function
 
-        # The two translations that are deliberately NARROWER than the Ruby source rather than exact. Both are
-        # licensed on input, where a document may admit fewer values than the runtime, and neither is licensed
-        # on OUTPUT, where the document describes what the action PRODUCES and a narrowing rejects values axn
-        # successfully serialized — the same direction `effective_validations` already reduces for on output.
-        #
-        # `.`: ECMA's excludes `\r` and U+2028/9 where Ruby's excludes only `\n`.
-        # `^`/`$`: Ruby's are line anchors (reachable only with AM's `multiline: true`, which refuses the
-        # pattern otherwise), ECMA's here are input anchors.
-        #
-        # A LINE ANCHOR is the one construct that is safely narrower on input. `^`/`$` are ZERO-WIDTH
-        # assertions, so no code units are consumed and no quantifier can reverse the direction: Ruby's line
-        # anchors match at a strict superset of ECMA's input-anchor positions whatever surrounds them. Licensed
-        # inbound, refused outbound. (Reachable only with ActiveModel's `multiline: true`, which refuses the
-        # pattern otherwise.)
+        # A Ruby `^`/`$` is a LINE anchor, where ECMA's, with no flag a `pattern` can set, is an INPUT anchor, so
+        # the untranslated pattern matches a strict subset of what the runtime accepts (`"12\nab"` passes
+        # `/^\d+$/` in Ruby). A narrowing is stricter than the runtime in either direction, so it stands down at
+        # both positions. (Reachable only with ActiveModel's `multiline: true`, which refuses the pattern
+        # otherwise.)
         LINE_ANCHORS = /[\^$]/
         private_constant :LINE_ANCHORS
 
@@ -128,11 +118,9 @@ module Axn
         BMP_MAXIMUM = 0xFFFF
         private_constant :BMP_MAXIMUM
 
-        # The ECMA-262 pattern for a declared `format:` entry's regex, or nil to emit nothing.
-        #
-        # `for_output:` is required rather than defaulted: it decides whether a merely-stricter translation may
-        # be emitted at all, and a caller that omitted it would publish one on the side where it is wrong.
-        def ecma_source(regexp, for_output:)
+        # The ECMA-262 pattern for a declared `format:` entry's regex, or nil to emit nothing. Only an EXACT
+        # translation is returned, the same in both directions.
+        def ecma_source(regexp)
           return nil unless Internal::Identity.kind?(regexp, ::Regexp)
           return nil unless regexp.options.nobits?(SEMANTIC_FLAGS)
 
@@ -148,7 +136,7 @@ module Axn
           return nil unless braces_are_quantifiers?(source)
           return nil if nested_character_class?(source)
           return nil if code_unit_sensitive?(source)
-          return nil if for_output && source.gsub(/\\./m, "").match?(LINE_ANCHORS)
+          return nil if source.gsub(/\\./m, "").match?(LINE_ANCHORS)
 
           translate_anchors(source)
         end
@@ -203,10 +191,7 @@ module Axn
         # an alternation, inside a character class, where `[\A]` would translate to a negated empty class) the
         # position would have to be tracked to translate safely, so it stands down instead.
         #
-        # A Ruby `^`/`$` in the source is passed through untranslated, and that is a deliberate narrowing rather
-        # than an oversight: Ruby's are ALWAYS line anchors while ECMA's are input anchors here, so the emitted
-        # pattern matches a subset of what the runtime accepts. Stricter is the direction reflection is
-        # documented to err in.
+        # A Ruby `^`/`$` never reaches here: `ecma_source` stands one down (see LINE_ANCHORS).
         def translate_anchors(source)
           body = source.delete_prefix("\\A").delete_suffix("\\z")
           return nil if body.match?(/\\[Az]/)

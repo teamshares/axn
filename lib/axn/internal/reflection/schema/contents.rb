@@ -88,7 +88,7 @@ module Axn
                      # `json_type_for` applies on the other branch has to be applied here too — same helper, not a
                      # second reading of it.
                      narrow_node_under_numericality(contents_schema_for(bag[:klass], for_output:), constraints,
-                                                    Axn::Internal::ShapeGraph.type_tokens(bag[:klass]), for_output:)
+                                                    Axn::Internal::ShapeGraph.type_tokens(bag[:klass]))
                    else
                      json_type_for(constraints, for_output:)
                    end

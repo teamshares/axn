@@ -9479,7 +9479,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
       expect(prop[:pattern])
         .to eq(Axn::Internal::Reflection::Pattern.ecma_source(
-                 Axn::Validation::Base.integer_literal_regexp, for_output: false
+                 Axn::Validation::Base.integer_literal_regexp,
                ))
     end
 
@@ -9607,16 +9607,15 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     end
 
     # Ruby's `^`/`$` are ALWAYS line anchors; ECMA's, with no flag available, are input anchors. So the
-    # emitted pattern matches a subset of what the runtime accepts — stricter, which is the documented and
-    # licensed direction, rather than a divergence.
+    # untranslated pattern would reject a multi-line value the runtime accepts, and it stands down, named.
     # `multiline: true` is required for the declaration to RUN at all: ActiveModel's FormatValidator refuses a
-    # `^`/`$` pattern without it ("using multiline anchors … may present a security risk"), so the bare spelling
-    # raises on every call and is not a working narrowing to document.
-    it "emits a Ruby line anchor as an input anchor, which is stricter" do
+    # `^`/`$` pattern without it ("using multiline anchors … may present a security risk").
+    it "stands a Ruby line anchor down, since as an input anchor it would be stricter" do
       action = build_axn { expects :s, type: String, format: { with: /^\d+$/, multiline: true } }
 
-      expect(action.call(s: "123")).to be_ok
-      expect(action.input_schema[:properties][:s]).to include(pattern: "^\\d+$")
+      expect(action.call(s: "12\nab")).to be_ok
+      expect(action.input_schema[:properties][:s]).not_to have_key(:pattern)
+      expect(action.input_schema_residues.map(&:summary)).to include(a_string_including("format"))
     end
 
     it "notes that the bare ^/$ spelling ActiveModel refuses never reaches a call" do
@@ -9740,19 +9739,8 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         stands_down { expects :s, type: String, format: { with: /\A[^a]{2}\z/ } }
       end
 
-      # The line anchors are the one construct that stays input-licensed: `^`/`$` are ZERO-WIDTH assertions, so
-      # no code units are consumed and no quantifier can reverse the direction — Ruby's line anchors match at a
-      # strict superset of ECMA's input-anchor positions whatever surrounds them.
-      it "still emits a line anchor on input, which no quantifier can reverse" do
-        action = build_axn { expects :s, type: String, format: { with: /^\d+$/, multiline: true } }
-
-        expect(action.input_schema[:properties][:s]).to include(pattern: "^\\d+$")
-      end
-
-      # On INPUT a narrowing is licensed — the document may admit fewer values than the runtime. On OUTPUT the
-      # direction flips: the schema describes what the action PRODUCES, so a narrowing rejects values axn
-      # successfully serialized. Only translations that are EXACT survive there, which is the same reasoning
-      # `effective_validations` already applies to a self-gated entry on output.
+      # On OUTPUT the schema describes what the action PRODUCES, so a narrowing rejects values axn successfully
+      # serialized; only EXACT translations survive, as on input.
       describe "on output, where a narrowing rejects what the action serializes" do
         it "stands down on a dot, whose ECMA reading excludes more than Ruby's" do
           action = build_axn do
@@ -9851,12 +9839,6 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
           expect(action.call).to be_ok
           expect(action.output_schema[:properties][:s]).to include(pattern: "^[A-Z]{2}$")
-        end
-
-        it "still emits the LINE ANCHOR narrowing on input, the one a quantifier cannot reverse" do
-          action = build_axn { expects :s, type: String, format: { with: /^\d+$/, multiline: true } }
-
-          expect(action.input_schema[:properties][:s]).to include(pattern: "^\\d+$")
         end
       end
 
