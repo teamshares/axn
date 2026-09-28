@@ -120,6 +120,31 @@ RSpec.describe Axn::Extensions::Auth do
       expect(described_class.verified?(Struct.new(:ok?).new(false))).to be(false)
     end
 
+    it "asks #ok? even when the verdict's own respond_to? denies it" do
+      liar = Struct.new(:ok?).new(false)
+      def liar.respond_to?(*) = false
+      expect(described_class.verified?(liar)).to be(false)
+    end
+
+    it "asks #ok? of a method_missing proxy that does not advertise it" do
+      proxy = Class.new(BasicObject) do
+        def method_missing(name, *) = name == :ok? ? false : super # rubocop:disable Style/MissingRespondToMissing
+      end.new
+      expect(described_class.verified?(proxy)).to be(false)
+    end
+
+    it "does not mistake a NoMethodError raised inside #ok? for an absent #ok?" do
+      broken = Object.new
+      def broken.ok? = nil.nope
+      expect { described_class.verified?(broken) }.to raise_error(NoMethodError, /nope/)
+    end
+
+    it "reads a genuine Verdict through its own member, not an override" do
+      subclass = Class.new(described_class::Verdict) { def ok? = true }
+      expect(described_class.verified?(subclass.rejected(:denied))).to be(false)
+      expect(described_class.normalize(subclass.rejected(:denied)).instance_of?(described_class::Verdict)).to be(true)
+    end
+
     it "reads anything without #ok? for truthiness" do
       expect(described_class.verified?(true)).to be(true)
       expect(described_class.verified?(Object.new)).to be(true)
@@ -138,6 +163,12 @@ RSpec.describe Axn::Extensions::Auth do
       impostor = Struct.new(:ok?, :reason, :principal).new(false, :denied, "admin")
       def impostor.is_a?(*) = true
       expect(described_class.normalize(impostor)).to eq(described_class::Verdict.rejected(:denied))
+    end
+
+    it "reads reason and principal even when respond_to? denies them" do
+      liar = Struct.new(:ok?, :reason).new(false, :denied)
+      def liar.respond_to?(*) = false
+      expect(described_class.normalize(liar)).to eq(described_class::Verdict.rejected(:denied))
     end
 
     it "reads a duck-typed verdict's principal and reason" do
@@ -169,6 +200,16 @@ RSpec.describe Axn::Extensions::Auth do
     it "cannot be constructed as an ok verdict carrying a reason" do
       expect { described_class::Verdict.new(ok: true, reason: :denied, principal: nil) }
         .to raise_error(ArgumentError, /ok Verdict cannot carry a reason/)
+    end
+
+    it "checks its invariants without asking the members about themselves" do
+      claims_true = Object.new
+      def claims_true.equal?(*) = true
+      claims_nil = Object.new
+      def claims_nil.nil? = true
+      expect { described_class::Verdict.new(ok: claims_true) }.to raise_error(ArgumentError, /true or false/)
+      expect { described_class::Verdict.new(ok: false, reason: :x, principal: claims_nil) }.to raise_error(ArgumentError, /principal/)
+      expect { described_class::Verdict.new(ok: true, reason: claims_nil) }.to raise_error(ArgumentError, /reason/)
     end
 
     it "requires ok to be true or false, so ok? is a real predicate" do

@@ -40,9 +40,11 @@ module Axn
 
         # `ok:` is the member's own name, which Data's keyword initializer requires.
         def initialize(ok:, reason: nil, principal: nil) # rubocop:disable Naming/MethodParameterName
-          raise ArgumentError, "Verdict ok must be true or false" unless ok.equal?(true) || ok.equal?(false)
-          raise ArgumentError, "a rejected Verdict cannot carry a principal" if !ok && !principal.nil?
-          raise ArgumentError, "an ok Verdict cannot carry a reason" if ok && !reason.nil?
+          # Identity asked of `true`/`false`/`BasicObject#equal?`, never of the members themselves, so an
+          # overridden `equal?` or `nil?` cannot talk its way past the invariant.
+          raise ArgumentError, "Verdict ok must be true or false" unless true.equal?(ok) || false.equal?(ok)
+          raise ArgumentError, "a rejected Verdict cannot carry a principal" if !ok && !Internal::Identity.nil_value?(principal)
+          raise ArgumentError, "an ok Verdict cannot carry a reason" if ok && !Internal::Identity.nil_value?(reason)
 
           super
         end
@@ -108,24 +110,72 @@ module Axn
         PROC_ARITY.bind_call(value).zero? ? value.call : value.call(request)
       end
 
+      VERDICT_OK = Verdict.instance_method(:ok)
+      VERDICT_REASON = Verdict.instance_method(:reason)
+      VERDICT_PRINCIPAL = Verdict.instance_method(:principal)
+      NAME_ERROR_RECEIVER = NameError.instance_method(:receiver)
+      ABSENT = Object.new.freeze
+      private_constant :VERDICT_OK, :VERDICT_REASON, :VERDICT_PRINCIPAL, :NAME_ERROR_RECEIVER, :ABSENT
+
       # Asks `ok?` FIRST: a rejecting verdict object is still a truthy Ruby object, so reading it for
       # truthiness would authenticate every rejected request. Anything without `ok?` (a boolean, a
       # found record) is read for truthiness.
-      def verified?(verdict) = verdict.respond_to?(:ok?) ? verdict.ok? : !!verdict
+      #
+      # Whether `ok?` exists is decided by CALLING it, never by the verdict's own `respond_to?`: a
+      # `respond_to?` that lies, or a `method_missing` proxy that never advertises `ok?`, would
+      # otherwise skip the check and fall through to truthiness, which authenticates. That fails open,
+      # so the question is taken away from the verdict. Only a NoMethodError for `ok?` on the verdict
+      # itself counts as absent; one raised from inside an `ok?` propagates. A Verdict (subclass
+      # included) is read through its own member. Truthiness is read with `? :`, never with `!`, which
+      # the object could define.
+      def verified?(verdict)
+        case verdict
+        when true, false, nil then return verdict ? true : false
+        when Verdict then return VERDICT_OK.bind_call(verdict)
+        end
+
+        ok = _optional(verdict, :ok?) { verdict.ok? }
+        answer = Internal::Identity.same?(ok, ABSENT) ? verdict : ok
+        answer ? true : false
+      end
 
       # Any strategy's answer as a Verdict. A rejection never carries a principal, whatever the
-      # strategy returned alongside it. Only a genuine Verdict (checked natively) passes through as-is,
-      # since only a genuine one had its invariants enforced at construction.
+      # strategy returned alongside it. Only an exact Verdict (checked natively) passes through as-is,
+      # since only axn's own class is known to have its invariants enforced at construction; a subclass
+      # is rebuilt from its members. `reason`/`principal` are read the same way `ok?` is, by calling them.
       def normalize(verdict)
-        return verdict if Internal::Identity.kind?(verdict, Verdict)
+        if Internal::Identity.kind?(verdict, Verdict)
+          return verdict if Internal::Identity.same?(Internal::Identity.class_of(verdict), Verdict)
+          return Verdict.ok(VERDICT_PRINCIPAL.bind_call(verdict)) if VERDICT_OK.bind_call(verdict)
+
+          return Verdict.rejected(VERDICT_REASON.bind_call(verdict) || :rejected)
+        end
 
         if verified?(verdict)
-          Verdict.ok(verdict.respond_to?(:principal) ? verdict.principal : nil)
+          principal = _optional(verdict, :principal) { verdict.principal }
+          Verdict.ok(Internal::Identity.same?(principal, ABSENT) ? nil : principal)
         else
-          reason = verdict.respond_to?(:reason) ? verdict.reason : nil
-          Verdict.rejected(reason || :rejected)
+          reason = _optional(verdict, :reason) { verdict.reason }
+          Verdict.rejected((Internal::Identity.same?(reason, ABSENT) ? nil : reason) || :rejected)
         end
       end
+
+      # The block's value, or ABSENT when it raised NoMethodError for exactly `name` on exactly
+      # `receiver` — the method genuinely missing, as opposed to a present one failing inside.
+      def _optional(receiver, name)
+        yield
+      rescue NoMethodError => e
+        raise unless Internal::Identity.name_error_for?(e, name) && _raised_on?(e, receiver)
+
+        ABSENT
+      end
+
+      def _raised_on?(error, receiver)
+        Internal::Identity.same?(NAME_ERROR_RECEIVER.bind_call(error), receiver)
+      rescue ArgumentError # no receiver recorded
+        false
+      end
+      private_class_method :_optional, :_raised_on?
     end
   end
 end
