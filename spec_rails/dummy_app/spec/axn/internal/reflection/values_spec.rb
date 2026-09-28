@@ -176,6 +176,33 @@ RSpec.describe Axn::Internal::Reflection::Values do
         .to eq("d" => { "name" => "a", "internal_notes" => "x" })
     end
 
+    # Codex review, PR #296, round 17: the round-16 fix treated ANY framework-owned as_json (owner Data,
+    # Struct, OR Object) as "bypasses respond_to?(:to_h) entirely" -- true for ActiveSupport's DIRECT
+    # `Data#as_json`/`Struct#as_json` (`to_h.as_json`, round 16), but NOT for the GENERIC `Object#as_json`:
+    # `projection_for`'s OWN routing (not ActiveSupport's own Object#as_json internals) only prefers to_h
+    # over the generic dump/delegate when `respond_to?(:to_h)` is DISPATCHED true, so denying it there
+    # really does route to the generic, opaque dump instead -- which never matches a member-keyed schema.
+    it "raises when respond_to? denies to_h and only the GENERIC Object#as_json remains, since that route " \
+       "renders an instance-variable dump rather than the schema's member-keyed shape" do
+      denies_to_h_subclass = Class.new(s) do
+        def respond_to?(name, include_private = false) = name == :to_h ? false : super # rubocop:disable Style/OptionalBooleanParameter -- matches Kernel#respond_to?'s own signature
+      end
+      klass = shaped_action(type: s)
+      value = denies_to_h_subclass.new(name: "a", internal_notes: "x")
+
+      # Temporarily removes Data's OWN as_json (ActiveSupport's direct monkeypatch), so the lookup falls
+      # through to the generic Object#as_json instead -- the exact route this test pins.
+      original_data_as_json = Data.instance_method(:as_json)
+      Data.send(:remove_method, :as_json)
+      begin
+        expect(value.method(:as_json).owner).to eq(Object) # confirms the generic route this test is pinning
+        expect { Axn::Extensions::Serialization.render(klass.call(value:)) }
+          .to raise_error(Axn::Extensions::Serialization::UnserializableValue)
+      ensure
+        Data.define_method(:as_json, original_data_as_json)
+      end
+    end
+
     it "raises for Enumerable mixed into a Data subclass (Enumerable is not a framework projection owner)" do
       subclass = Class.new(s) do
         include Enumerable

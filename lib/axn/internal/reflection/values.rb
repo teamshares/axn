@@ -722,6 +722,14 @@ module Axn
         DENIED_PROJECTION = :denied_projection
         private_constant :DENIED_PROJECTION
 
+        # `effective_displaced_method`'s answer when `respond_to?` denies `to_h` while only the GENERIC
+        # `Object#as_json` remains (Codex review, PR #296, round 17): unlike a Data/Struct-owned as_json
+        # (which bypasses `respond_to?(:to_h)` entirely, round 16), the generic one really does route to an
+        # instance-variable dump or `#to_hash` delegate instead once `to_h` is denied — there is no
+        # overriding method to name, only ActiveSupport's own generic routing.
+        GENERIC_AS_JSON_PROJECTION = :generic_as_json_projection
+        private_constant :GENERIC_AS_JSON_PROJECTION
+
         def framework_projection_owner?(owner) = FRAMEWORK_PROJECTION_OWNERS.include?(owner)
 
         # `mod` itself IS ::Data/::Struct (never true for anything `displacing_projection` is actually asked
@@ -733,6 +741,14 @@ module Axn
 
           ancestors = Axn::Internal::NativeMethods.module_ancestors(mod)
           ancestors.any? { |a| Axn::Internal::Identity.same?(a, ::Data) || Axn::Internal::Identity.same?(a, ::Struct) }
+        end
+
+        # `owner` IS `::Data` or `::Struct` itself, not merely a descendant of one and not `::Object`/`::Hash`
+        # (Codex review, PR #296, round 17): distinguishes ActiveSupport's DIRECT `Data#as_json`/
+        # `Struct#as_json` (`to_h.as_json`, an unconditional internal call) from the GENERIC `Object#as_json`
+        # — both are `framework_projection_owner?`, but only the former bypasses `respond_to?(:to_h)`.
+        def data_or_struct_owner?(owner)
+          Axn::Internal::Identity.same?(owner, ::Data) || Axn::Internal::Identity.same?(owner, ::Struct)
         end
 
         # One fix per intent, appended to every DISPLACED_PROJECTION reason: whichever one applies, the
@@ -811,14 +827,22 @@ module Axn
 
           return METHOD_MISSING_PROJECTION if method_missing_backed_projection?(value, table)
 
-          # A framework-owned as_json's own internal `to_h` call never consults `respond_to?(:to_h)` (Codex
-          # review, PR #296, round 16) -- reaching this line with one active means `to_h` itself must be
-          # genuinely unreachable (`UNDEFINED_PROJECTION`'s own case), not the `respond_to?`-denial
-          # `DENIED_PROJECTION` names below, which only ever applies to the FALLBACK (non-as_json) route.
-          if value.respond_to?(:as_json) && framework_projection_owner?(owner_of(value, :as_json))
-            return UNDEFINED_PROJECTION if data_or_struct_descendant?(Axn::Internal::Identity.class_of(value))
+          if value.respond_to?(:as_json)
+            as_json_owner = owner_of(value, :as_json)
+            if data_or_struct_owner?(as_json_owner)
+              # A Data/Struct-owned as_json's own internal `to_h` call never consults `respond_to?(:to_h)`
+              # (Codex review, PR #296, round 16) -- reaching this line with one active means `to_h` itself
+              # must be genuinely unreachable (`UNDEFINED_PROJECTION`'s own case), not the `respond_to?`-
+              # denial `DENIED_PROJECTION` names below, which only ever applies to the FALLBACK route.
+              return UNDEFINED_PROJECTION if data_or_struct_descendant?(Axn::Internal::Identity.class_of(value))
 
-            return nil
+              return nil
+            elsif framework_projection_owner?(as_json_owner)
+              # The GENERIC Object#as_json (Codex review, PR #296, round 17): unlike Data/Struct's own,
+              # `projection_for`'s routing only prefers `to_h` when `respond_to?(:to_h)` is true, so reaching
+              # this line means it was denied and the render actually goes through the generic dump/delegate.
+              return GENERIC_AS_JSON_PROJECTION
+            end
           end
 
           # Neither a real method NOR method_missing explains the table's silence -- `respond_to?` must be
@@ -911,6 +935,13 @@ module Axn
         # `to_h` still displaces even though `as_json` itself is framework-owned, exactly the same
         # "framework as_json falls through to check to_h too" structure `displacing_projection` itself
         # already has for the table-based case; only a NON-framework `as_json` owner short-circuits here.
+        #
+        # ONLY when the owner is `Data`/`Struct` SPECIFICALLY (Codex review, PR #296, round 17): the GENERIC
+        # `Object#as_json` is a DIFFERENT method with different rules — `projection_for`'s OWN routing (not
+        # ActiveSupport's Object#as_json internals) only prefers `to_h` over the generic dump/`to_hash`
+        # delegate when `respond_to?(:to_h)` is DISPATCHED true, so a generic owner falls through to the
+        # SAME `respond_to?(:to_h)`-gated check the non-as_json fallback below already has, rather than
+        # bypassing it the way a Data/Struct-owned as_json correctly does.
         def effective_projection_displaces?(value)
           if value.respond_to?(:as_json)
             owner = owner_of(value, :as_json)
@@ -922,7 +953,7 @@ module Axn
             # to_h's OWNERSHIP is what decides displacement, not whether `respond_to?` claims it — unlike
             # the fallback branch below, which IS reached through a dispatched `respond_to?(:to_h)` and so
             # DOES have to honor whatever it claims.
-            return !framework_projection_owner?(owner_of(value, :to_h))
+            return !framework_projection_owner?(owner_of(value, :to_h)) if data_or_struct_owner?(owner)
           end
 
           # `respond_to?(:to_h)` denied — same as `as_json` above, this can be a LIE hiding a real `to_h`
@@ -978,6 +1009,7 @@ module Axn
           return undefined_projection_reason(declared) if Axn::Internal::Identity.same?(method, UNDEFINED_PROJECTION)
           return method_missing_projection_reason(declared) if Axn::Internal::Identity.same?(method, METHOD_MISSING_PROJECTION)
           return denied_projection_reason(declared) if Axn::Internal::Identity.same?(method, DENIED_PROJECTION)
+          return generic_as_json_projection_reason(declared) if Axn::Internal::Identity.same?(method, GENERIC_AS_JSON_PROJECTION)
 
           "its position in `output_schema` was reflected from the declared type " \
             "#{Axn::Internal::RenderedModuleName.of(declared)} — an object keyed by its members — but this " \
@@ -1021,6 +1053,20 @@ module Axn
             "`#to_h` (or `#as_json`), or if the denial is intentional, define the projection you want on " \
             "the declared type itself, which leaves this position honestly opaque (an empty `{}` in the " \
             "schema)."
+        end
+
+        # `respond_to?` denies `#to_h` while only ActiveSupport's GENERIC `Object#as_json` remains: there is
+        # no overriding method to name, only ActiveSupport's own generic routing (an instance-variable dump,
+        # or a `#to_hash` delegate) — distinct from a Data/Struct-owned as_json, which bypasses this denial
+        # entirely (round 16) rather than being routed around by it.
+        def generic_as_json_projection_reason(declared)
+          "its position in `output_schema` was reflected from the declared type " \
+            "#{Axn::Internal::RenderedModuleName.of(declared)} — an object keyed by its members — but this " \
+            "value's own class denies `#to_h` (via an overridden `#respond_to?`), routing it through " \
+            "ActiveSupport's generic `Object#as_json` instead (an instance-variable dump, or a `#to_hash` " \
+            "delegate), so the rendered body would not match the published schema. Stop denying `#to_h`, or " \
+            "if the denial is intentional, define the projection you want on the declared type itself, " \
+            "which leaves this position honestly opaque (an empty `{}` in the schema)."
         end
 
         # Where the displacing method came from, on the same terms `NameOwnership#owner_label` names a
@@ -1099,7 +1145,7 @@ module Axn
                              :data_or_struct_descendant?, :undefined_projection_reason,
                              :method_missing_backed_projection?, :effective_displaced_method, :method_missing_projection_reason,
                              :dynamic_respond_to?, :overridden_beyond_kernel?, :effective_projection_displaces?,
-                             :denied_projection_reason
+                             :denied_projection_reason, :data_or_struct_owner?, :generic_as_json_projection_reason
       end
     end
   end
