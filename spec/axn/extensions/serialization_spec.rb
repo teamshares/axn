@@ -545,6 +545,37 @@ RSpec.describe Axn::Extensions::Serialization do
           .to eq("d" => { "name" => "a", "internal_notes" => "x" })
       end
 
+      # Codex review, PR #296, round 10: the round-6 fix gated its dispatched `respond_to?` on
+      # `respond_to_missing?` being overridden -- but a subclass can advertise a method_missing-backed
+      # projection by overriding `respond_to?` DIRECTLY instead, which `respond_to_missing?` never sees at
+      # all. `projection_for` still trusts that overridden `respond_to?` regardless of which method the
+      # class chose to override, so the guard's gate has to check both. Wrapped in
+      # `without_activesupport_json_core_ext` for the same reason the round-6 method_missing test is: a REAL
+      # `as_json` on Data/Object (from ActiveSupport contamination elsewhere in this process) would be found
+      # via normal ancestry before method_missing is ever consulted, making the override inert regardless of
+      # what `respond_to?` claims.
+      it "raises for a subclass whose own as_json is served through method_missing but advertised by " \
+         "overriding respond_to? directly, rather than respond_to_missing?" do
+        klass = shaped_action(type: s)
+        direct_respond_to_subclass = Class.new(s) do
+          # rubocop:disable Style/OptionalBooleanParameter -- matches Kernel#respond_to?'s own signature
+          def respond_to?(name, include_private = false) = name == :as_json || super
+          # rubocop:enable Style/OptionalBooleanParameter
+
+          def method_missing(name, *args) # rubocop:disable Style/MissingRespondToMissing -- respond_to? overridden directly instead, which is the point of this example
+            return { name: } if name == :as_json
+
+            super
+          end
+        end
+
+        without_activesupport_json_core_ext do
+          expect do
+            described_class.render(klass.call(value: direct_respond_to_subclass.new(name: "a", internal_notes: "secret")))
+          end.to raise_error(Axn::Extensions::Serialization::UnserializableValue)
+        end
+      end
+
       # Codex review, PR #296, round 7: once the DECLARED class itself becomes opaque (gains its own
       # as_json/to_h after the guard cache was warmed), `output_schema` collapses this ENTIRE position to
       # `{}` on its next build -- but the stale cached guard's NESTED members/items/values were built back

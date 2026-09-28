@@ -828,19 +828,33 @@ module Axn
         # backed method as owner-less, never as the value's own class or a framework one, so a nil owner
         # here can only mean method_missing served it.
         #
-        # Gated on `respond_to_missing?` actually being overridden (checked NATIVELY, via `mod`'s table,
-        # never dispatched) so an ordinary value — no method_missing anywhere — pays for neither a
-        # dispatched `respond_to?` nor (via the CLASS-level call this runs before the frozen-Data fast path
-        # below) the singleton-class materialization that fast path exists to avoid; only a value whose
-        # class (or, on the slower path, whose full singleton-or-class table) actually overrides
-        # `respond_to_missing?` pays for the dispatch this needs.
+        # Gated on `respond_to?` OR `respond_to_missing?` actually being overridden (checked NATIVELY, via
+        # `mod`'s table, never dispatched) so an ordinary value — no method_missing anywhere — pays for
+        # neither a dispatched `respond_to?` nor (via the CLASS-level call this runs before the frozen-Data
+        # fast path below) the singleton-class materialization that fast path exists to avoid; only a value
+        # whose class (or, on the slower path, whose full singleton-or-class table) actually overrides
+        # either pays for the dispatch this needs.
+        #
+        # BOTH names, not just `respond_to_missing?` (Codex review, PR #296, round 10): a subclass can
+        # advertise a method_missing-backed projection by overriding `respond_to?` DIRECTLY instead of the
+        # method Ruby's own `respond_to_missing?` pairing exists for — `projection_for` still trusts that
+        # overridden `respond_to?` regardless of which one the class chose to override, so gating on only
+        # one of the two names a class could pick left the other route uncaught.
         def method_missing_backed_projection?(value, mod)
-          override = Axn::Internal::NativeMethods.declared_instance_method(mod, :respond_to_missing?)
-          return false unless override && !Axn::Internal::Identity.same?(override.owner, ::Kernel)
+          return false unless dynamic_respond_to?(mod)
 
           return owner_of(value, :as_json).nil? if value.respond_to?(:as_json)
 
           value.respond_to?(:to_h) && owner_of(value, :to_h).nil?
+        end
+
+        def dynamic_respond_to?(mod)
+          overridden_beyond_kernel?(mod, :respond_to?) || overridden_beyond_kernel?(mod, :respond_to_missing?)
+        end
+
+        def overridden_beyond_kernel?(mod, name)
+          method = Axn::Internal::NativeMethods.declared_instance_method(mod, name)
+          method && !Axn::Internal::Identity.same?(method.owner, ::Kernel)
         end
 
         def displaced_projection_reason(declared, method, table)
@@ -952,7 +966,8 @@ module Axn
                              :active_render_guard, :displacing_projection_anywhere?, :displaced_projection_reason,
                              :displaced_projection_owner_label, :displaced_projection_location,
                              :data_or_struct_descendant?, :undefined_projection_reason,
-                             :method_missing_backed_projection?, :effective_displaced_method, :method_missing_projection_reason
+                             :method_missing_backed_projection?, :effective_displaced_method, :method_missing_projection_reason,
+                             :dynamic_respond_to?, :overridden_beyond_kernel?
       end
     end
   end
