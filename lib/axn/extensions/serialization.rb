@@ -109,8 +109,14 @@ module Axn
         # other source landing here fails safely into a rebuild rather than into `cached[1]` raising on a
         # value with the wrong shape.
         cached = Axn::Internal::NativeMethods.ivar_get(action_class, :@_axn_render_guards)
+        # `conservative: true` (Codex review, PR #296, round 12): `watched_classes`' recorded opacity comes
+        # from `member_keyed_object_type?`, which is the SAME schema-level (conservative) sense of opaque —
+        # re-checking with the render-time (precise) sense here would disagree about a class using dynamic
+        # response machinery unrelated to as_json/to_h, permanently treating the cache as stale for it.
         if cached.is_a?(::Array) && cached.size == 3 && configs.equal?(cached[0]) &&
-           cached[2].all? { |(klass, expected_opaque)| !Axn::Internal::Reflection::Values.displacing_projection(klass).nil? == expected_opaque }
+           cached[2].all? do |(klass, expected_opaque)|
+             !Axn::Internal::Reflection::Values.displacing_projection(klass, conservative: true).nil? == expected_opaque
+           end
           return cached[1]
         end
 

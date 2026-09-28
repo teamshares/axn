@@ -398,6 +398,32 @@ RSpec.describe Axn::Extensions::Serialization do
         end
       end
 
+      # Codex review, PR #296, round 12: the round-11 fix put its conservative "might dynamically respond"
+      # treatment INSIDE `displacing_projection` itself, so a render-time caller (`displacing_projection_
+      # anywhere?`'s first, class-level check) now ALSO short-circuits to "displaced" for ANY
+      # respond_to?/respond_to_missing? override, even one for a method with nothing to do with as_json/
+      # to_h -- bypassing the MORE PRECISE `method_missing_backed_projection?` check (which actually
+      # confirms `respond_to?(:as_json)`/`respond_to?(:to_h)`) that would have correctly stood down. The
+      # schema-build path genuinely needs the conservative answer (it must not dispatch to confirm), but the
+      # render path already dispatches to confirm and must not raise on a false positive.
+      it "does not raise for a subclass whose respond_to?/respond_to_missing? override is for an " \
+         "UNRELATED dynamic method, nothing to do with as_json/to_h, which still inherits the real to_h " \
+         "untouched" do
+        klass = shaped_action(type: s)
+        unrelated_dynamic_subclass = Class.new(s) do
+          def respond_to_missing?(name, include_private = false) = name == :foo || super
+
+          def method_missing(name, *args)
+            return "bar" if name == :foo
+
+            super
+          end
+        end
+
+        expect(described_class.render(klass.call(value: unrelated_dynamic_subclass.new(name: "a", internal_notes: "x"))))
+          .to eq("d" => { "name" => "a", "internal_notes" => "x" })
+      end
+
       it "re-checks the DECLARED class live rather than trusting a memoized verdict: reopening the " \
          "declared class with its own as_json after the first render stands the check down" do
         reopenable = Data.define(:name, :internal_notes)

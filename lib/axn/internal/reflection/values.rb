@@ -667,7 +667,15 @@ module Axn
         # with it `Struct#as_json`/`Data#as_json` is `to_h.as_json` — an implicit-receiver call, which reaches
         # a non-public override too. Verified by serializing each case in both environments (with and
         # without ActiveSupport's json core_ext), since the mechanism differs but the verdict does not.
-        def displacing_projection(mod)
+        # `conservative:` is for `member_keyed_object_type?` alone (Codex review, PR #296, round 12): schema
+        # reflection cannot dispatch to CONFIRM whether a `respond_to?`/`respond_to_missing?` override
+        # actually answers `as_json`/`to_h`, so there it treats ANY such override as opaque (round 11) --
+        # but a RENDER-TIME caller already dispatches to confirm (`method_missing_backed_projection?`), so
+        # passing that same blanket answer to `displacing_projection_anywhere?`'s cheap class-level check
+        # made it short-circuit to "displaced" for a class whose dynamic method has nothing to do with
+        # as_json/to_h at all, before the precise check ever ran. Defaults to false — every render-time
+        # caller — so only the schema-build path opts into the conservative answer.
+        def displacing_projection(mod, conservative: false)
           return nil unless Axn::Internal::Identity.kind?(mod, ::Module)
 
           if Axn::Internal::NativeMethods.public_instance_method?(mod, :as_json)
@@ -687,7 +695,7 @@ module Axn
           # such override conservatively as opaque, the same "a declared class that owns its own projection
           # is opaque" precedent an ordinary declared `as_json` already gets, rather than asserting
           # properties a class using this idiom can never actually deliver.
-          return METHOD_MISSING_PROJECTION if dynamic_respond_to?(mod)
+          return METHOD_MISSING_PROJECTION if conservative && dynamic_respond_to?(mod)
           return nil if method # a framework-owned to_h (Data#to_h/Struct#to_h) is reachable and unshadowed
 
           # `to_h` is UNREACHABLE (Codex review, PR #296, round 6): every Data/Struct descendant inherits

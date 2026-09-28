@@ -155,7 +155,12 @@ module Axn
             # a projection of its own that Values.serialize_value would follow instead. Asks the identical
             # question Values asks again at render time, of the runtime value in hand — see its own comment
             # for why one predicate answers both and what each visibility rule means.
-            Axn::Internal::Reflection::Values.displacing_projection(klass).nil?
+            #
+            # `conservative: true` (Codex review, PR #296, round 11/12): schema reflection cannot dispatch to
+            # confirm whether a `respond_to?`/`respond_to_missing?` override actually answers `as_json`/
+            # `to_h`, so this treats ANY such override as opaque here — the render-time callers of this same
+            # predicate default to `conservative: false` instead, since they dispatch to confirm precisely.
+            Axn::Internal::Reflection::Values.displacing_projection(klass, conservative: true).nil?
           end
         end
       end
