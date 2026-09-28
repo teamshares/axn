@@ -1200,7 +1200,7 @@ RSpec.describe Axn::Extensions::Serialization do
           .to eq("d" => { "name" => "a" })
       end
 
-      it "does not raise for a field typed as the class with no block and no of: (schema is {})" do
+      it "does not raise for a field typed as the class with no block and no of: (schema states no members)" do
         declared_type = s
         plain = Class.new do
           include Axn
@@ -1210,7 +1210,8 @@ RSpec.describe Axn::Extensions::Serialization do
           def call = expose(d: value)
         end
 
-        expect(plain.output_schema.dig(:properties, :d)).to eq({})
+        # No type and no members: only the blank floor a required position carries, which no projection displaces.
+        expect(plain.output_schema.dig(:properties, :d).keys).to eq([:not])
         expect(described_class.render(plain.call(value: public_s.new(name: "a", internal_notes: "x"))))
           .to eq("d" => { "name" => "a" })
       end
