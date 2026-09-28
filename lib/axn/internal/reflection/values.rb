@@ -811,6 +811,16 @@ module Axn
 
           return METHOD_MISSING_PROJECTION if method_missing_backed_projection?(value, table)
 
+          # A framework-owned as_json's own internal `to_h` call never consults `respond_to?(:to_h)` (Codex
+          # review, PR #296, round 16) -- reaching this line with one active means `to_h` itself must be
+          # genuinely unreachable (`UNDEFINED_PROJECTION`'s own case), not the `respond_to?`-denial
+          # `DENIED_PROJECTION` names below, which only ever applies to the FALLBACK (non-as_json) route.
+          if value.respond_to?(:as_json) && framework_projection_owner?(owner_of(value, :as_json))
+            return UNDEFINED_PROJECTION if data_or_struct_descendant?(Axn::Internal::Identity.class_of(value))
+
+            return nil
+          end
+
           # Neither a real method NOR method_missing explains the table's silence -- `respond_to?` must be
           # denying BOTH names outright (Codex review, PR #296, round 14's `to_h` symmetric case), degrading
           # `projection_for` all the way to `#to_s`.
@@ -905,6 +915,14 @@ module Axn
           if value.respond_to?(:as_json)
             owner = owner_of(value, :as_json)
             return true unless framework_projection_owner?(owner)
+
+            # Framework-owned as_json (Data#as_json/Struct#as_json = `to_h.as_json`) calls `to_h` DIRECTLY,
+            # from WITHIN its own implementation — an ordinary internal method call that never consults
+            # `respond_to?(:to_h)` at all (Codex review, PR #296, round 16). Once this route is confirmed,
+            # to_h's OWNERSHIP is what decides displacement, not whether `respond_to?` claims it — unlike
+            # the fallback branch below, which IS reached through a dispatched `respond_to?(:to_h)` and so
+            # DOES have to honor whatever it claims.
+            return !framework_projection_owner?(owner_of(value, :to_h))
           end
 
           # `respond_to?(:to_h)` denied — same as `as_json` above, this can be a LIE hiding a real `to_h`

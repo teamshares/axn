@@ -155,6 +155,27 @@ RSpec.describe Axn::Internal::Reflection::Values do
         .to raise_error(Axn::Extensions::Serialization::UnserializableValue)
     end
 
+    # Codex review, PR #296, round 16: the round-15 fix made a framework-owned `as_json` fall through to
+    # check `to_h` -- but it checked `to_h` the SAME way the non-framework fallback does, by first asking
+    # `respond_to?(:to_h)`. ActiveSupport's REAL `Data#as_json`/`Struct#as_json` is `to_h.as_json` -- a plain
+    # `self.to_h` call, made from WITHIN as_json's own implementation, which never consults `respond_to?` at
+    # all. So a subclass that leaves `to_h` genuinely intact but overrides `respond_to?` to (for whatever
+    # reason) deny `:to_h` specifically still renders correctly through `as_json`'s internal to_h call --
+    # this must NOT raise, unlike the round-14 fallback case where respond_to? denying to_h really does
+    # degrade the render to #to_s.
+    it "does not raise when respond_to? denies :to_h but a framework-owned as_json's own internal to_h " \
+       "call reaches the real, untouched to_h anyway (respond_to? plays no part in that internal call)" do
+      subclass = Class.new(s) do
+        def respond_to?(name, include_private = false) = name == :to_h ? false : super # rubocop:disable Style/OptionalBooleanParameter -- matches Kernel#respond_to?'s own signature
+      end
+      klass = shaped_action(type: s)
+      value = subclass.new(name: "a", internal_notes: "x")
+
+      expect(value.as_json).to eq("name" => "a", "internal_notes" => "x") # confirms as_json's internal to_h call is unaffected
+      expect(Axn::Extensions::Serialization.render(klass.call(value:)))
+        .to eq("d" => { "name" => "a", "internal_notes" => "x" })
+    end
+
     it "raises for Enumerable mixed into a Data subclass (Enumerable is not a framework projection owner)" do
       subclass = Class.new(s) do
         include Enumerable
