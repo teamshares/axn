@@ -10772,12 +10772,15 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     # Gating the ENUM on this reads the keyword rather than the class: a JSON key is a String, so
     # a `keys:` axis whose declared class excludes String can never be satisfied from JSON AT ALL, and every
     # inbound `propertyNames` keyword is equally a lie there — not just the set.
-    it "stands down entirely on input when the axis excludes String keys" do
-      prop = prop_for(:m) do
+    # What stands down is named on the map, so its looseness is not silent.
+    it "stands down entirely on input when the axis excludes String keys, and names the key contract" do
+      action = build_axn do
         expects :m, type: Hash, of: { keys: { klass: Symbol, format: { with: /\Aa\z/ } }, values: Integer }
       end
 
-      expect(prop).not_to have_key(:propertyNames)
+      expect(action.call(m: { "a" => 1 })).not_to be_ok
+      expect(action.input_schema.dig(:properties, :m)).not_to have_key(:propertyNames)
+      expect(action.input_schema_residues.map { |r| [r.path, r.kind] }).to include([[:m], :inherent])
     end
 
     it "stands down for a length: on such an axis too" do

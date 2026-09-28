@@ -350,7 +350,11 @@ module Axn
               node = node.merge(MAP_VALUE_EXEMPT_KEY => [{ schema: values, exempt: }])
             end
             keys = map_keys_schema(bag, for_output:)
-            keys.empty? ? node : node.merge(propertyNames: keys)
+            return node if keys.empty?
+            # A key contract that states nothing names what it leaves out on the map itself.
+            return residues_on(keys).reduce(node) { |acc, r| record_residue(acc, r.summary, kind: r.kind) } if asserts_nothing?(keys)
+
+            node.merge(propertyNames: keys)
           end
 
           # The `keys:` axis, as `propertyNames`. PRO-3165 emitted nothing here on the grounds that every JSON
@@ -370,13 +374,19 @@ module Axn
           def map_keys_schema(bag, for_output:)
             axis = Axn::Internal::ShapeGraph.hash_or_nil(bag[:keys])
             return {} if nil.equal?(axis)
+
             # A JSON object key is a String, so an axis whose declared class EXCLUDES String cannot be satisfied
             # from JSON at all — and then every inbound keyword here is a lie, not just the set: a `keys: {
             # klass: Symbol, format: … }` told a client to send `{"a" => 1}`, which the axis rejects on the
             # class check before the pattern is ever consulted. Gated on the CLASS rather than per keyword,
-            # which is what fixing only the enum missed. On output the key has already been
-            # serialized to a String, so the whole projection stands.
-            return {} unless for_output || axis_admits_string_key?(axis[:klass])
+            # which is what fixing only the enum missed. What stands down is named, so the map's looseness is
+            # never silent. On output the key has already been serialized to a String, so the whole projection
+            # stands.
+            unless for_output || axis_admits_string_key?(axis[:klass])
+              contract = render_constraint({ keys: reported_options(axis) })
+              return record_residue({}, "every key is checked against a contract a JSON object key, always a string, " \
+                                        "cannot satisfy (#{contract})")
+            end
 
             # The node is built with the type a JSON object key always has, so the projector keys each keyword off
             # `"string"` — which is what decides, on its own, that a `format:`/`length:` reflects here and a
