@@ -22,7 +22,11 @@ module Axn
         attr_reader :header
 
         def initialize(keys:, header: AUTHORIZATION)
-          raise ConfigurationError, "Bearer keys must be a non-empty Hash of principal id => key(s)" unless keys.is_a?(Hash) && keys.any?
+          # Read through a native copy, so a Hash subclass's own iteration never runs.
+          keys = {}.merge!(keys) if Internal::Identity.kind?(keys, ::Hash)
+          unless Internal::Identity.kind?(keys, ::Hash) && !keys.empty?
+            raise ConfigurationError, "Bearer keys must be a non-empty Hash of principal id => key(s)"
+          end
 
           @header = _header_name(header)
           @keys = _principal_ids(keys).to_h { |id, (_label, value)| [id, _check_literals!(id, value)] }.freeze
@@ -116,12 +120,16 @@ module Axn
         # Each is stored as the guard's detached copy, never the caller's object (nor the caller's
         # Array), so mutating what the caller still holds cannot change which credential authenticates.
         def _check_literals!(id, value)
-          list = value.is_a?(Array) ? value : [value]
+          list = _key_list(value)
           raise ConfigurationError, "Bearer key for #{id.inspect} must list at least one key" if list.empty?
 
           checked = list.map { |entry| Auth.deferred?(entry) ? entry : _require_key!(id, entry) }
-          value.is_a?(Array) ? checked.freeze : checked.first
+          Internal::Identity.kind?(value, ::Array) ? checked.freeze : checked.first
         end
+
+        # One key or a list of them, the list copied natively (`Module#===`, then `Array.new`), so a
+        # value claiming to be an Array is one key and an Array subclass's own iteration never runs.
+        def _key_list(value) = Internal::Identity.kind?(value, ::Array) ? ::Array.new(value) : [value]
 
         # `require_secret!`, plus the one rule specific to reading a token out of a header: the presented
         # token is stripped before comparison, so a key with surrounding whitespace (a secret file's
@@ -138,8 +146,7 @@ module Axn
         def _candidates(id, value, request)
           # Not Kernel#Array on the resolved value: `Array(nil)` is `[]`, which would report a Proc
           # returning an unset ENV var as "no keys" instead of naming the nil it actually returned.
-          entries = value.is_a?(Array) ? value : [value]
-          entries.flat_map { |entry| (resolved = Auth.resolve(entry, request)).is_a?(Array) ? resolved : [resolved] }.tap do |keys|
+          _key_list(value).flat_map { |entry| _key_list(Auth.resolve(entry, request)) }.tap do |keys|
             raise ConfigurationError, "Bearer key for #{id.inspect} resolved to no keys" if keys.empty?
 
             keys.map! { |key| _require_key!(id, key) }

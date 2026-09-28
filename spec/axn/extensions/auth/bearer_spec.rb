@@ -163,6 +163,18 @@ RSpec.describe Axn::Extensions::Auth::Bearer do
         .to raise_error(auth::ConfigurationError, /both name principal "svc"/)
     end
 
+    it "refuses at construction a literal key that merely claims to be a Proc" do
+      impostor = Object.new
+      def impostor.is_a?(*) = true
+      expect { described_class.new(keys: { "svc" => impostor }) }.to raise_error(auth::ConfigurationError, /got Object/)
+    end
+
+    it "treats a literal that claims to be an Array as a single key, not a list" do
+      impostor = Object.new
+      def impostor.is_a?(klass) = klass == Array
+      expect { described_class.new(keys: { "svc" => impostor }) }.to raise_error(auth::ConfigurationError, /got Object/)
+    end
+
     it "refuses a blank header name" do
       expect { described_class.new(keys: { "svc" => "k" }, header: "") }.to raise_error(auth::ConfigurationError, /header/)
     end

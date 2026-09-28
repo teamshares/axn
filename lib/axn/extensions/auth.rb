@@ -94,12 +94,18 @@ module Axn
       # literal here, so a boot-time secret check cannot exempt something `resolve` would never call.
       # A Symbol is a literal too — resolving it against the request is a DSL convention a gem may
       # layer on top (axn-webhooks does), not something core should guess at.
-      def deferred?(value) = value.is_a?(Proc)
+      #
+      # Decided with `Module#===` rather than `is_a?`, and arity read through Proc's own method, so a
+      # value cannot claim deferral (and skip a boot-time secret check) or steer which way it is called.
+      def deferred?(value) = Internal::Identity.kind?(value, ::Proc)
+
+      PROC_ARITY = ::Proc.instance_method(:arity)
+      private_constant :PROC_ARITY
 
       def resolve(value, request)
         return value unless deferred?(value)
 
-        value.arity.zero? ? value.call : value.call(request)
+        PROC_ARITY.bind_call(value).zero? ? value.call : value.call(request)
       end
 
       # Asks `ok?` FIRST: a rejecting verdict object is still a truthy Ruby object, so reading it for
@@ -108,9 +114,10 @@ module Axn
       def verified?(verdict) = verdict.respond_to?(:ok?) ? verdict.ok? : !!verdict
 
       # Any strategy's answer as a Verdict. A rejection never carries a principal, whatever the
-      # strategy returned alongside it.
+      # strategy returned alongside it. Only a genuine Verdict (checked natively) passes through as-is,
+      # since only a genuine one had its invariants enforced at construction.
       def normalize(verdict)
-        return verdict if verdict.is_a?(Verdict)
+        return verdict if Internal::Identity.kind?(verdict, Verdict)
 
         if verified?(verdict)
           Verdict.ok(verdict.respond_to?(:principal) ? verdict.principal : nil)

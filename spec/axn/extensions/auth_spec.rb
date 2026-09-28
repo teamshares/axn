@@ -83,6 +83,18 @@ RSpec.describe Axn::Extensions::Auth do
       expect(described_class.deferred?(Object.new.method(:to_s))).to be(false)
     end
 
+    it "decides deferral natively, so a value claiming to be a Proc is still a literal" do
+      impostor = Object.new
+      def impostor.is_a?(*) = true
+      expect(described_class.deferred?(impostor)).to be(false)
+      expect(described_class.resolve(impostor, request)).to equal(impostor)
+    end
+
+    it "reads a Proc's arity natively" do
+      sneaky = Class.new(Proc) { def arity = raise("arity ran") }.new { "zero" }
+      expect(described_class.resolve(sneaky, request)).to eq("zero")
+    end
+
     it "calls a zero-arity Proc with no arguments" do
       expect(described_class.resolve(-> { "zero" }, request)).to eq("zero")
     end
@@ -120,6 +132,12 @@ RSpec.describe Axn::Extensions::Auth do
     it "returns a Verdict unchanged" do
       verdict = described_class::Verdict.ok("data_pipeline")
       expect(described_class.normalize(verdict)).to equal(verdict)
+    end
+
+    it "does not pass through an object merely claiming to be a Verdict" do
+      impostor = Struct.new(:ok?, :reason, :principal).new(false, :denied, "admin")
+      def impostor.is_a?(*) = true
+      expect(described_class.normalize(impostor)).to eq(described_class::Verdict.rejected(:denied))
     end
 
     it "reads a duck-typed verdict's principal and reason" do
