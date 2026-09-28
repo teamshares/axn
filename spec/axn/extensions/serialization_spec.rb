@@ -309,6 +309,28 @@ RSpec.describe Axn::Extensions::Serialization do
           .to eq("d" => { "name" => "a", "internal_notes" => "x" })
       end
 
+      # Codex review, PR #296, round 14: the INVERSE of the round-13 finding above -- there, `respond_to?`
+      # was SILENT about a real method the table also didn't otherwise see; here, `respond_to?` is
+      # OVERRIDDEN to LIE and deny a real, public `as_json` that genuinely exists in the table.
+      # `projection_for` honors that lie (skips as_json, falls through to the inherited member-keyed
+      # `to_h`, matching the schema), but the table-only check trusted "a real public method exists" as
+      # sufficient on its own, without confirming `respond_to?` would actually reach it.
+      it "does not raise for a Struct subclass with a real public as_json whose respond_to? is overridden " \
+         "to deny it, falling through to the inherited member-keyed to_h that matches the schema" do
+        st = Struct.new(:name, :internal_notes)
+        klass = shaped_action(type: st)
+        denies_as_json_subclass = Class.new(st) do
+          def as_json(*) = { name: "redacted" }
+
+          # rubocop:disable Style/OptionalBooleanParameter -- matches Kernel#respond_to?'s own signature
+          def respond_to?(name, include_private = false) = name == :as_json ? false : super
+          # rubocop:enable Style/OptionalBooleanParameter
+        end
+
+        expect(described_class.render(klass.call(value: denies_as_json_subclass.new("a", "x"))))
+          .to eq("d" => { "name" => "a", "internal_notes" => "x" })
+      end
+
       # Codex review, PR #296: `to_h` displaces the built-in at ANY visibility (unlike `as_json`, which is
       # reached only by dispatch), including a PRIVATE singleton `to_h` or one from a privately-`extend`ed
       # module. `Kernel#singleton_methods` (an earlier, cheaper draft of the frozen-value fast path below)

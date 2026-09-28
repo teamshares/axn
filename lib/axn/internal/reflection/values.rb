@@ -848,17 +848,44 @@ module Axn
         # singleton-level table of its own to disagree with it. Every other value skips straight to the
         # table-based check below, which is authoritative regardless — asking the class first there would
         # only risk the same false positive for no savings, since the table is being materialized anyway.
+        #
+        # Trusting the TABLE alone is itself only sound when `respond_to?`/`respond_to_missing?` are NOT
+        # overridden (Codex review, PR #296, round 14): a real, public `as_json` sitting in the table is
+        # normally reached because `projection_for` dispatches `respond_to?(:as_json)`, which the table
+        # predicts correctly — but an override can make `respond_to?` LIE in EITHER direction: claim true
+        # for a name with no real method (method_missing, rounds 6/10/12/13) or claim false for a name that
+        # DOES have one (round 14, suppressing a real `as_json` so the value falls through to the inherited
+        # `to_h` instead, matching the schema). Once `dynamic_respond_to?` is true for the module actually
+        # being asked, the table can no longer be trusted either way, and only `effective_projection_
+        # displaces?` — which dispatches `respond_to?` itself, in `projection_for`'s own precedence — gives
+        # the right answer.
         def displacing_projection_anywhere?(value)
           if Axn::Internal::Identity.kind?(value, ::Data) && Axn::Internal::NativeMethods.frozen?(value)
-            return true if displacing_projection(Axn::Internal::Identity.class_of(value))
+            mod = Axn::Internal::Identity.class_of(value)
+            return effective_projection_displaces?(value) if dynamic_respond_to?(mod)
 
-            return method_missing_backed_projection?(value, Axn::Internal::Identity.class_of(value))
+            return !displacing_projection(mod).nil?
           end
 
           table = Axn::Internal::NativeMethods.method_table(value)
-          return true unless displacing_projection(table).nil?
+          return effective_projection_displaces?(value) if dynamic_respond_to?(table)
 
-          method_missing_backed_projection?(value, table)
+          !displacing_projection(table).nil?
+        end
+
+        # The AUTHORITATIVE answer, for a value whose class or table overrides `respond_to?`/
+        # `respond_to_missing?`: mirrors `projection_for`'s own dispatch and precedence exactly (`as_json`
+        # before `to_h`), rather than approximating it from the table, since only dispatching `respond_to?`
+        # can agree with what `projection_for` will actually do once an override is in play. `owner_of`
+        # reports a method_missing-backed method as owner-less (Codex review, PR #296, round 6's `owner_of`
+        # comment); `framework_projection_owner?(nil)` is false, so a nil owner correctly counts as
+        # displacing here too — the same "framework-owned or displacing" split `displacing_projection`
+        # itself draws from the table, just read from the dispatched answer instead.
+        def effective_projection_displaces?(value)
+          return !framework_projection_owner?(owner_of(value, :as_json)) if value.respond_to?(:as_json)
+          return false unless value.respond_to?(:to_h)
+
+          !framework_projection_owner?(owner_of(value, :to_h))
         end
 
         # Whether `as_json` or `to_h` is served entirely through `method_missing` (paired with
@@ -1010,7 +1037,7 @@ module Axn
                              :displaced_projection_owner_label, :displaced_projection_location,
                              :data_or_struct_descendant?, :undefined_projection_reason,
                              :method_missing_backed_projection?, :effective_displaced_method, :method_missing_projection_reason,
-                             :dynamic_respond_to?, :overridden_beyond_kernel?
+                             :dynamic_respond_to?, :overridden_beyond_kernel?, :effective_projection_displaces?
       end
     end
   end
