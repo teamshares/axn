@@ -33,12 +33,18 @@ RSpec.describe Axn::Internal::Reflection::Values do
   # (PRO-3335) for the identical reason one layer up in prose — `PropertyNames.renderable_label` renders
   # a Hash key into a message it composes and drops, on every logged line, and needs the same
   # canonicalization WITHOUT `canonical_wire_key`'s owned-copy guarantee, which it never uses and which
-  # `renderable_label` re-deriving the canonicalization itself would risk disagreeing with. Anything else
-  # appearing here is a new public promise about the renderer's own decisions, which is what constrains
-  # core's routing later.
+  # `renderable_label` re-deriving the canonicalization itself would risk disagreeing with.
+  #
+  # `displacing_projection` (PRO-3284) is the fourth: Schema asks it of a DECLARED class while building
+  # `output_schema` (`Nestability#member_keyed_object_type?`), and this module asks the identical question
+  # again of a runtime value's own table while rendering — one predicate, so the schema's "this position is
+  # member-keyed" verdict and the renderer's "did this value pick a different answer" verdict cannot drift
+  # apart the way two independently-written rules could. Anything else appearing here is a new public
+  # promise about the renderer's own decisions, which is what constrains core's routing later.
   describe "public surface" do
-    it "exposes only the three methods reserved for core's own callers" do
-      expect(described_class.singleton_class.public_instance_methods(false).sort).to eq(%i[borrowed_wire_key canonical_wire_key serialize_value])
+    it "exposes only the four methods reserved for core's own callers" do
+      expect(described_class.singleton_class.public_instance_methods(false).sort)
+        .to eq(%i[borrowed_wire_key canonical_wire_key displacing_projection serialize_value])
     end
 
     it "no longer answers the as_json-routing question that projection_for owns" do
@@ -159,6 +165,116 @@ RSpec.describe Axn::Internal::Reflection::Values do
       expect(described_class.serialize_value(ar_like_obj)).to eq(
         "id" => 1, "name" => "widget", "active" => true, "note" => nil,
       )
+    end
+  end
+
+  # PRO-3284's shared ownership predicate: one function, evaluated on a DECLARED class (Schema's own
+  # question, via `Nestability#member_keyed_object_type?`) and on a VALUE's own table
+  # (`NativeMethods.method_table`, this module's question at render time) — asserted here directly, since
+  # the agreement between the two callers is exactly what makes the schema and the renderer unable to
+  # disagree about what counts as an override.
+  describe ".displacing_projection" do
+    let(:s) { Data.define(:name) }
+
+    it "is nil for the declared class itself, and for a subclass with no override" do
+      expect(described_class.displacing_projection(s)).to be_nil
+      expect(described_class.displacing_projection(Class.new(s))).to be_nil
+    end
+
+    it "is the method for a subclass's own PUBLIC as_json" do
+      subclass = Class.new(s) { def as_json(*) = { name: } }
+
+      method = described_class.displacing_projection(subclass)
+      expect(method).to be_a(UnboundMethod)
+      expect(method.name).to eq(:as_json)
+      expect(method.owner).to eq(subclass)
+    end
+
+    it "is nil for a subclass's PRIVATE/PROTECTED as_json (never reached by dispatch, so the built-in " \
+       "to_h still governs) but the method for a PRIVATE to_h (which shadows the built-in at any visibility)" do
+      private_as_json = Class.new(s) { private def as_json(*) = { name: } }
+      private_to_h = Class.new(s) { private def to_h = { name: } }
+
+      expect(described_class.displacing_projection(private_as_json)).to be_nil
+      expect(described_class.displacing_projection(private_to_h)).not_to be_nil
+    end
+
+    it "is the method for an as_json defined by an included module (the owner is the module, not the class)" do
+      redacting = Module.new { def as_json(*) = { name: } }
+      subclass = Class.new(s) { include redacting }
+
+      expect(described_class.displacing_projection(subclass)&.owner).to eq(redacting)
+    end
+
+    it "asked of a VALUE's own method table (NativeMethods.method_table), not just its class, finds a " \
+       "singleton override the class-level question alone would miss" do
+      st = Struct.new(:name) # a Data instance is frozen and cannot carry a singleton method
+      value = st.new("a")
+      def value.as_json(*) = { name: }
+
+      expect(described_class.displacing_projection(st)).to be_nil
+      expect(described_class.displacing_projection(Axn::Internal::NativeMethods.method_table(value))).not_to be_nil
+    end
+
+    it "is nil for a non-Module argument (defensive: the emitter and the renderer both only ever pass a " \
+       "genuine Class/Module, but the predicate does not blow up handed anything else)" do
+      expect(described_class.displacing_projection("not a module")).to be_nil
+    end
+  end
+
+  # The renderer's own descent through a `RenderGuard` (PRO-3284) — built here directly, without going
+  # through `Schema.output_render_guards`, so these pin `serialize_value`'s WALK independently of how the
+  # guard tree gets built.
+  describe "serialize_value with a guard: (PRO-3284)" do
+    let(:s) { Data.define(:name) }
+    let(:public_s) do
+      klass = s
+      Class.new(klass) { def as_json(*) = { name: } }
+    end
+
+    it "is a no-op when no guard is given, exactly as before this feature existed" do
+      expect(described_class.serialize_value(public_s.new(name: "a"))).to eq("name" => "a")
+    end
+
+    it "refuses a guarded value at the top level" do
+      guard = described_class::RenderGuard.new(classes: [s], members: {}, items: nil, values: nil)
+
+      expect { described_class.serialize_value(public_s.new(name: "a"), guard:) }
+        .to raise_error(Axn::Extensions::Serialization::UnserializableValue)
+    end
+
+    it "descends guard.items into every Array element" do
+      guard = described_class::RenderGuard.new(classes: [], members: {},
+                                               items: described_class::RenderGuard.new(classes: [s], members: {}, items: nil, values: nil),
+                                               values: nil)
+
+      expect { described_class.serialize_value([public_s.new(name: "a")], guard:) }
+        .to raise_error(Axn::Extensions::Serialization::UnserializableValue)
+      expect(described_class.serialize_value([s.new(name: "a")], guard:)).to eq([{ "name" => "a" }])
+    end
+
+    it "descends guard.entry(wire_key) into a Hash: a PRESENT member key (even nil) wins over a sibling values: axis" do
+      inner_guard = described_class::RenderGuard.new(classes: [s], members: {}, items: nil, values: nil)
+      guard = described_class::RenderGuard.new(
+        classes: [], members: { "shaped" => nil }, items: nil, values: inner_guard,
+      )
+
+      # "shaped" has a present (nil) member entry, so it does NOT fall through to `values` — no guard applies.
+      expect(described_class.serialize_value({ shaped: public_s.new(name: "a") }, guard:))
+        .to eq("shaped" => { "name" => "a" })
+      # An absent key falls through to `values`, which DOES guard.
+      expect { described_class.serialize_value({ other: public_s.new(name: "a") }, guard:) }
+        .to raise_error(Axn::Extensions::Serialization::UnserializableValue)
+    end
+
+    it "carries the guard through the as_json/to_h recursion (the rendered Hash's entries are the same position's members)" do
+      to_h_guard = described_class::RenderGuard.new(classes: [], members: { "name" => nil }, items: nil, values: nil)
+      value = Object.new
+      def value.to_h = { name: "a", secret: "s" }
+
+      # `secret` has no member entry and no values: axis, so nothing guards it -- but it still renders,
+      # proving the guard rode along into the to_h recursion rather than being dropped.
+      expect(described_class.serialize_value(value, guard: to_h_guard)).to eq("name" => "a", "secret" => "s")
     end
   end
 
