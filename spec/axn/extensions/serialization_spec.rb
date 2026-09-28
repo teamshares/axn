@@ -161,11 +161,18 @@ RSpec.describe Axn::Extensions::Serialization do
       # ROUTE (`as_json` vs `to_h`) is not, and a couple of examples exist specifically to pin ONE of those
       # two routes; `Object`'s own REAL `as_json`, if present, wins over method_missing/respond_to_missing?
       # for EVERY value regardless of what `Data`/`Struct` do, so a test pinning a method_missing-served
-      # `as_json` needs it gone too. This clears whichever of the three ActiveSupport put its own `as_json`
-      # on for the block's duration, and restores each afterward — deterministic either way, rather than
-      # order-dependent on which OTHER spec file in this process ran first.
+      # `as_json` needs it gone too. `Enumerable` is the fourth: ActiveSupport ALSO gives it its own real
+      # `as_json` (array-shaped, via `to_a`), which every Struct inherits regardless of Struct's OWN
+      # (round 17's own comment on this file dodged it by using `Data.define` for a wrapping type instead
+      # of `Struct.new` — a round 18 test needs the Struct-specific asymmetry itself, so it cannot dodge
+      # this way, and needs `Enumerable` stripped too: otherwise ITS internal, unconditional `.as_json`
+      # calls on nested elements raise `NoMethodError` once THEIR OWN owner has already been removed
+      # below, an unrelated test-infrastructure crash rather than the behavior being pinned). This clears
+      # whichever of the four ActiveSupport put its own `as_json` on for the block's duration, and restores
+      # each afterward — deterministic either way, rather than order-dependent on which OTHER spec file in
+      # this process ran first.
       def without_activesupport_json_core_ext
-        removed = [Data, Struct, Object].select { |klass| klass.method_defined?(:as_json) }
+        removed = [Data, Struct, Object, Enumerable].select { |klass| klass.method_defined?(:as_json) }
         originals = removed.to_h { |klass| [klass, klass.instance_method(:as_json)] }
         removed.each { |klass| klass.send(:remove_method, :as_json) }
         yield
@@ -402,6 +409,53 @@ RSpec.describe Axn::Extensions::Serialization do
         without_activesupport_json_core_ext do
           expect { described_class.render(klass.call(value:)) }
             .to raise_error(Axn::Extensions::Serialization::UnserializableValue)
+        end
+      end
+
+      # Codex review, PR #296, round 18: round 17 finding 1's own construction (a top-level `shape:`
+      # sibling to `of:`, reachable only via `external_field_configs=`), but with a BARE STRUCT token.
+      # `contents_render_guard`'s bare branch only ever adds a DATA token to `classes`
+      # (`contents_object_class?`'s Data-only rule) -- so before this fix, `array_items_render_guard`'s
+      # combine step kept `items_guard.classes` (empty, for a Struct) instead of the WIDER Data-OR-Struct
+      # rule (`guarded_render_classes`) the ordinary embedded-shape branch (`contents_render_guard`'s own
+      # `overlay` case) already uses. With an empty `classes`, `Values#active_render_guard` short-circuits
+      # (`return guard if guard.classes.empty?`) before it ever asks whether the declared Struct itself
+      # still displaces -- so the STALE merged member guard kept checking a nested value against a schema
+      # a freshly opaque Struct no longer promises anything about at all.
+      it "stands down a top-level-shaped STRUCT items guard (external_field_configs=, sibling shape:/of:) " \
+         "once the Struct itself becomes opaque after the first render, rather than refusing a nested " \
+         "displaced value against a schema the freshly-unconstrained Struct no longer describes" do
+        inner_type = Data.define(:x)
+        outer_type = Struct.new(:inner)
+        klass = Class.new do
+          include Axn
+          auto_log false
+          expects :value
+          exposes :d, type: Array, of: outer_type do
+            field :inner, type: inner_type do
+              field :x, type: Integer
+            end
+          end
+          def call = expose(d: value)
+        end
+
+        declared_config = klass.external_field_configs.first
+        folded_shape = declared_config.validations[:of][:shape]
+        bypassed_validations = declared_config.validations.merge(shape: folded_shape)
+        bypassed_validations[:of] = bypassed_validations[:of].except(:shape)
+        klass.external_field_configs = [declared_config.with(validations: bypassed_validations)].freeze
+
+        without_activesupport_json_core_ext do
+          described_class.render(klass.call(value: [outer_type.new(inner_type.new(x: 1))])) # warms the memo, Struct still member-keyed
+
+          outer_type.define_method(:as_json) { { inner: } } # own, non-framework as_json -- collapses the overlay on a fresh schema
+
+          displacing_inner = Class.new(inner_type) { def as_json(*) = { x: "redacted" } }
+          value = [outer_type.new(displacing_inner.new(x: 1))]
+
+          expect(klass.output_schema.dig(:properties, :d)).not_to have_key(:items)
+          expect(described_class.render(klass.call(value:)))
+            .to eq("d" => [{ "inner" => { "x" => "redacted" } }])
         end
       end
 

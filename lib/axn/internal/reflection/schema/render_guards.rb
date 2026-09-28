@@ -144,18 +144,35 @@ module Axn
           # checks. Gated on `shape_overlay_applies?(of, for_output: true)`, the IDENTICAL condition
           # `apply_structured_schema!` gates that same merge on, and its dependency is watched unconditionally
           # (matching `shape_field_render_guard`'s own pattern) since it decides which branch even applies.
+          #
+          # `classes` is rebuilt from `guarded_render_classes(tokens)` — the WIDER Data-OR-Struct rule
+          # `contents_render_guard`'s own `overlay` branch already uses for an EMBEDDED shape — rather than
+          # kept from `items_guard` (Codex review, PR #296, round 18): `items_guard` came from the BARE
+          # branch (this node's `of` carries no `:shape` of its own, since it was moved to the top level),
+          # whose `contents_klass_render_classes` only ever adds a DATA token (`contents_object_class?`'s
+          # Data-only rule). A bare STRUCT token therefore never lands in `classes` even though it decides
+          # (via `shape_overlay_applies?`) whether the merged `members` below apply at all — and with an
+          # empty `classes`, `Values#active_render_guard` short-circuits (`return guard if guard.classes.
+          # empty?`) before it ever re-checks the declared Struct's CURRENT opacity, leaving the merged
+          # member guard active (and over-reaching) even after the Struct gains its own `as_json`/`to_h`
+          # and a freshly built schema drops the overlay entirely. Every token here is guaranteed CURRENTLY
+          # member-keyed already (`shape_overlay_applies?` requires `klasses.all?`), so this costs nothing
+          # `guarded_render_classes` wasn't already filtering for; watching mirrors `contents_render_guard`'s
+          # own `if shape` block for the identical reason — a union's stand-down depends on EVERY sibling,
+          # not only the one a given value happens to be.
           def array_items_render_guard(of, shape, ancestry, watched:) # rubocop:disable Naming/MethodParameterName -- matches the DSL kwarg it forwards
             items_guard = of ? contents_render_guard(of, ancestry, watched:) : nil
             return items_guard unless shape && of
 
-            watch_opaque_classes!(Axn::Internal::ShapeGraph.type_tokens(of[:klass]), watched)
+            tokens = Axn::Internal::ShapeGraph.type_tokens(of[:klass])
+            tokens.size > 1 ? watch_union_classes!(tokens, watched) : watch_opaque_classes!(tokens, watched)
             return items_guard unless shape_overlay_applies?(of, for_output: true)
 
             members = member_render_guards(shape[:members], ancestry, watched:)
             return items_guard unless members
 
             combine_render_guard(
-              classes: items_guard&.classes || [],
+              classes: guarded_render_classes(tokens),
               members: (items_guard&.members || {}).merge(members),
               items: items_guard&.items,
               values: items_guard&.values,
