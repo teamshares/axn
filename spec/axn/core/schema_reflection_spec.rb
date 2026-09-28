@@ -362,6 +362,19 @@ RSpec.describe "Axn class-level schema reflection" do
     expect(klass.input_schema.dig(:properties, :payload, :type)).to eq(%w[object null])
   end
 
+  # The defaulted sibling supplies the lookup token on the omitted call, at depth exactly as at the top level.
+  it "leaves a nested model's id optional when its sibling id carries a default" do
+    stub_const("NestedCo", Struct.new(:id) { def self.find(id) = id.nil? ? nil : new(id) })
+    klass = build_axn do
+      expects :payload, type: Hash
+      expects :company_id, on: :payload, type: Integer, default: 7
+      expects :company, on: :payload, model: NestedCo
+    end
+
+    expect(klass.call(payload: { z: 1 })).to be_ok
+    expect(Array(klass.input_schema.dig(:properties, :payload, :required))).not_to include("company_id")
+  end
+
   # A pattern resolved per call may match the empty string a nil is tested as, so its nil verdict is as
   # unknowable as a `validate:`'s, and it does not keep the field required.
   it "leaves a field optional when its only nil-rejecting check is a per-call format: pattern" do

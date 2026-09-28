@@ -171,12 +171,8 @@ module Axn
           # rescuing signal (no usable default, not nil-tolerant) strands an omitted record and keeps the id
           # required. OR an explicit `<field>_id` sibling carries a usable DEFAULT (inbound defaults supply
           # the token before the lookup). A merely nullable/optional explicit id with no default doesn't help.
-          # When the id IS required it also can't be null, so any `null` branch is stripped.
-          #
-          # KNOWN LIMITATION (accepted divergence): this covers a shallow model field and its explicit shallow
-          # id sibling. Self-referential id/model contracts nested under a parent (a `model:` subfield with a
-          # sibling defaulted `<field>_id` subfield) are not reconciled here — the parent may reflect as
-          # required though runtime synthesizes it — a known stricter divergence in requiredness, tier 1.
+          # When the id IS required it also can't be null, so any `null` branch is stripped. The nested twin
+          # (`apply_model_id_child!`) applies the same defaulted-sibling rescue.
           def apply_model_id_requiredness!(config, children, field_configs, properties, required, ann)
             # The key alone, not `model_id_property(config)` — this pass runs for EVERY model config
             # regardless of whether an explicit sibling exists, so re-deriving the whole property here

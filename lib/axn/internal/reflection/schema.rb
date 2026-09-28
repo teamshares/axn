@@ -1573,6 +1573,9 @@ module Axn
             prop[:properties][id_field] ||= subprop
           end
           return if node_optional?(node, ann, model_configs)
+          # An explicit sibling id with a usable default supplies the lookup token on the omitted call, the rescue
+          # the top-level pass (`apply_model_id_requiredness!`) applies too.
+          return if explicit_id && usable_default?(explicit_id, subfield: true)
 
           if node_optional?(node, ann, model_configs.reject { |c| requiredness_conditionally_relaxable?(c) })
             prop[:properties][id_field] = record_residue(prop[:properties][id_field], GATED_REQUIRED_RESIDUE, kind: :conditional) if prop[:properties][id_field]
