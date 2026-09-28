@@ -54,7 +54,7 @@ module Axn
           # 5): a class regaining member-keyed status after being reopened WITHOUT its own projection can't
           # retroactively gain a guard object that was never built for it, so that direction needs watching.
           # The OPPOSITE direction — a guarded class LOSING member-keyed status by GAINING a projection —
-          # needs no entry: `Values#refuse_displaced_projection!` already re-verifies the declared class live
+          # needs no entry: `Values#active_render_guard` already re-verifies the declared class live
           # on every guarded value, so an existing guard standing down safely under-reaches rather than
           # needing the whole plan rebuilt.
           #

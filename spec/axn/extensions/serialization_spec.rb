@@ -518,6 +518,37 @@ RSpec.describe Axn::Extensions::Serialization do
           .to eq("d" => { "name" => "a", "internal_notes" => "x" })
       end
 
+      # Codex review, PR #296, round 7: once the DECLARED class itself becomes opaque (gains its own
+      # as_json/to_h after the guard cache was warmed), `output_schema` collapses this ENTIRE position to
+      # `{}` on its next build -- but the stale cached guard's NESTED members/items/values were built back
+      # when the declared class was still member-keyed, and simply standing down the declared class's own
+      # check (without dropping those nested guards too) leaves them applied to whatever Hash the class's
+      # own, now-opaque projection happens to return -- content structurally unrelated to the shape they
+      # were built from, checked against a schema that no longer promises anything about it at all.
+      it "drops the guard for descendants once the declared class itself becomes opaque, rather than " \
+         "checking a stale nested guard against an unrelated projected Hash" do
+        t = Data.define(:x)
+        reopenable_s = Data.define(:inner)
+        klass = Class.new do
+          include Axn
+          auto_log false
+          expects :value
+          exposes :d, type: reopenable_s do
+            field :inner, type: t do
+              field :x, type: Integer
+            end
+          end
+          def call = expose(d: value)
+        end
+        described_class.render(klass.call(value: reopenable_s.new(inner: t.new(x: 1)))) # warms the memo, intact
+
+        displacing_t_subclass = Class.new(t) { def as_json(*) = { x: "redacted" } }
+        reopenable_s.define_method(:as_json) { { inner: displacing_t_subclass.new(x: 99) } }
+
+        expect(described_class.render(klass.call(value: reopenable_s.new(inner: t.new(x: 1)))))
+          .to eq("d" => { "inner" => { "x" => "redacted" } })
+      end
+
       it "raises for a nested shape member (a Hash field whose own shaped member is such a subclass)" do
         inner_type = s
         klass = Class.new do

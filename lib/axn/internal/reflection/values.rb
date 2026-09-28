@@ -223,7 +223,7 @@ module Axn
             # outside Rails, so `serialize_exposed` output validates against the reflected schema.
             encodable_string!(value.iso8601, source: value, path:)
           else
-            refuse_displaced_projection!(value, guard, path) if guard
+            guard = active_render_guard(value, guard, path) if guard
 
             projection = projection_for(value)
 
@@ -726,6 +726,17 @@ module Axn
         # class's did. Runs before `projection_for` routes to that projection at all, so the divergence is
         # caught rather than silently rendered.
         #
+        # Returns the GUARD the caller's recursion into this value's own projection should carry — `guard`
+        # itself, unchanged, for every value that renders through the built-in shape this guard was built
+        # from, or `nil` once `declared` turns out to be opaque (Codex review, PR #296, round 7): once a
+        # DECLARED class owns its own `as_json`/`to_h`, a freshly rebuilt `output_schema` collapses this
+        # WHOLE position to `{}` — nothing about its subtree is schema-constrained any longer — but `guard`'s
+        # `members`/`items`/`values` were built back when it WAS member-keyed, and describe THAT shape, not
+        # whatever Hash this now-opaque class's own projection happens to return. Passing them along
+        # unchanged would check unrelated content against a schema that no longer promises anything about
+        # it, which is exactly the over-reach this module exists to avoid, in the opposite direction from
+        # the under-reach `Schema::RenderGuards`'s own `watched_classes` accepts as the cheaper trade.
+        #
         # `guard.classes` names every declared class this position's schema could have been reflected from
         # (more than one only at a contents union — see `Schema::RenderGuards`); the value is checked against
         # whichever one it is actually an instance of. `Identity.kind?` is `Module#===`, undispatched.
@@ -734,13 +745,13 @@ module Axn
         # guard was built: a class reopened with its own `as_json`/`to_h` AFTER the guard was memoized would
         # make a rebuilt schema opaque for this position, and refusing against a stale verdict would raise
         # where a fresh render would not.
-        def refuse_displaced_projection!(value, guard, path)
-          return if guard.classes.empty?
+        def active_render_guard(value, guard, path)
+          return guard if guard.classes.empty?
 
           declared = guard.classes.find { |klass| Axn::Internal::Identity.kind?(value, klass) }
-          return if declared.nil?
-          return unless displacing_projection_anywhere?(value)
-          return unless displacing_projection(declared).nil?
+          return guard if declared.nil?
+          return guard unless displacing_projection_anywhere?(value)
+          return nil unless displacing_projection(declared).nil?
 
           # Materialized only once we are actually about to raise: the value is being refused either way,
           # so paying for `method_table` here (rather than in the cheap check above) costs nothing extra on
@@ -868,7 +879,7 @@ module Axn
         end
 
         # Where the displacing method came from, on the same terms `NameOwnership#owner_label` names a
-        # collision's owner. `table` is the value's OWN method table (`refuse_displaced_projection!`'s
+        # collision's owner. `table` is the value's OWN method table (`active_render_guard`'s
         # already-resolved singleton-or-class), so "defined on this value itself" is an IDENTITY comparison
         # against it rather than a dispatched `owner.singleton_class?`, which a hostile Module could override
         # on itself; a module Ruby can name is named and located; an anonymous module (a monkeypatch of a
@@ -938,7 +949,7 @@ module Axn
                              :own_wire_key, :no_entries_lost!, :raise_colliding_fields!, :owner_of,
                              :capture_elements, :raise_colliding_keys!, :framework_projection_owner?,
                              :describe_key_classes, :check_opaque_key!, :projection_for, :default_to_s?,
-                             :refuse_displaced_projection!, :displacing_projection_anywhere?, :displaced_projection_reason,
+                             :active_render_guard, :displacing_projection_anywhere?, :displaced_projection_reason,
                              :displaced_projection_owner_label, :displaced_projection_location,
                              :data_or_struct_descendant?, :undefined_projection_reason,
                              :method_missing_backed_projection?, :effective_displaced_method, :method_missing_projection_reason

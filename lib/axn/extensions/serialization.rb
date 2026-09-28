@@ -75,7 +75,7 @@ module Axn
       # a guard object that was never constructed for it. `Schema.output_render_guards` therefore also hands
       # back `watched_classes` — `[klass, expected_opaque]` pairs — and a cache hit additionally requires
       # every one of those to CURRENTLY match its recorded opacity. This is mostly ONE-DIRECTIONAL: a class
-      # that GAINS an override after being guarded does not need watching (`Values#refuse_displaced_projection!`
+      # that GAINS an override after being guarded does not need watching (`Values#active_render_guard`
       # already re-checks the declared class live on every guarded value, so an existing guard stands down
       # safely rather than needing the whole plan rebuilt) — only "a position that had no guard might now
       # need one" can't be caught any other way. The one exception is a bare contents UNION of more than one
