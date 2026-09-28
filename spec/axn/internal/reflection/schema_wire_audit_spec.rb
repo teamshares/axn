@@ -249,6 +249,9 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
     {
       "ungated" => ->(decl) { decl },
       "declaration if: false" => ->(decl) { decl.merge(if: -> { false }) },
+      # Only the `type:` entry gated, so the others run on every call beside a type that does not. Gating every
+      # entry at once cannot show a check that leaned on the type being there.
+      "type entry if: false" => ->(decl) { decl.merge(type: { klass: decl[:type], if: -> { false } }) },
       "entry if: false" => lambda { |decl|
         decl.to_h do |key, opt|
           next [key, opt] if %i[type optional].include?(key)

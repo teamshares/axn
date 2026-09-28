@@ -136,7 +136,7 @@ RSpec.describe "conditional validation declarations (if:/unless:)" do
       expect(action.input_schema[:required] || []).not_to include(:num, "num")
       # The whole declaration is gated, so what it enforces is named rather than typed.
       expect(action.input_schema.dig(:properties, :num)).not_to have_key(:type)
-      expect(action.input_schema.dig(:properties, :num, :description)).to include('"type":["number","null"]')
+      expect(action.input_schema.dig(:properties, :num, :description)).to include('"anyOf":[{"type":"number"},{"type":"string"},{"type":"null"}]')
     end
 
     it "declares an optional field carrying only a shared option (no real validator) without crashing" do
@@ -175,12 +175,13 @@ RSpec.describe "conditional validation declarations (if:/unless:)" do
 
       props = action.input_schema.fetch(:properties)
       expect(props.fetch(:num)).to eq(props.fetch(:n2))
-      expect(props.dig(:num, :type)).to contain_exactly("number", "null")
+      # A Number or the numeric String the validator parses, or nil under the tolerance.
+      expect(props.dig(:num, :anyOf)).to eq([{ type: "number" }, { type: "string" }, { type: "null" }])
       # The discriminating control: `numericality: true` and `numericality: { greater_than: 0 }` are NOT the
       # same contract — the first accepts 0 and the second rejects it — so pairing them here would assert a
       # false equivalence, and did, for as long as a declared bound reflected nowhere (PRO-3223).
       expect(props.fetch(:bounded)).not_to eq(props.fetch(:num))
-      expect(props.fetch(:bounded)).to include(exclusiveMinimum: 0)
+      expect(props.dig(:bounded, :anyOf)).to include(a_hash_including(type: "number", exclusiveMinimum: 0))
     end
   end
 

@@ -3634,12 +3634,24 @@ module Axn
           end
 
           if (numericality = validations[:numericality]) && numericality_type_provable?(numericality, for_output:)
+            return numericality_input_node(validations, numericality) unless for_output
             return { type: "integer" } if Axn::Validation::Base.declared_only_integer?(numericality)
 
             return { type: "number" }
           end
 
           {}
+        end
+
+        # Inbound, `numericality:` alone admits a Number or a numeric String (a Number only under `only_numeric:`),
+        # so it types the node as that union and lets the union's own narrowing say which Strings and which
+        # Numbers pass. Typing it `"number"` rejected the `"5"` the validator parses.
+        def numericality_input_node(validations, numericality)
+          only_numeric = Axn::Validation::Base.validator_entry_options(numericality)[:only_numeric]
+          tokens = only_numeric ? [::Numeric] : [::Numeric, ::String]
+          type_hashes = tokens.map { |k| single_type_for(k, for_output: false) }.uniq
+          node = type_hashes.size == 1 ? type_hashes.first : { anyOf: type_hashes }
+          narrow_node_under_numericality(node, validations, tokens, for_output: false)
         end
 
         # A `numericality:` entry reaches a node's branches four different ways, and each is decided from the

@@ -130,8 +130,6 @@ RSpec.describe "Axn class-level schema reflection" do
       "an empty accept set" => [{ presence: false, acceptance: { accept: [], allow_nil: false } }, false],
       "an accept set containing nil alongside the skip" =>
         [{ presence: false, acceptance: { accept: [nil], allow_nil: true } }, true],
-      "an accept set resolved per call, which nothing here can read" =>
-        [{ presence: false, acceptance: { accept: -> { [nil] }, allow_nil: false } }, false],
       "an accept set containing nil alongside a type that rejects nil" =>
         [{ type: String, acceptance: { accept: [nil, "1"], allow_nil: false } }, false],
     }.each do |label, (opts, omissible)|
@@ -339,6 +337,23 @@ RSpec.describe "Axn class-level schema reflection" do
     expect(Array(klass.input_schema[:required])).not_to include("v")
   end
 
+  # A pattern resolved per call may match the empty string a nil is tested as, so its nil verdict is as
+  # unknowable as a `validate:`'s, and it does not keep the field required.
+  it "leaves a field optional when its only nil-rejecting check is a per-call format: pattern" do
+    klass = build_axn { expects :v, presence: false, format: { with: ->(_) { /\A\z/ } } }
+
+    expect(klass.call).to be_ok
+    expect(Array(klass.input_schema[:required])).not_to include("v")
+  end
+
+  # A bare `numericality:` parses a numeric String, so with no type to say otherwise the String stays admitted.
+  it "admits the numeric String a bare numericality: parses" do
+    klass = build_axn { expects :n, numericality: { only_integer: true } }
+
+    expect(klass.call(n: "5")).to be_ok
+    expect(klass.input_schema.dig(:properties, :n, :anyOf)).to eq([{ type: "integer" }, { type: "string", pattern: "^[+-]?\\d+$", minLength: 1 }])
+  end
+
   # THE nil axis across axn's whole validator vocabulary: every key a declaration may carry, in the option
   # shapes that change the answer. Each row declares the validator with the inferred presence check
   # suppressed, so the validator under test is the only thing that could reject an omitted value, then holds
@@ -438,7 +453,6 @@ RSpec.describe "Axn class-level schema reflection" do
       "format without:, a regexp that rejects the empty string" => [{ format: { without: /x/ } }, true],
       "format without:, a regexp that matches the empty string" => [{ format: { without: /\A\z/ } }, false],
       "format without:, a regexp that matches anything" => [{ format: { without: // } }, false],
-      "format with:, resolved per call" => [{ format: { with: ->(_record) { /x/ } } }, false],
       "format, the bare shorthand ActiveModel reads as with:" => [{ format: /\A\z/ }, true],
       "inclusion, a set containing nil" => [{ inclusion: [nil, 1] }, true],
       "inclusion, a Hash set keyed by nil" => [{ inclusion: { in: { nil => :allowed } } }, true],
@@ -506,6 +520,24 @@ RSpec.describe "Axn class-level schema reflection" do
       expect(config.optional?).to be(false)
       expect(Array(klass.input_schema[:required])).not_to include("v")
       expect(klass.input_schema_residues.map(&:summary)).to include(a_string_including("`validate:`"))
+    end
+
+    # The same disagreement for a set or pattern resolved per call: this call's Proc rejects the omitted value,
+    # but another's need not, so `optional?` reads it as nil-rejecting while the schema leaves the field optional
+    # and names the check.
+    {
+      "an accept set resolved per call" => { acceptance: { accept: -> { [nil] }, allow_nil: false } },
+      "a format with: pattern resolved per call" => { format: { with: ->(_record) { /x/ } } },
+    }.each do |label, opts|
+      it "leaves a field with #{label} optional in the schema, naming the check" do
+        klass = declare(presence: false, **opts)
+
+        expect(klass.call).not_to be_ok
+        config = klass.internal_field_configs.find { _1.field == :v }
+        expect(config.optional?).to be(false)
+        expect(Array(klass.input_schema[:required])).not_to include("v")
+        expect(klass.input_schema_residues).not_to be_empty
+      end
     end
 
     # `uniqueness:` has no nil axis to read, because it never reaches the validator set: ActiveModel ships no

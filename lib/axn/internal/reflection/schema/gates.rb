@@ -16,8 +16,8 @@ module Axn
           # requiredness and nullability turn on, owned by Validation::Base so a field config's own
           # `optional?` answers it identically.
           #
-          # An entry whose nil verdict reflection cannot know — a `validate:` callable, or a clusivity set it may
-          # not read — is left out of the question rather than counted as rejecting nil: counting it would publish
+          # An entry whose nil verdict reflection cannot know — a `validate:` callable, or a set or pattern resolved
+          # per call — is left out of the question rather than counted as rejecting nil: counting it would publish
           # a field as required (or non-null) that the runtime may accept omitted, which is the one direction the
           # schema may never err in. Such an entry is always named as a residue instead.
           def nil_accepted?(config) = Axn::Validation::Base.nil_accepted?(nil_judgeable_validations(config.validations))
@@ -27,12 +27,18 @@ module Axn
             validations.reject { |key, opt| nil_verdict_unknowable?(key, opt, shared) }
           end
 
+          # The validators whose nil verdict turns on an option resolved per call are exactly those whose admits-nil
+          # predicate can answer "unknown" (nil); every other validator's verdict does not depend on a resolved
+          # option (a `length:` records an error on nil whatever its bound, bar `maximum:`, which never does).
           def nil_verdict_unknowable?(key, opt, shared)
             return false unless opt
 
+            options = -> { effective_entry_options(opt, shared) }
             case key
             when :validate then true
-            when :inclusion, :exclusion then set_includes_nil?(effective_entry_options(opt, shared)).nil?
+            when :inclusion, :exclusion then set_includes_nil?(options.call).nil?
+            when :format then Axn::Validation::Base.format_admits_nil?(options.call).nil?
+            when :acceptance then Axn::Validation::Base.acceptance_admits_nil?(options.call).nil?
             else false
             end
           end

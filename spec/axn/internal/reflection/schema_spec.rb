@@ -3422,7 +3422,8 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
       expect(schema[:required]).to include("amount")
-      expect(schema[:properties][:amount][:type]).to eq("number") # inferred from numericality, not nulled
+      # Inferred from numericality — a Number or the numeric String it parses — and not nulled.
+      expect(schema[:properties][:amount][:anyOf]).to eq([{ type: "number" }, { type: "string" }])
     end
 
     it "does not require x when presence: false is disabled and nothing else rejects nil" do
@@ -10052,18 +10053,20 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     # path infers a type from the validators in exactly this case (`json_type_for`), so the fix is to call it
     # rather than to write a second inference beside it.
     describe "a validator-only bag, which names no class" do
+      # Inbound, a bare `numericality:` admits a Number or a numeric String, so the inferred node is that union.
       it "infers a numeric type and emits the bound" do
         action = build_axn { expects :f, type: Array, of: { numericality: { greater_than: 0 } } }
 
         expect(action.call(f: [1])).to be_ok
+        expect(action.call(f: ["1"])).to be_ok
         expect(action.call(f: [-1])).not_to be_ok
-        expect(action.input_schema.dig(:properties, :f, :items)).to include(type: "number", exclusiveMinimum: 0)
+        expect(action.input_schema.dig(:properties, :f, :items, :anyOf)).to eq([{ type: "number", exclusiveMinimum: 0 }, { type: "string" }])
       end
 
       it "narrows to integer under only_integer, as a field does" do
         prop = prop_for(:f) { expects :f, type: Array, of: { numericality: { only_integer: true } } }
 
-        expect(prop[:items]).to include(type: "integer")
+        expect(prop.dig(:items, :anyOf)).to eq([{ type: "integer" }, { type: "string", pattern: "^[+-]?\\d+$" }])
       end
 
       it "infers a type from an inclusion set too, matching the field path" do
@@ -10084,12 +10087,12 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       it "reaches a map axis too" do
         prop = prop_for(:m) { expects :m, type: Hash, of: { values: { numericality: { greater_than: 0 } } } }
 
-        expect(prop[:additionalProperties]).to include(type: "number", exclusiveMinimum: 0)
+        expect(prop.dig(:additionalProperties, :anyOf)).to eq([{ type: "number", exclusiveMinimum: 0 }, { type: "string" }])
       end
 
       # ActiveModel's `numericality:` accepts a numeric STRING unless `only_numeric: true` is given, so an
       # action may expose "1" successfully and serialize it as a JSON string. On OUTPUT an inferred numeric type
-      # therefore rejects the action's own output; on input it is merely stricter, which is licensed.
+      # therefore rejects the action's own output, and on input it rejects a call the runtime takes.
       #
       # The gate lives in `json_type_for`, so it covers the FIELD path too — where this was a pre-existing bug
       # that the positional inference above would otherwise have propagated.
@@ -10288,10 +10291,10 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           expect(action.output_schema[:properties][:n]).to include(type: "integer", exclusiveMinimum: 0)
         end
 
-        it "still infers on INPUT, where a narrowing is licensed" do
+        it "still infers on INPUT, keeping the numeric String branch the validator parses" do
           prop = prop_for(:f) { expects :f, type: Array, of: { numericality: { greater_than: 0 } } }
 
-          expect(prop[:items]).to include(type: "number", exclusiveMinimum: 0)
+          expect(prop.dig(:items, :anyOf)).to eq([{ type: "number", exclusiveMinimum: 0 }, { type: "string" }])
         end
 
         # A bare numeric `inclusion:` set infers NOTHING on output. The reading this used to assert — that
