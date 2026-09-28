@@ -316,6 +316,62 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
     expect(wrong).to be_empty, "these schemas reject what the runtime accepts:\n  #{wrong.join("\n  ")}"
   end
 
+  # `default:` is not a validator, so the walk above never declares one — and a default changes what reaches
+  # every check: an omitted value becomes the default, which a gated check may then reject only on some calls.
+  # Two defaults per cell: the type's blank (the value a presence check turns on), and one the plain cell
+  # accepts. An explicit nil is not probed: a default fills one too, and the schema states the field's declared
+  # nullability rather than widening for it (the stated exception; omitting the key is the reflected spelling).
+  def default_variants(tklass, plain)
+    blank = { String => "", Array => [], Hash => {} }[tklass]
+    accepted = probe_values.find do |value|
+      !value.nil? && plain.call(n: value).ok?
+    rescue StandardError
+      false
+    end
+    { "blank default" => blank, "accepted default" => accepted }.compact
+  end
+
+  it "never rejects inbound a value the runtime accepts when the field is defaulted" do
+    wrong = []
+    accepted = 0
+
+    each_cell do |tname, tklass, vname, vopts, tolname, tol|
+      closed_gates.each do |gname, gate|
+        next if gname != "ungated" && vopts.empty?
+
+        decl = gate.call({ type: tklass }.merge(vopts)).merge(tol)
+        plain = declare(:in, decl, nil)
+        next if plain.nil?
+
+        default_variants(tklass, plain).each do |dname, default|
+          klass = declare(:in, decl.merge(default:), nil)
+          next if klass.nil?
+
+          document = schemer(klass.input_schema)
+          (probe_values.compact + [omitted]).each do |value|
+            next if known_blank_tolerance_divergence?(tolname, value)
+
+            runtime_ok = begin
+              (omitted.equal?(value) ? klass.call : klass.call(n: value)).ok?
+            rescue StandardError
+              false
+            end
+            next unless runtime_ok
+
+            accepted += 1
+            next if document.valid?(omitted.equal?(value) ? {} : { "n" => value })
+
+            wrong << "#{tname} / #{vname} / #{tolname} / #{gname} / #{dname}: runtime accepts #{value.inspect}, " \
+                     "document rejects it, schema #{klass.input_schema[:properties][:n].inspect}"
+          end
+        end
+      end
+    end
+
+    expect(accepted).to be > 1000
+    expect(wrong).to be_empty, "these defaulted schemas reject what the runtime accepts:\n  #{wrong.join("\n  ")}"
+  end
+
   # The exact core, cell by cell: a declared type JSON Schema has a spelling for, carrying only checks the core
   # states — presence, a literal `inclusion:` set of that type, a literal numeric bound on a number, a literal
   # `length:` on a sized type. Here the document must agree with the runtime in BOTH directions and report nothing:

@@ -337,6 +337,31 @@ RSpec.describe "Axn class-level schema reflection" do
     expect(Array(klass.input_schema[:required])).not_to include("v")
   end
 
+  # A blank default reaches a presence check that is gated, so it is rejected only on the calls the gate opens,
+  # and the field stays omittable on the others.
+  it "leaves a blank-defaulted field optional when only a gated check rejects the default" do
+    klass = build_axn do
+      expects :enabled, type: :boolean, optional: true
+      expects :v, type: String, default: "", presence: { if: :enabled? }
+      define_method(:enabled?) { enabled }
+    end
+
+    expect(klass.call).to be_ok
+    expect(Array(klass.input_schema[:required])).not_to include("v")
+  end
+
+  # A nil-tolerant parent's default materializes `{}`, whose member is checked only when its gate opens. The
+  # subfield is what makes the parent's nullability the one decided where children are nested.
+  it "keeps a defaulted nil-tolerant parent nullable when its required member is gated" do
+    klass = build_axn do
+      expects(:payload, type: Hash, allow_nil: true, default: {}) { field :name, type: String, if: -> { false } }
+      expects :x, on: :payload, type: String, optional: true
+    end
+
+    expect(klass.call(payload: nil)).to be_ok
+    expect(klass.input_schema.dig(:properties, :payload, :type)).to eq(%w[object null])
+  end
+
   # A pattern resolved per call may match the empty string a nil is tested as, so its nil verdict is as
   # unknowable as a `validate:`'s, and it does not keep the field required.
   it "leaves a field optional when its only nil-rejecting check is a per-call format: pattern" do

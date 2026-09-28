@@ -926,8 +926,12 @@ module Axn
         end
 
         # Whether the parent's shape (`do…end`) block declares a member that isn't schema-optional.
+        # A member whose every nil-rejecting check is gated is not required with its gates closed, the verdict the
+        # shape's own `required` list is emitted from (`build_member_properties`).
         def required_shape_member?(config)
-          named_members(config.validations.dig(:shape, :members)).any? { |m, _name| !optional_for_schema?(m) }
+          named_members(config.validations.dig(:shape, :members)).any? do |m, _name|
+            !optional_for_schema?(m) && !requiredness_conditionally_relaxable?(m)
+          end
         end
 
         # Where a field its own signals do not make omittable lands: the exact clause when its gate can be
@@ -1221,16 +1225,20 @@ module Axn
         #     value set: a whitespace-only String default is blank but not empty, and passes.
         #
         # A Proc default is unknowable at declaration (usable_default? settles it before reaching here) and a
-        # non-applied subfield default supplies nothing to reject. Gates are deliberately not consulted, as
-        # everywhere else on the input side: a gated check is counted as if it ran.
+        # non-applied subfield default supplies nothing to reject. Both checks are read with their gates closed,
+        # as everything emitted is: a gated one rejects the default only on the calls its gate opens, which its
+        # own gating residue names, so it does not keep the field required. A declaration guard asking this
+        # only stands down more often for it, the direction a guard may always err in.
         def blank_default_rejected?(config)
           return false unless config.respond_to?(:default)
 
           value = config.default
           return false if value.nil? || value.is_a?(Proc)
-          return true if presence_blank?(value) && presence_rejects_blank?(config.validations)
 
-          empty_default?(value) && config.validations.key?(Axn::Internal::FieldConfig::NON_EMPTINESS_KEY)
+          validations = gate_closed_validations(config, config.validations)
+          return true if presence_blank?(value) && presence_rejects_blank?(validations)
+
+          empty_default?(value) && validations.key?(Axn::Internal::FieldConfig::NON_EMPTINESS_KEY)
         end
 
         # Whether an active `presence:` check here rejects every blank value: one is declared and it is not
