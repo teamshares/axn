@@ -30,9 +30,22 @@ module Axn
       # The outcome of authenticating one request. `principal` is who the request authenticated as
       # (nil on a rejection, always); `reason` names why a rejection happened (nil when ok), so a
       # missing credential and a wrong one are separable in logs and metrics.
+      #
+      # Both halves are enforced at construction (`new` and `with` alike), not just by the factories: a
+      # strategy can build a Verdict directly, and `normalize` passes a Verdict through as-is, so the
+      # invariant a serving gem reads has to hold for every instance rather than for the ones axn made.
       Verdict = Data.define(:ok, :reason, :principal) do
         def self.ok(principal = nil) = new(ok: true, reason: nil, principal:)
         def self.rejected(reason) = new(ok: false, reason:, principal: nil)
+
+        # `ok:` is the member's own name, which Data's keyword initializer requires.
+        def initialize(ok:, reason: nil, principal: nil) # rubocop:disable Naming/MethodParameterName
+          raise ArgumentError, "Verdict ok must be true or false" unless ok.equal?(true) || ok.equal?(false)
+          raise ArgumentError, "a rejected Verdict cannot carry a principal" if !ok && !principal.nil?
+          raise ArgumentError, "an ok Verdict cannot carry a reason" if ok && !reason.nil?
+
+          super
+        end
 
         def ok? = ok
       end
@@ -60,12 +73,20 @@ module Axn
       # equal to an empty credential and is a legal HMAC key, so it is an authentication bypass rather
       # than a mismatch. `false` would coerce to the guessable String "false". Names the value's TYPE
       # or emptiness only — never its bytes, since this can fire on every request.
+      #
+      # Asks the value nothing about itself: the type test is `Module#===` and emptiness is read off a
+      # native copy, so a String subclass overriding `empty?` (or an object overriding `is_a?`/`class`)
+      # can neither slip a weak key past the guard nor replace the error it raises. Returns that copy,
+      # frozen — a plain String holding the same bytes — so what the caller authenticates against is
+      # detached from the object it passed in and carries none of a subclass's overrides downstream.
       def require_secret!(declaration, value, label: "secret", error: ConfigurationError)
-        return value if value.is_a?(String) && !value.empty?
+        string = Internal::Identity.kind?(value, ::String)
+        secret = ::String.new(value).freeze if string
+        return secret if string && !secret.empty?
 
         raise error,
               "#{declaration} #{label} must be a non-empty String " \
-              "(got #{value.is_a?(String) ? 'an empty String' : value.class})"
+              "(got #{string ? 'an empty String' : Internal::RenderedClassName.of(value)})"
       end
 
       # Whether `value` is resolved per request (see `resolve`) rather than used as a literal. Only a

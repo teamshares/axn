@@ -26,7 +26,7 @@ module Axn
           raise ConfigurationError, "Bearer header must be a non-empty String" unless header.is_a?(String) && !header.strip.empty?
 
           @header = header
-          @keys = keys.to_h { |principal, value| [principal.to_s, _check_literals!(principal, value)] }.freeze
+          @keys = _principal_ids(keys).to_h { |id, (principal, value)| [id, _check_literals!(principal, value)] }.freeze
         end
 
         def principals = @keys.keys
@@ -78,13 +78,41 @@ module Axn
           raw.empty? ? nil : raw
         end
 
+        # Principal ids canonicalize to Strings, so two ids that stringify alike (`:svc` and `"svc"`)
+        # would silently collapse into one entry and drop a configured key — refused instead. Only a
+        # String or Symbol is an id: anything else would stringify to whatever its own `to_s` says.
+        def _principal_ids(keys)
+          keys.each_with_object({}) do |(principal, value), ids|
+            id = _principal_id(principal)
+            if ids.key?(id)
+              raise ConfigurationError,
+                    "Bearer principal ids must be unique: #{ids[id].first.inspect} and #{principal.inspect} both name principal #{id.inspect}"
+            end
+
+            ids[id] = [principal, value]
+          end
+        end
+
+        # Symbol#to_s cannot be overridden; a String is copied natively, so a subclass's own `to_s`/`empty?` never run.
+        def _principal_id(principal)
+          id = case principal
+               when ::Symbol then principal.to_s
+               when ::String then ::String.new(principal).freeze
+               end
+          return id if id && !id.empty?
+
+          raise ConfigurationError, "Bearer principal id must be a non-empty String or Symbol (got #{Internal::RenderedClassName.of(principal)})"
+        end
+
         # Literals are checked once, here, so a blank key fails the deploy rather than every request.
+        # Each is stored as the guard's detached copy, never the caller's object (nor the caller's
+        # Array), so mutating what the caller still holds cannot change which credential authenticates.
         def _check_literals!(principal, value)
           list = value.is_a?(Array) ? value : [value]
           raise ConfigurationError, "Bearer key for #{principal.to_s.inspect} must list at least one key" if list.empty?
 
-          list.each { |entry| Auth.require_secret!("Bearer key for #{principal.to_s.inspect}", entry) unless Auth.deferred?(entry) }
-          value.is_a?(Array) ? value.dup.freeze : value
+          checked = list.map { |entry| Auth.deferred?(entry) ? entry : Auth.require_secret!("Bearer key for #{principal.to_s.inspect}", entry) }
+          value.is_a?(Array) ? checked.freeze : checked.first
         end
 
         def _candidates(principal, value, request)
@@ -94,7 +122,7 @@ module Axn
           entries.flat_map { |entry| (resolved = Auth.resolve(entry, request)).is_a?(Array) ? resolved : [resolved] }.tap do |keys|
             raise ConfigurationError, "Bearer key for #{principal.inspect} resolved to no keys" if keys.empty?
 
-            keys.each { |key| Auth.require_secret!("Bearer key for #{principal.inspect}", key) }
+            keys.map! { |key| Auth.require_secret!("Bearer key for #{principal.inspect}", key) }
           end
         end
       end

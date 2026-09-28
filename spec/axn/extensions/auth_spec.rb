@@ -33,6 +33,35 @@ RSpec.describe Axn::Extensions::Auth do
         .to raise_error(described_class::ConfigurationError, /got FalseClass/)
     end
 
+    it "returns a frozen, native copy, detached from the caller's object" do
+      original = +"abc"
+      secret = described_class.require_secret!("Bearer", original)
+      original.replace("zzz")
+      expect(secret).to eq("abc")
+      expect(secret).to be_frozen
+      expect(secret.instance_of?(String)).to be(true)
+    end
+
+    # A guard downstream gems rely on to refuse weak keys cannot ask the value about itself.
+    it "reads emptiness and type natively, not through the value's own methods" do
+      lying_string = Class.new(String) { def empty? = false }.new("")
+      expect { described_class.require_secret!("Bearer", lying_string) }
+        .to raise_error(described_class::ConfigurationError, /got an empty String/)
+
+      impostor = Object.new
+      def impostor.is_a?(*) = true
+      def impostor.class = raise("replaced the error")
+      expect { described_class.require_secret!("Bearer", impostor) }
+        .to raise_error(described_class::ConfigurationError, /got Object\)/)
+    end
+
+    it "returns a String subclass's bytes as a plain String, so its overrides never run downstream" do
+      subclass = Class.new(String) { def to_s = "overridden" }
+      secret = described_class.require_secret!("Bearer", subclass.new("real"))
+      expect(secret.instance_of?(String)).to be(true)
+      expect(secret).to eq("real")
+    end
+
     it "raises the caller's error class when given" do
       custom = Class.new(StandardError)
       expect { described_class.require_secret!("x", "", error: custom) }.to raise_error(custom)
@@ -113,6 +142,26 @@ RSpec.describe Axn::Extensions::Auth do
   end
 
   describe "Verdict" do
+    it "cannot be constructed as a rejection carrying a principal" do
+      expect { described_class::Verdict.new(ok: false, reason: :denied, principal: "admin") }
+        .to raise_error(ArgumentError, /rejected Verdict cannot carry a principal/)
+      expect { described_class::Verdict.rejected(:denied).with(principal: "admin") }.to raise_error(ArgumentError)
+    end
+
+    it "cannot be constructed as an ok verdict carrying a reason" do
+      expect { described_class::Verdict.new(ok: true, reason: :denied, principal: nil) }
+        .to raise_error(ArgumentError, /ok Verdict cannot carry a reason/)
+    end
+
+    it "requires ok to be true or false, so ok? is a real predicate" do
+      expect { described_class::Verdict.new(ok: "yes", reason: nil, principal: nil) }
+        .to raise_error(ArgumentError, /ok must be true or false/)
+    end
+
+    it "defaults reason and principal to nil" do
+      expect(described_class::Verdict.new(ok: true)).to eq(described_class::Verdict.ok)
+    end
+
     it "exposes frozen, shared rejection constants" do
       expect(described_class::CREDENTIALS_MISSING).to be_frozen
       expect(described_class::CREDENTIALS_MISSING.reason).to eq(:credentials_missing)

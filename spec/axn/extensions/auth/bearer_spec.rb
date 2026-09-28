@@ -124,8 +124,33 @@ RSpec.describe Axn::Extensions::Auth::Bearer do
       expect { strategy.call(bearer("same")) }.to raise_error(auth::ConfigurationError, /"a", "b"/)
     end
 
+    it "refuses principal ids that collapse to the same String" do
+      expect { described_class.new(keys: { svc: "k1", "svc" => "k2" }) }
+        .to raise_error(auth::ConfigurationError, /:svc and "svc" both name principal "svc"/)
+    end
+
+    it "refuses a principal id that is not a non-empty String or Symbol" do
+      expect { described_class.new(keys: { 1 => "k" }) }.to raise_error(auth::ConfigurationError, /principal id.*Integer/)
+      expect { described_class.new(keys: { "" => "k" }) }.to raise_error(auth::ConfigurationError, /principal id/)
+    end
+
     it "refuses a blank header name" do
       expect { described_class.new(keys: { "svc" => "k" }, header: "") }.to raise_error(auth::ConfigurationError, /header/)
+    end
+  end
+
+  describe "literal keys" do
+    it "are detached from the caller's objects" do
+      scalar = +"k1"
+      element = +"k2"
+      list = [element]
+      strategy = described_class.new(keys: { "a" => scalar, "b" => list })
+      scalar.replace("attacker")
+      element.replace("attacker")
+      list << "attacker"
+      expect(strategy.call(bearer("attacker"))).to eq(auth::CREDENTIALS_MISMATCH)
+      expect(strategy.call(bearer("k1")).principal).to eq("a")
+      expect(strategy.call(bearer("k2")).principal).to eq("b")
     end
   end
 
