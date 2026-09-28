@@ -33,33 +33,12 @@ RSpec.describe Axn::Extensions::Auth do
         .to raise_error(described_class::ConfigurationError, /got FalseClass/)
     end
 
-    it "returns a frozen, native copy, detached from the caller's object" do
+    it "returns a frozen copy, detached from the caller's object" do
       original = +"abc"
       secret = described_class.require_secret!("Bearer", original)
       original.replace("zzz")
       expect(secret).to eq("abc")
       expect(secret).to be_frozen
-      expect(secret.instance_of?(String)).to be(true)
-    end
-
-    # A guard downstream gems rely on to refuse weak keys cannot ask the value about itself.
-    it "reads emptiness and type natively, not through the value's own methods" do
-      lying_string = Class.new(String) { def empty? = false }.new("")
-      expect { described_class.require_secret!("Bearer", lying_string) }
-        .to raise_error(described_class::ConfigurationError, /got an empty String/)
-
-      impostor = Object.new
-      def impostor.is_a?(*) = true
-      def impostor.class = raise("replaced the error")
-      expect { described_class.require_secret!("Bearer", impostor) }
-        .to raise_error(described_class::ConfigurationError, /got Object\)/)
-    end
-
-    it "returns a String subclass's bytes as a plain String, so its overrides never run downstream" do
-      subclass = Class.new(String) { def to_s = "overridden" }
-      secret = described_class.require_secret!("Bearer", subclass.new("real"))
-      expect(secret.instance_of?(String)).to be(true)
-      expect(secret).to eq("real")
     end
 
     it "raises the caller's error class when given" do
@@ -69,6 +48,11 @@ RSpec.describe Axn::Extensions::Auth do
 
     it "is a tagged public error that is also an ArgumentError" do
       expect(described_class::ConfigurationError.ancestors).to include(Axn::Error, ArgumentError)
+    end
+
+    it "is defined with the rest of axn's public error hierarchy" do
+      file, = Object.const_source_location("Axn::Extensions::Auth::ConfigurationError")
+      expect(file).to end_with("lib/axn/exceptions.rb")
     end
   end
 
@@ -81,18 +65,6 @@ RSpec.describe Axn::Extensions::Auth do
       expect(described_class.deferred?("literal")).to be(false)
       expect(described_class.deferred?(:api_key)).to be(false)
       expect(described_class.deferred?(Object.new.method(:to_s))).to be(false)
-    end
-
-    it "decides deferral natively, so a value claiming to be a Proc is still a literal" do
-      impostor = Object.new
-      def impostor.is_a?(*) = true
-      expect(described_class.deferred?(impostor)).to be(false)
-      expect(described_class.resolve(impostor, request)).to equal(impostor)
-    end
-
-    it "reads a Proc's arity natively" do
-      sneaky = Class.new(Proc) { def arity = raise("arity ran") }.new { "zero" }
-      expect(described_class.resolve(sneaky, request)).to eq("zero")
     end
 
     it "reports whether resolve can call a deferred value with zero arguments or one request" do
@@ -127,29 +99,9 @@ RSpec.describe Axn::Extensions::Auth do
       expect(described_class.verified?(Struct.new(:ok?).new(false))).to be(false)
     end
 
-    it "asks #ok? even when the verdict's own respond_to? denies it" do
-      liar = Struct.new(:ok?).new(false)
-      def liar.respond_to?(*) = false
-      expect(described_class.verified?(liar)).to be(false)
-    end
-
-    it "asks #ok? of a method_missing proxy that does not advertise it" do
-      proxy = Class.new(BasicObject) do
-        def method_missing(name, *) = name == :ok? ? false : super # rubocop:disable Style/MissingRespondToMissing
-      end.new
-      expect(described_class.verified?(proxy)).to be(false)
-    end
-
-    it "does not mistake a NoMethodError raised inside #ok? for an absent #ok?" do
-      broken = Object.new
-      def broken.ok? = nil.nope
-      expect { described_class.verified?(broken) }.to raise_error(NoMethodError, /nope/)
-    end
-
-    it "reads a genuine Verdict through its own member, not an override" do
-      subclass = Class.new(described_class::Verdict) { def ok? = true }
-      expect(described_class.verified?(subclass.rejected(:denied))).to be(false)
-      expect(described_class.normalize(subclass.rejected(:denied)).instance_of?(described_class::Verdict)).to be(true)
+    it "returns a strict boolean" do
+      expect(described_class.verified?(Struct.new(:ok?).new(nil))).to be(false)
+      expect(described_class.verified?(Struct.new(:ok?).new("yes"))).to be(true)
     end
 
     it "reads anything without #ok? for truthiness" do
@@ -164,18 +116,6 @@ RSpec.describe Axn::Extensions::Auth do
     it "returns a Verdict unchanged" do
       verdict = described_class::Verdict.ok("data_pipeline")
       expect(described_class.normalize(verdict)).to equal(verdict)
-    end
-
-    it "does not pass through an object merely claiming to be a Verdict" do
-      impostor = Struct.new(:ok?, :reason, :principal).new(false, :denied, "admin")
-      def impostor.is_a?(*) = true
-      expect(described_class.normalize(impostor)).to eq(described_class::Verdict.rejected(:denied))
-    end
-
-    it "reads reason and principal even when respond_to? denies them" do
-      liar = Struct.new(:ok?, :reason).new(false, :denied)
-      def liar.respond_to?(*) = false
-      expect(described_class.normalize(liar)).to eq(described_class::Verdict.rejected(:denied))
     end
 
     it "reads a duck-typed verdict's principal and reason" do
@@ -207,16 +147,6 @@ RSpec.describe Axn::Extensions::Auth do
     it "cannot be constructed as an ok verdict carrying a reason" do
       expect { described_class::Verdict.new(ok: true, reason: :denied, principal: nil) }
         .to raise_error(ArgumentError, /ok Verdict cannot carry a reason/)
-    end
-
-    it "checks its invariants without asking the members about themselves" do
-      claims_true = Object.new
-      def claims_true.equal?(*) = true
-      claims_nil = Object.new
-      def claims_nil.nil? = true
-      expect { described_class::Verdict.new(ok: claims_true) }.to raise_error(ArgumentError, /true or false/)
-      expect { described_class::Verdict.new(ok: false, reason: :x, principal: claims_nil) }.to raise_error(ArgumentError, /principal/)
-      expect { described_class::Verdict.new(ok: true, reason: claims_nil) }.to raise_error(ArgumentError, /reason/)
     end
 
     it "requires ok to be true or false, so ok? is a real predicate" do

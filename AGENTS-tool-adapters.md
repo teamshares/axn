@@ -236,7 +236,7 @@ them with `Axn::Extensions::Auth`. Don't hand-roll the pieces:
   and never carries a principal on a rejection. `Auth.verified?` asks `ok?` before truthiness, because a rejecting
   `Axn::Result` is truthy.
 - **Secrets.** Guard every one with `Auth.require_secret!`: a blank secret is a weak key, not a failure — and compare
-  against its RETURN value (a detached, frozen plain String), not the object you passed in. Compare
+  against its RETURN value (a frozen copy), not the object you passed in. Compare
   secrets with `Auth.secure_compare`, which is length-independent. Resolve deferred secrets per request with
   `Auth.resolve`, which handles Procs only; check a deferred value with `Auth.resolvable?` at construction.
 - **Misconfiguration.** It raises `Auth::ConfigurationError`. Never map it to a 401.

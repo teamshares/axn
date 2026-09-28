@@ -637,6 +637,17 @@ module Axn
         end
       end
     end
+
+    module Auth
+      # A strategy or secret that is misconfigured rather than a request that is unauthenticated.
+      # Raised, never returned as a rejection: a 401 meaning "we are misconfigured" is
+      # indistinguishable from one meaning "you are not who you claim", and would otherwise present
+      # as an unexplained outage. An ArgumentError, since it is a declaration mistake when it fires
+      # at boot.
+      class ConfigurationError < ArgumentError
+        include Axn::Error
+      end
+    end
   end
 
   module Async

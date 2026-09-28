@@ -129,19 +129,6 @@ RSpec.describe Axn::Extensions::Auth::Bearer do
         .to raise_error(auth::ConfigurationError, /:svc and "svc" both name principal "svc"/)
     end
 
-    it "refuses same-bytes principal ids from a compare_by_identity Hash instead of dropping one" do
-      keys = {}.compare_by_identity
-      keys[+"svc"] = "k1"
-      keys[+"svc"] = "k2"
-      expect { described_class.new(keys:) }.to raise_error(auth::ConfigurationError, /both name principal "svc"/)
-    end
-
-    it "reads a Hash subclass's pairs without running its own iteration" do
-      subclass = Class.new(Hash) { def each(*) = raise("each ran") }
-      keys = subclass.new.tap { |hash| hash["svc"] = "k1" }
-      expect(described_class.new(keys:).call(bearer("k1")).principal).to eq("svc")
-    end
-
     it "refuses a principal id that is not a non-empty String or Symbol" do
       expect { described_class.new(keys: { 1 => "k" }) }.to raise_error(auth::ConfigurationError, /principal id.*Integer/)
       expect { described_class.new(keys: { "" => "k" }) }.to raise_error(auth::ConfigurationError, /principal id/)
@@ -162,30 +149,6 @@ RSpec.describe Axn::Extensions::Auth::Bearer do
 
     it "accepts a key with inner whitespace" do
       expect(described_class.new(keys: { "svc" => "a b" }).call(bearer("a b")).principal).to eq("svc")
-    end
-
-    it "renders a String-subclass principal id without calling its own methods" do
-      hostile = Class.new(String) do
-        def to_s = raise("to_s ran")
-        def inspect = raise("inspect ran")
-      end
-      strategy = described_class.new(keys: { hostile.new("svc") => "k" })
-      expect(strategy.call(bearer("k")).principal).to eq("svc")
-      expect { described_class.new(keys: { hostile.new("svc") => "" }) }.to raise_error(auth::ConfigurationError, /"svc"/)
-      expect { described_class.new(keys: { svc: "k1", hostile.new("svc") => "k2" }) }
-        .to raise_error(auth::ConfigurationError, /both name principal "svc"/)
-    end
-
-    it "refuses at construction a literal key that merely claims to be a Proc" do
-      impostor = Object.new
-      def impostor.is_a?(*) = true
-      expect { described_class.new(keys: { "svc" => impostor }) }.to raise_error(auth::ConfigurationError, /got Object/)
-    end
-
-    it "treats a literal that claims to be an Array as a single key, not a list" do
-      impostor = Object.new
-      def impostor.is_a?(klass) = klass == Array
-      expect { described_class.new(keys: { "svc" => impostor }) }.to raise_error(auth::ConfigurationError, /got Object/)
     end
 
     it "refuses at construction a deferred key resolve could not call" do

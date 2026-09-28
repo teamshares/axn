@@ -21,19 +21,14 @@ module Axn
 
         attr_reader :header
 
-        HASH_PAIRS = ::Hash.instance_method(:to_a)
-        private_constant :HASH_PAIRS
-
         def initialize(keys:, header: AUTHORIZATION)
-          # Every pair, read natively: a bound Hash#to_a runs none of a subclass's own iteration, and
-          # (unlike copying into a fresh Hash) keeps both entries of a compare_by_identity Hash whose
-          # keys share bytes, so the canonical-id collision check below sees them rather than a
-          # silently collapsed one.
-          pairs = HASH_PAIRS.bind_call(keys) if Internal::Identity.kind?(keys, ::Hash)
-          raise ConfigurationError, "Bearer keys must be a non-empty Hash of principal id => key(s)" if pairs.nil? || pairs.empty?
+          raise ConfigurationError, "Bearer keys must be a non-empty Hash of principal id => key(s)" unless keys.is_a?(Hash) && keys.any?
+          raise ConfigurationError, "Bearer header must be a non-empty String" unless header.is_a?(String) && !header.strip.empty?
 
-          @header = _header_name(header)
-          @keys = _principal_ids(pairs).to_h { |id, (_label, value)| [id, _check_literals!(id, value)] }.freeze
+          # A frozen copy: the name decides both which header is read and whether it is parsed as
+          # `Bearer <key>`, so the caller mutating its String must change neither.
+          @header = header.dup.freeze
+          @keys = _principal_ids(keys).to_h { |id, value| [id, _check_literals!(id, value)] }.freeze
         end
 
         def principals = @keys.keys
@@ -74,15 +69,6 @@ module Axn
 
         def authorization? = header.casecmp?(AUTHORIZATION)
 
-        # Stored as a detached, frozen native copy: the name decides both which header is read and
-        # whether it is parsed as `Bearer <key>`, so the caller mutating its String must change neither.
-        def _header_name(header)
-          name = ::String.new(header).freeze if Internal::Identity.kind?(header, ::String)
-          return name if name && !name.strip.empty?
-
-          raise ConfigurationError, "Bearer header must be a non-empty String"
-        end
-
         def _presented_token(request)
           raw = request.header(header).to_s.strip
           if authorization?
@@ -94,46 +80,42 @@ module Axn
           raw.empty? ? nil : raw
         end
 
-        # Principal ids canonicalize to Strings, so two ids that stringify alike (`:svc` and `"svc"`)
-        # would silently collapse into one entry and drop a configured key — refused instead. Only a
-        # String or Symbol is an id: anything else would stringify to whatever its own `to_s` says.
-        # Messages render the canonical id (or the Symbol, which carries no overrides), never the
-        # caller's String, so reporting cannot run a subclass's `inspect`.
-        def _principal_ids(pairs)
-          pairs.each_with_object({}) do |(principal, value), ids|
+        # Principal ids canonicalize to frozen Strings, so two ids that stringify alike (`:svc` and
+        # `"svc"`) would silently collapse into one entry and drop a configured key — refused instead.
+        def _principal_ids(keys)
+          seen = {}
+          keys.to_h do |principal, value|
             id = _principal_id(principal)
-            label = Internal::Identity.kind?(principal, ::Symbol) ? principal.inspect : id.inspect
-            raise ConfigurationError, "Bearer principal ids must be unique: #{ids[id].first} and #{label} both name principal #{id.inspect}" if ids.key?(id)
+            if seen.key?(id)
+              raise ConfigurationError,
+                    "Bearer principal ids must be unique: #{seen[id].inspect} and #{principal.inspect} both name principal #{id.inspect}"
+            end
 
-            ids[id] = [label, value]
+            seen[id] = principal
+            [id, value]
           end
         end
 
-        # Symbol#to_s cannot be overridden; a String is copied natively, so a subclass's own `to_s`/`empty?` never run.
         def _principal_id(principal)
-          id = case principal
-               when ::Symbol then principal.to_s
-               when ::String then ::String.new(principal).freeze
-               end
-          return id if id && !id.empty?
+          return principal.to_s.dup.freeze if (principal.is_a?(String) || principal.is_a?(Symbol)) && !principal.empty?
 
-          raise ConfigurationError, "Bearer principal id must be a non-empty String or Symbol (got #{Internal::RenderedClassName.of(principal)})"
+          raise ConfigurationError, "Bearer principal id must be a non-empty String or Symbol (got #{principal.class})"
         end
 
         # Literals are checked once, here, so a blank key fails the deploy rather than every request.
-        # Each is stored as the guard's detached copy, never the caller's object (nor the caller's
-        # Array), so mutating what the caller still holds cannot change which credential authenticates.
+        # Each is stored as `require_secret!`'s frozen copy (inside a new frozen Array for a list), so
+        # mutating what the caller still holds cannot change which credential authenticates.
         def _check_literals!(id, value)
           list = _key_list(value)
           raise ConfigurationError, "Bearer key for #{id.inspect} must list at least one key" if list.empty?
 
           checked = list.map { |entry| Auth.deferred?(entry) ? _require_resolvable!(id, entry) : _require_key!(id, entry) }
-          Internal::Identity.kind?(value, ::Array) ? checked.freeze : checked.first
+          value.is_a?(Array) ? checked.freeze : checked.first
         end
 
-        # One key or a list of them, the list copied natively (`Module#===`, then `Array.new`), so a
-        # value claiming to be an Array is one key and an Array subclass's own iteration never runs.
-        def _key_list(value) = Internal::Identity.kind?(value, ::Array) ? ::Array.new(value) : [value]
+        # Not Kernel#Array: `Array(nil)` is `[]`, which would report a Proc returning an unset ENV var
+        # as "no keys" instead of naming the nil it actually returned.
+        def _key_list(value) = value.is_a?(Array) ? value : [value]
 
         def _require_resolvable!(id, value)
           return value if Auth.resolvable?(value)
@@ -154,13 +136,10 @@ module Axn
         end
 
         def _candidates(id, value, request)
-          # Not Kernel#Array on the resolved value: `Array(nil)` is `[]`, which would report a Proc
-          # returning an unset ENV var as "no keys" instead of naming the nil it actually returned.
-          _key_list(value).flat_map { |entry| _key_list(Auth.resolve(entry, request)) }.tap do |keys|
-            raise ConfigurationError, "Bearer key for #{id.inspect} resolved to no keys" if keys.empty?
+          keys = _key_list(value).flat_map { |entry| _key_list(Auth.resolve(entry, request)) }
+          raise ConfigurationError, "Bearer key for #{id.inspect} resolved to no keys" if keys.empty?
 
-            keys.map! { |key| _require_key!(id, key) }
-          end
+          keys.map { |key| _require_key!(id, key) }
         end
       end
     end
