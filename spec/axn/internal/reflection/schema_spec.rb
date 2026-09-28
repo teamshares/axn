@@ -1188,18 +1188,35 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(payload[:properties][:company_id][:type]).to eq("string") # no "null"
     end
 
-    it "over-requires the parent of a nested model: subfield with a sibling defaulted id (accepted divergence)" do
-      # Runtime synthesizes `payload` and the sibling id default supplies the token, so omitting `payload`
-      # succeeds — but reconciling a nested self-referential id/model contract isn't attempted; the parent
-      # reflects as required (the safe, stricter-than-runtime direction). Documented in docs/reference/class.md.
+    # The sibling id's default supplies the lookup token on the omitted call, so a model subfield strands
+    # nothing: an optional parent may be omitted, and a parent that is itself required stays required.
+    it "leaves an optional parent of a nested model: subfield with a sibling defaulted id omittable" do
+      stub_const("SiblingCo", Struct.new(:id) { def self.find(id) = id.nil? ? nil : new(id) })
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash, optional: true
+        expects :company_id, on: :payload, default: 1
+        expects :company, on: :payload, model: { klass: SiblingCo, finder: :find }
+        def call = nil
+      end
+      schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
+
+      expect(klass.call).to be_ok
+      expect(schema[:required].to_a).not_to include("payload")
+    end
+
+    it "keeps a required parent of a nested model: subfield with a sibling defaulted id required" do
+      stub_const("SiblingCo", Struct.new(:id) { def self.find(id) = id.nil? ? nil : new(id) })
       klass = Class.new do
         include Axn
         expects :payload, type: Hash
         expects :company_id, on: :payload, default: 1
-        expects :company, on: :payload, model: { klass: Struct.new(:id), finder: :find }
+        expects :company, on: :payload, model: { klass: SiblingCo, finder: :find }
+        def call = nil
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
+      expect(klass.call).not_to be_ok
       expect(schema[:required]).to include("payload")
     end
 

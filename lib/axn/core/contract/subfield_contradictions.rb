@@ -368,7 +368,7 @@ module Axn
               # Skip ANY nil-accepted config at a sibling-id-rescued node, not only the model route: a
               # merged nil-tolerant non-model route (and a required grandchild the resolved record answers)
               # is exercisable via the same rescue the annotation credit grants — one shared predicate.
-              next if Axn::Internal::Reflection::Schema.sibling_id_rescued?(parent, key, node)
+              next if Axn::Internal::Reflection::Schema.sibling_id_rescued?(parent.children, key, node)
 
               # Name the declaration by the field the user wrote (config.field) — symmetric with the
               # top-level loop above; the `on:` parent is implied and the stranded descendant is named.

@@ -768,7 +768,7 @@ module Axn
         # Post-order: a node's annotation only depends on its (already-annotated) children.
         def annotate_node!(node, ann, satisfiability: false)
           node.children.each_value { |child| annotate_node!(child, ann, satisfiability:) }
-          credit_sibling_id_defaults!(node, ann) if satisfiability
+          credit_sibling_id_defaults!(node, ann)
 
           # ANCESTOR-FORCING is derived from the RELAXABLE-filtered subset of the node's configs: a route
           # whose requiredness a conditional gate can relax at runtime can't oblige an omitted/nil
@@ -815,18 +815,16 @@ module Axn
           ann[node] = NodeAnnotation.new(required:, nullable:)
         end
 
-        # Satisfiability-only post-adjustment (runs before this node's own requiredness is computed, so the
+        # A post-adjustment in both modes (it runs before this node's own requiredness is computed, so the
         # credit propagates up every ancestor): a model-routed child that a sibling `<key>_id` subfield can
         # rescue is re-annotated non-required. The sibling's value-level default supplies the lookup token at
-        # read time (see ContractForSubfields.resolve_model_via_id), so omitting the record still
-        # resolves it and the record answers the subtree; the record's attributes are unknowable at
-        # declaration, so crediting the rescue is the satisfiability doctrine. STRICT (schema) mode is
-        # untouched — it keeps its documented stricter-than-runtime divergence for self-referential id/model
-        # subfield pairs (apply_model_id_requiredness!'s KNOWN LIMITATION).
+        # read time (see ContractForSubfields.resolve_model_via_id), so omitting the record still resolves it,
+        # and the schema requiring an ancestor the runtime lets be omitted would be stricter than the runtime.
+        # What the record then answers is read off it rather than off the wire, so no wire obligation is lost.
         def credit_sibling_id_defaults!(node, ann)
           node.children.each do |key, child|
             next if child.implicit? || !ann[child].required
-            next unless sibling_id_rescued?(node, key, child)
+            next unless sibling_id_rescued?(node.children, key, child)
 
             ann[child] = NodeAnnotation.new(required: false, nullable: ann[child].nullable)
           end
@@ -844,14 +842,14 @@ module Axn
         #   * a sibling `<key>_id` route that this model's lookup would read the token from
         #     (FieldConfig.id_token_routes) carries a default usable as one (usable_id_token_default?
         #     rejects a blank literal — the model resolver blank-guards the id).
-        # `parent` is the node whose children include both `node` (keyed by `key`) and the id sibling.
-        def sibling_id_rescued?(parent, key, node)
+        # `siblings` is the children map holding both `node` (keyed by `key`) and the id sibling.
+        def sibling_id_rescued?(siblings, key, node)
           return false unless node.configs.any? { |c| c.validations[:model] }
 
           non_model = node.configs.reject { |c| c.validations[:model] }
           return false unless non_model.all? { |c| usable_default?(c, subfield: true) || nil_accepted?(c) }
 
-          sibling = parent.children[Internal::FieldConfig.model_id_key(key)]
+          sibling = siblings[Internal::FieldConfig.model_id_key(key)]
           return false if sibling.nil?
 
           # Credited only through the route the LOOKUP will actually read the token from, asked per model
@@ -1573,9 +1571,9 @@ module Axn
             prop[:properties][id_field] ||= subprop
           end
           return if node_optional?(node, ann, model_configs)
-          # An explicit sibling id with a usable default supplies the lookup token on the omitted call, the rescue
-          # the top-level pass (`apply_model_id_requiredness!`) applies too.
-          return if explicit_id && usable_default?(explicit_id, subfield: true)
+          # A sibling id whose default supplies the lookup token on the omitted call rescues it, by the one
+          # predicate the annotation credit and the declaration guard share.
+          return if sibling_id_rescued?(children, key, node)
 
           if node_optional?(node, ann, model_configs.reject { |c| requiredness_conditionally_relaxable?(c) })
             prop[:properties][id_field] = record_residue(prop[:properties][id_field], GATED_REQUIRED_RESIDUE, kind: :conditional) if prop[:properties][id_field]
