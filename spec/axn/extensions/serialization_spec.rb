@@ -803,6 +803,27 @@ RSpec.describe Axn::Extensions::Serialization do
           .to raise_error(Axn::Extensions::Serialization::UnserializableValue)
       end
 
+      # Codex review, PR #296, round 8: the SHAPED-union analog of round 6's bare-union fix.
+      # `shape_overlay_applies?` (hence whether the overlay's guard even applies at all) depends on EVERY
+      # branch's CURRENT opacity, same as the bare union's stand-down check -- but the overlay branch only
+      # ever watched already-opaque siblings (`watch_opaque_classes!`), so a branch that was still intact
+      # when the guard was built, and later gains its own as_json/to_h, drops the overlay on a freshly
+      # rebuilt schema (collapsing the whole `anyOf` per the SAME union-collapse logic) while the STALE
+      # cached guard keeps refusing an unrelated sibling's subclass against a schema that no longer
+      # constrains it at all.
+      it "rebuilds a SHAPED union's memoized guard when a branch becomes opaque after the first render, " \
+         "standing the overlay down rather than refusing an unrelated sibling's subclass" do
+        t = Data.define(:name, :internal_notes)
+        klass = shaped_action(type: Array, of: [s, t])
+        described_class.render(klass.call(value: [s.new(name: "a", internal_notes: "x")])) # warms the memo, both branches intact
+
+        s.define_method(:as_json) { { name: } } # collapses the whole overlay/anyOf to unconstrained
+        t_subclass = Class.new(t) { def as_json(*) = { name: "redacted" } }
+
+        expect(described_class.render(klass.call(value: [t_subclass.new(name: "b", internal_notes: "y")])))
+          .to eq("d" => [{ "name" => "redacted" }])
+      end
+
       it "does not raise for a BARE union (no shape block) where a sibling branch's own schema is " \
          "untyped ({}) — with no overlay, the position's ENTIRE schema is the anyOf, and an anyOf with an " \
          "unconstrained branch matches anything, so refusing would raise against a schema that promised " \

@@ -159,7 +159,20 @@ module Axn
             # `{}` and never itself needs a guard) -- silently dropping a Struct here even though its opacity,
             # not its class, is what this position's branch choice depended on (Codex review, PR #296, round
             # 5; the round-4 fix covered a guard losing its classes, not a bare/overlay branch choice flipping).
-            watch_opaque_classes!(Axn::Internal::ShapeGraph.type_tokens(bag[:klass]), watched) if shape
+            #
+            # More than one token additionally needs BIDIRECTIONAL watching (Codex review, PR #296, round 8):
+            # `shape_overlay_applies?`'s `klasses.all? { member_keyed_object_type? }` requires EVERY branch
+            # to stay member-keyed for the overlay to keep applying, so a currently-intact sibling GAINING a
+            # projection later drops the overlay on a freshly rebuilt schema (collapsing the whole union, the
+            # SAME stand-down `contents_klass_render_classes` already accounts for on the bare side) -- a
+            # one-directional watch would miss exactly that transition, same as round 6's bare-union fix.
+            # Unlike the bare rule, a STRUCT sibling's opacity also decides this (no Data-only narrowing:
+            # `member_keyed_object_type?` never restricts itself to Data the way `contents_object_class?`
+            # does), so this passes every token, not a Data-filtered subset.
+            if shape
+              tokens = Axn::Internal::ShapeGraph.type_tokens(bag[:klass])
+              tokens.size > 1 ? watch_union_classes!(tokens, watched) : watch_opaque_classes!(tokens, watched)
+            end
             overlay = shape && shape_overlay_applies?(bag, for_output: true)
 
             classes =
@@ -250,7 +263,11 @@ module Axn
           # one-directional (opaque-only) watch would miss for whichever siblings were still intact at build
           # time.
           def watch_union_classes!(tokens, watched)
-            tokens.each { |k| watched << [k, !member_keyed_object_type?(k)] }
+            tokens.each do |k|
+              next unless strict_descendant?(k, ::Data) || strict_descendant?(k, ::Struct)
+
+              watched << [k, !member_keyed_object_type?(k)]
+            end
           end
 
           # Every named member of a shape, keyed by wire key — INCLUDING a member whose own guard is nil, so
