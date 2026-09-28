@@ -151,17 +151,20 @@ RSpec.describe Axn::Extensions::Serialization do
       # of its own — routing through `to_h` outside Rails, or through Rails/ActiveSupport's own `to_h.as_json`
       # inside it. But `Data`/`Struct` getting their OWN `as_json` isn't actually exclusive to "a Rails app":
       # `require "globalid"` (elsewhere in this process — spec/axn/internal/exception_context_spec.rb) pulls
-      # in ActiveSupport's real `active_support/core_ext/object/json`, which reopens `Data`/`Struct` DIRECTLY
-      # (`Data.instance_method(:as_json).owner == Data`, not the generic `Object` the file-level `opaque_object`
-      # comment describes) — so whether this suite happens to be contaminated depends on example run order,
-      # not on "Rails" as such. `FRAMEWORK_PROJECTION_OWNERS` already treats that as a non-displacing,
-      # framework-owned `as_json` (Data IS in the list), so ownership verdicts are unaffected either way —
-      # but `Values.projection_for`'s ROUTE (`as_json` vs `to_h`) is not, and a couple of examples exist
-      # specifically to pin ONE of those two routes. This clears `Data#as_json`/`Struct#as_json` for the
-      # block's duration, if ActiveSupport put one there, and restores it afterward — deterministic either
-      # way, rather than order-dependent on which OTHER spec file in this process ran first.
+      # in ActiveSupport's real `active_support/core_ext/object/json`, which reopens `Data`/`Struct`, AND
+      # `Object`, DIRECTLY (`Data.instance_method(:as_json).owner == Data`, a REAL method, not merely the
+      # generic `Object` one the file-level `opaque_object` comment describes) — so whether this suite
+      # happens to be contaminated depends on example run order, not on "Rails" as such. `FRAMEWORK_
+      # PROJECTION_OWNERS` already treats any of these as a non-displacing, framework-owned `as_json` (all
+      # three are in the list), so ownership verdicts are unaffected either way — but `Values.projection_for`'s
+      # ROUTE (`as_json` vs `to_h`) is not, and a couple of examples exist specifically to pin ONE of those
+      # two routes; `Object`'s own REAL `as_json`, if present, wins over method_missing/respond_to_missing?
+      # for EVERY value regardless of what `Data`/`Struct` do, so a test pinning a method_missing-served
+      # `as_json` needs it gone too. This clears whichever of the three ActiveSupport put its own `as_json`
+      # on for the block's duration, and restores each afterward — deterministic either way, rather than
+      # order-dependent on which OTHER spec file in this process ran first.
       def without_activesupport_json_core_ext
-        removed = [Data, Struct].select { |klass| klass.method_defined?(:as_json) }
+        removed = [Data, Struct, Object].select { |klass| klass.method_defined?(:as_json) }
         originals = removed.to_h { |klass| [klass, klass.instance_method(:as_json)] }
         removed.each { |klass| klass.send(:remove_method, :as_json) }
         yield
@@ -491,6 +494,11 @@ RSpec.describe Axn::Extensions::Serialization do
       # nothing to displace -- but `projection_for` deliberately honors `respond_to?` as "the value's own
       # answer to give" (a supported idiom a method_missing-backed proxy depends on, per `owner_of`'s own
       # comment above) and dispatches through it regardless of what the table shows.
+      # Wrapped in `without_activesupport_json_core_ext`: if ActiveSupport's core_ext already gave `Data` a
+      # REAL `as_json` (`to_h.as_json`), that real method wins over method_missing for every instance --
+      # Ruby only falls through to method_missing when no real method exists anywhere in the ancestry -- so
+      # this scenario is unreachable, not merely differently-routed, whenever that contamination happens to
+      # have landed first in this process (order-dependent, per the file-level comment on `public_s` above).
       it "raises for a subclass whose own as_json is served entirely through method_missing/" \
          "respond_to_missing? -- projection_for honors that same supported proxy idiom, so the guard must " \
          "notice it too" do
@@ -505,9 +513,11 @@ RSpec.describe Axn::Extensions::Serialization do
           end
         end
 
-        expect do
-          described_class.render(klass.call(value: method_missing_subclass.new(name: "a", internal_notes: "secret")))
-        end.to raise_error(Axn::Extensions::Serialization::UnserializableValue)
+        without_activesupport_json_core_ext do
+          expect do
+            described_class.render(klass.call(value: method_missing_subclass.new(name: "a", internal_notes: "secret")))
+          end.to raise_error(Axn::Extensions::Serialization::UnserializableValue)
+        end
       end
 
       it "does not raise for an ordinary value with no as_json/to_h override and no method_missing at all " \
