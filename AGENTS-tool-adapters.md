@@ -226,6 +226,27 @@ for the duration of the action's own body; don't hold it past the call.
 
 Source: `lib/axn/extensions/tracing.rb`, `docs/reference/configuration.md#annotating-the-span-from-your-own-code`.
 
+## Request authentication
+
+A gem that accepts requests from outside the process (an HTTP tool endpoint, an inbound webhook) authenticates
+them with `Axn::Extensions::Auth`. Don't hand-roll the pieces:
+
+- **Strategies.** A strategy is `#call(request) → verdict`, where a request is anything answering `#header(name)`.
+  Core is Rack-free. Normalize the answer with `Auth.normalize`, which returns a `Verdict` with `ok`/`reason`/`principal`
+  and never carries a principal on a rejection. `Auth.verified?` asks `ok?` before truthiness, because a rejecting
+  `Axn::Result` is truthy.
+- **Secrets.** Guard every one with `Auth.require_secret!`: a blank secret is a weak key, not a failure — and compare
+  against its RETURN value (a frozen copy), not the object you passed in. Compare
+  secrets with `Auth.secure_compare`, which is length-independent. Resolve deferred secrets per request with
+  `Auth.resolve`, which handles Procs only; check a deferred value with `Auth.resolvable?` at construction.
+- **Misconfiguration.** It raises `Auth::ConfigurationError`. Never map it to a 401.
+- **Built-in strategy.** `Auth::Bearer` does static API keys with rotation. It exposes `#principals`,
+  `#unauthorized_headers`, `#scheme` and `#header` as neutral metadata that your gem maps onto its own vocabulary.
+- **Observability.** Run authentication as an Axn so rejections get the `axn.call` event, span and log.
+  `annotate_span` is a no-op outside a running Axn.
+
+Source: `lib/axn/extensions/auth.rb`, `lib/axn/extensions/auth/bearer.rb`, `docs/recipes/authenticating-inbound-requests.md`.
+
 ## ambient_context
 
 Server/session data (`current_user`, `company`) an author declares via `expects :user_id, on: :ambient_context`.
@@ -286,7 +307,8 @@ Source: `lib/axn/core/ambient_context.rb`, `lib/axn/tools/invoker.rb`.
 
 Docs — <https://teamshares.github.io/axn/>: authoring a tool-adapter gem
 (`/recipes/authoring-tool-adapters`), tool invoker (`/reference/tool-invoker`), gem configuration
-(`/recipes/gem-configuration`), declaring an entry point (`/recipes/declaring-entry-points`), factory
+(`/recipes/gem-configuration`), declaring an entry point (`/recipes/declaring-entry-points`), authenticating inbound requests
+(`/recipes/authenticating-inbound-requests`), factory
 (`/reference/factory`), class DSL (`/reference/class`), result (`/reference/axn-result`).
 Action-authoring: `AGENTS-consuming.md` (this gem).
 

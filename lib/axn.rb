@@ -27,6 +27,7 @@ require "axn/extensions/config"
 require "axn/extensions/serialization"
 require "axn/extensions/tracing"
 require "axn/extensions/invoked_via"
+require "axn/extensions/auth"
 
 # The core implementation
 require "axn/core"
