@@ -160,6 +160,11 @@ RSpec.describe Axn::Extensions::Auth::Bearer do
     it "refuses a blank header name" do
       expect { described_class.new(keys: { "svc" => "k" }, header: "") }.to raise_error(auth::ConfigurationError, /header/)
     end
+
+    it "refuses a header name with surrounding whitespace, which no request header would match" do
+      expect { described_class.new(keys: { "svc" => "k" }, header: "X-API-Key ") }
+        .to raise_error(auth::ConfigurationError, /header.*leading or trailing whitespace/)
+    end
   end
 
   describe "literal keys" do

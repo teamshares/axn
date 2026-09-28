@@ -24,6 +24,8 @@ module Axn
         def initialize(keys:, header: AUTHORIZATION)
           raise ConfigurationError, "Bearer keys must be a non-empty Hash of principal id => key(s)" unless keys.is_a?(Hash) && keys.any?
           raise ConfigurationError, "Bearer header must be a non-empty String" unless header.is_a?(String) && !header.strip.empty?
+          # A padded name (a config value's stray space) would match no request header: every request a 401.
+          raise ConfigurationError, "Bearer header #{header.inspect} has leading or trailing whitespace" unless header.strip == header
 
           # A frozen copy: the name decides both which header is read and whether it is parsed as
           # `Bearer <key>`, so the caller mutating its String must change neither.
