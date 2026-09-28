@@ -641,6 +641,44 @@ RSpec.describe "Axn class-level schema reflection" do
       expect(klass.input_schema[:properties][:payload]).not_to have_key(:type)
     end
 
+    # An object wire value is the probe here: `properties` and `required` say nothing about a String, so only an
+    # object the Proc replaces shows whether the children's checks were stated on the wire value.
+    it "states none of a preprocessed parent's descendants on the wire value, and names them" do
+      klass = build_axn do
+        expects :payload, type: Hash, preprocess: ->(_) { { a: "ok" } }
+        expects :a, on: :payload, type: String
+      end
+
+      expect(klass.call(payload: {})).to be_ok
+      prop = klass.input_schema[:properties][:payload]
+      expect(prop.keys).not_to include(:properties, :required)
+      expect(prop[:description]).to include("transformed before these are checked", '"required":["a"]')
+    end
+
+    it "states none of a preprocessed explicit child's descendants on the wire value" do
+      klass = build_axn do
+        expects :payload, type: Hash
+        expects :inner, on: :payload, type: Hash, preprocess: ->(_) { { c: "z" } }
+        expects :c, on: :inner, type: String
+      end
+
+      expect(klass.call(payload: { inner: {} })).to be_ok
+      expect(klass.input_schema.dig(:properties, :payload, :properties, :inner).keys).not_to include(:properties, :required)
+    end
+
+    it "states none of a gated preprocessed field's checks in the clause its gate opens" do
+      klass = build_axn do
+        expects :flag, type: :boolean, optional: true
+        expects :v, type: Integer, preprocess: ->(_) { 5 }, if: :flag
+        define_method(:flag?) { flag }
+      end
+
+      expect(klass.call(flag: true, v: "x")).to be_ok
+      clause = klass.input_schema[:allOf].sole
+      expect(clause.dig(:then, :properties)).to be_nil
+      expect(clause.dig(:then, :required)).to eq(["v"])
+    end
+
     # Coercion accepts a parseable String as a courtesy; the declared type still describes the contract.
     it "keeps a coerce: field's declared type" do
       klass = build_axn { expects :n, type: { klass: Integer, coerce: true } }

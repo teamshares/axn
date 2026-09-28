@@ -23,6 +23,7 @@
   * **A class JSON has no type for** (`type: Object`, `type: Comparable`, `type: Money`) emits no `type`, where it used to emit `"string"` inbound. A required one still rejects blanks, its other checks are stated per JSON type, and the class is named in the description.
   * **`numericality:` on a union with a String branch** (`type: [String, Integer]`) keeps the String branch, since a numeric String passes at runtime.
   * **A blank-tolerant `length:`** (one that stands aside for a blank nothing else rejects) emits no floor, since "blank, or at least N" has no keyword. On a String it emits no ceiling either, because a String's blank is whitespace of any length; on a container the ceiling stays exact.
+  * **A `preprocess:` field** states none of its checks on the wire value, and neither do the subfields beneath it, because every one of them judges the Proc's output. They are named instead. Its requiredness and nullability stay as declared, so a Proc that turns a missing value into an accepted one is not reflected; declare a `default:` for that.
   * **Array element and map key/value positions** (`of:`) name what they leave out, like a field does.
   * **Named in the description:** a `format:` with no faithful ECMA spelling, `format: { without: }`, `exclusion:`, `acceptance:`, `confirmation:`, a custom `validate:`, `numericality:`/`comparison:` options with no bound (`other_than:`, `odd:`, `even:`), a non-literal `inclusion:` set, a bare `numericality:` on a node admitting non-numbers, and `absence:` on a String.
 

@@ -137,7 +137,8 @@ out of `Axn::Internal`. Adding a new error class, or deciding whether it should 
   `required`, nullability, nesting, literal `enum`, literal numeric/length bounds, the `allow_empty:` floor,
   `model:` id typing — agrees with the runtime in BOTH directions; a residue there is a bug (stated exceptions:
   the `model:` id's narrower type, and the blank axis — a blank-tolerant position's skipped blank (PRO-3244) and
-  a String `presence:`'s whitespace (PRO-3551)). Tier 2 — `format:`, exclusion sets, every `if:`/`unless:`-gated
+  a String `presence:`'s whitespace (PRO-3551); and a `preprocess:` Proc that turns an absent or `nil` value into an
+  accepted one, since a transformed field keeps its declared requiredness and nullability). Tier 2 — `format:`, exclusion sets, every `if:`/`unless:`-gated
   entry, transformed values, merge corners, checks with no keyword for some admitted type — may say LESS than
   the runtime, never more: emit it only where the keyword is exactly what the runtime checks, otherwise leave it
   out and record a `Residue` (`record_residue`), which reaches the property's `description` and

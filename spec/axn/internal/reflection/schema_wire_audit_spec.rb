@@ -590,6 +590,14 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
         expects :inner, on: :payload, type: { klass: Integer, coerce: true }, comparison: { equal_to: 5 }
       },
       "preprocessing node" => proc { expects :inner, on: :payload, type: String, preprocess: ->(v) { v } },
+      # An identity Proc leaves the wire value and the checked value the same, so it cannot show a check stated
+      # on the wrong one. A Proc that REPLACES the value can: the runtime then accepts every wire form, so any
+      # keyword the node or its children state on the wire value rejects a call the runtime takes. It passes nil
+      # through: a transformed field keeps its declared requiredness and nullability, the stated exception.
+      "repairing node with a child" => proc {
+        expects :inner, on: :payload, type: Hash, preprocess: ->(v) { v.nil? ? v : { c: "z" } }
+        expects :c, on: :inner, type: String
+      },
       # PRO-3441. The mirror of the four member-side rows above, so a value-level collision actually
       # arises: two `inclusion:` sets (the exact PRO-3405 shape), two SAME-keyword size bounds (so
       # `minProperties`/`maxProperties` COLLIDE rather than merely appear on one side), and two `of:` axes
@@ -634,13 +642,14 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
   # `member`/`node` are each optional (PRO-3441): the collision walk below also needs the SIDE-ALONE
   # classes — the same node config or the same shape member, declared with nothing to collide against — so
   # a merged document can be compared to what either declaration means on its own.
-  def declare_nested(member, node)
+  def declare_nested(member, node, preprocess: nil)
+    payload_opts = preprocess ? { type: Hash, preprocess: } : { type: Hash }
     Class.new do
       include Axn
       if member
-        expects :payload, type: Hash, &member
+        expects :payload, **payload_opts, &member
       else
-        expects :payload, type: Hash
+        expects :payload, **payload_opts
       end
       class_eval(&node) if node
       def call = nil
@@ -746,6 +755,52 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
 
     expect(accepted).to be > 100
     expect(wrong).to be_empty, "these nested schemas reject what the runtime accepts:\n  #{wrong.join("\n  ")}"
+  end
+
+  # The same direction with the payload itself transformed: a Proc replacing every non-nil wire value with one the
+  # contract accepts makes the runtime accept every payload, so the document must too — whatever the member's
+  # shape and the nodes below state, all of it reads the Proc's output. The walk above cannot see this: with no
+  # transform on the payload, the wire value is the checked one.
+  it "never rejects inbound a nested value the runtime accepts once the payload is transformed" do
+    accepted = 0
+    wrong = []
+
+    nested_members.each do |mname, member|
+      nested_nodes.each do |nname, node|
+        plain = declare_nested(member, node)
+        next if plain.nil?
+
+        repair = nested_payloads.find do |payload|
+          plain.call(payload:).ok?
+        rescue StandardError
+          false
+        end
+        next if repair.nil?
+
+        klass = declare_nested(member, node, preprocess: ->(v) { v.nil? ? v : repair })
+        next if klass.nil?
+        next if unrepresentable_deep_drop?(klass)
+
+        document = schemer(klass.input_schema)
+        nested_payloads.each do |payload|
+          runtime_ok = begin
+            klass.call(payload:).ok?
+          rescue StandardError
+            false
+          end
+          next unless runtime_ok
+
+          accepted += 1
+          next if document.valid?(JSON.parse(JSON.generate("payload" => payload)))
+
+          wrong << "#{mname} / #{nname}: runtime accepts #{payload.inspect}, document rejects it, " \
+                   "schema #{klass.input_schema[:properties][:payload].inspect}"
+        end
+      end
+    end
+
+    expect(accepted).to be > 100
+    expect(wrong).to be_empty, "these transformed schemas reject what the runtime accepts:\n  #{wrong.join("\n  ")}"
   end
 
   # The satisfiability corollary over the NESTED walk. The flat example above asked it of one field, and

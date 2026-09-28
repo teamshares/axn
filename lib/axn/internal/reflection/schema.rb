@@ -574,8 +574,9 @@ module Axn
                 properties[id_field] ||= id_prop
               end
             else
-              prop = emitted_input_property(build_property(config), config)
+              prop = build_property(config)
               apply_nested_subfields!(prop, node, ann)
+              prop = emitted_input_property(prop, config)
 
               properties[config.field] = prop.compact
               unless field_optional?(config, node.children, ann)
@@ -949,7 +950,8 @@ module Axn
         # own per-entry gates still close, and are still reported). The field's own property keeps only what
         # holds on every call, and its residues narrow to what the clause still cannot say.
         def state_gate_open_contract!(clause, prop, config)
-          open = build_property(config.with(validations: config.validations.except(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)))
+          open_config = config.with(validations: config.validations.except(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS))
+          open = emitted_input_property(build_property(open_config), config)
           branch = clause.key?(:then) ? :then : :else
           stated = open.except(:description, :default, RESIDUE_KEY)
           clause[branch] = clause[branch].merge(properties: { config.field => stated }) unless stated.empty?
@@ -1470,7 +1472,6 @@ module Axn
           merged_members = merged_explicit_members(node, members)
           member_prop = prop[:properties][key]
           child_prop = build_property(representative, subfield: true)
-          child_prop = emitted_input_property(child_prop, representative) unless member_prop
           # Descendants of a transformed value belong to its post-transform contract. Finish that
           # subtree before the collision can stand it down; otherwise descent rewrites the retained
           # wire type and attaches post-transform children to it.
@@ -1481,19 +1482,15 @@ module Axn
           else
             child_prop = conjoin_shape_member_property(member_prop, child_prop, member_configs: emitted_members, own_configs: [representative]) if member_prop
             apply_nested_subfields!(child_prop, node, ann, carried: merged_members)
+            child_prop = emitted_input_property(child_prop, representative) unless member_prop
           end
           # A route carrying `preprocess:` is NOT exempted from its own `nil_allowed?` here, though the Proc
-          # does run before presence is judged and so might turn a wire `nil` into something non-nil
-          # (`preprocess: ->(_) { "x" }` on an otherwise-required node does exactly that). The exemption
-          # cannot be scoped safely: reflection has no way to tell that CONSTANT-preprocess case apart from
-          # an ordinary IDENTITY (or any other nil-preserving) `preprocess: ->(v) { v }`, where the Proc does
-          # NOT rescue nil and the required check correctly rejects it at runtime — `preprocess:` is an
-          # opaque Proc, and reflection must not execute it to find out which. Of the two directions that
-          # ambiguity forces a choice between — an unsatisfiable node for the constant-preprocess case, or a
-          # schema that ACCEPTS a wire `nil` the far more common pass-through case REJECTS — the latter is
-          # the one direction reflection may never take (`schema_wire_audit_spec`'s own hard invariant). So
-          # the constant-preprocess case is left as a known, unfixable residual: the same "cannot execute
-          # user code" limit already accepted for a transforming side's constraints generally.
+          # runs on a `nil` (and an absent) value too, and a constant `preprocess: ->(_) { "x" }` rescues it. That
+          # is the one stated exception to a transformed value saying less than the runtime: its requiredness and
+          # nullability stay as declared, since reflection cannot tell a nil-rescuing Proc from the far more
+          # common nil-preserving one (`->(v) { v.strip }`) without running it, and dropping both from every
+          # preprocessed field would stop the schema saying a field must be sent at all. A value supplied for a
+          # missing one is `default:`'s job, and that the schema reflects.
           null_ok = non_model_configs.all? { |c| nil_admitted_with_gates_closed?(c) } &&
                     members.all? { |m| nil_admitted_with_gates_closed?(m) } &&
                     !subtree_requires_presence?(node, ann)
@@ -2728,9 +2725,12 @@ module Axn
         # output, not what the wire carries — and the wire form is unknowable (a Proc may parse, map or replace
         # it). The property keeps only its description and default and names what applies after the transform,
         # exactly as a transforming side stands down at a collision (`stand_down_from`). Applied where a property
-        # is emitted on its own; a colliding one reaches that stand-down through the collision instead. A
-        # `coerce:` does not stand down: coercion accepts a wire String as a courtesy the declared type still
-        # describes, which is how the `coerce:` DSL has always reflected.
+        # is emitted on its own, and only once its subtree is complete: its children read the Proc's output too,
+        # so their `properties` and `required` stand down with it. A colliding one reaches that stand-down
+        # through the collision instead. Requiredness and nullability are decided elsewhere and stay as declared
+        # (the stated exception at `apply_explicit_child!`). A `coerce:` does not stand down: coercion accepts a
+        # wire String as a courtesy the declared type still describes, which is how the `coerce:` DSL has always
+        # reflected.
         def emitted_input_property(prop, config)
           return prop unless config.respond_to?(:preprocess) && config.preprocess
 
