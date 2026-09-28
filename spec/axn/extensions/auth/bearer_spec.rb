@@ -129,6 +129,19 @@ RSpec.describe Axn::Extensions::Auth::Bearer do
         .to raise_error(auth::ConfigurationError, /:svc and "svc" both name principal "svc"/)
     end
 
+    it "refuses same-bytes principal ids from a compare_by_identity Hash instead of dropping one" do
+      keys = {}.compare_by_identity
+      keys[+"svc"] = "k1"
+      keys[+"svc"] = "k2"
+      expect { described_class.new(keys:) }.to raise_error(auth::ConfigurationError, /both name principal "svc"/)
+    end
+
+    it "reads a Hash subclass's pairs without running its own iteration" do
+      subclass = Class.new(Hash) { def each(*) = raise("each ran") }
+      keys = subclass.new.tap { |hash| hash["svc"] = "k1" }
+      expect(described_class.new(keys:).call(bearer("k1")).principal).to eq("svc")
+    end
+
     it "refuses a principal id that is not a non-empty String or Symbol" do
       expect { described_class.new(keys: { 1 => "k" }) }.to raise_error(auth::ConfigurationError, /principal id.*Integer/)
       expect { described_class.new(keys: { "" => "k" }) }.to raise_error(auth::ConfigurationError, /principal id/)

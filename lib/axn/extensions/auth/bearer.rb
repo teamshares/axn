@@ -21,15 +21,19 @@ module Axn
 
         attr_reader :header
 
+        HASH_PAIRS = ::Hash.instance_method(:to_a)
+        private_constant :HASH_PAIRS
+
         def initialize(keys:, header: AUTHORIZATION)
-          # Read through a native copy, so a Hash subclass's own iteration never runs.
-          keys = {}.merge!(keys) if Internal::Identity.kind?(keys, ::Hash)
-          unless Internal::Identity.kind?(keys, ::Hash) && !keys.empty?
-            raise ConfigurationError, "Bearer keys must be a non-empty Hash of principal id => key(s)"
-          end
+          # Every pair, read natively: a bound Hash#to_a runs none of a subclass's own iteration, and
+          # (unlike copying into a fresh Hash) keeps both entries of a compare_by_identity Hash whose
+          # keys share bytes, so the canonical-id collision check below sees them rather than a
+          # silently collapsed one.
+          pairs = HASH_PAIRS.bind_call(keys) if Internal::Identity.kind?(keys, ::Hash)
+          raise ConfigurationError, "Bearer keys must be a non-empty Hash of principal id => key(s)" if pairs.nil? || pairs.empty?
 
           @header = _header_name(header)
-          @keys = _principal_ids(keys).to_h { |id, (_label, value)| [id, _check_literals!(id, value)] }.freeze
+          @keys = _principal_ids(pairs).to_h { |id, (_label, value)| [id, _check_literals!(id, value)] }.freeze
         end
 
         def principals = @keys.keys
@@ -95,8 +99,8 @@ module Axn
         # String or Symbol is an id: anything else would stringify to whatever its own `to_s` says.
         # Messages render the canonical id (or the Symbol, which carries no overrides), never the
         # caller's String, so reporting cannot run a subclass's `inspect`.
-        def _principal_ids(keys)
-          keys.each_with_object({}) do |(principal, value), ids|
+        def _principal_ids(pairs)
+          pairs.each_with_object({}) do |(principal, value), ids|
             id = _principal_id(principal)
             label = Internal::Identity.kind?(principal, ::Symbol) ? principal.inspect : id.inspect
             raise ConfigurationError, "Bearer principal ids must be unique: #{ids[id].first} and #{label} both name principal #{id.inspect}" if ids.key?(id)
