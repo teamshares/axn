@@ -340,7 +340,8 @@ Human docs — <https://teamshares.github.io/axn/>:
 build (`/usage/writing`), use (`/usage/using`), class DSL (`/reference/class`), instance helpers
 (`/reference/instance`), result (`/reference/axn-result`), strategies (`/strategies/`), steps
 (`/usage/steps`), async (`/reference/async`), config (`/reference/configuration`), tool invoker
-(`/reference/tool-invoker`), entry points (`/recipes/declaring-entry-points`).
+(`/reference/tool-invoker`), entry points (`/recipes/declaring-entry-points`), inbound request auth
+(`/recipes/authenticating-inbound-requests`, `Axn::Extensions::Auth`).
 
 Source entry points (resolve with `bundle show axn`):
 - `lib/axn.rb` — `include Axn` wiring.

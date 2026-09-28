@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+* [FEAT] `Axn::Extensions::Auth` holds shared request-authentication primitives for gems that accept inbound requests on axn's behalf; axn-openapi and axn-webhooks both use it. It is Rack-free: a "request" is any object answering `#header(name)`.
+  * `Auth.secure_compare` is constant-time and length-independent, because it SHA256-hashes both sides first.
+  * `Auth.require_secret!` rejects a blank or non-String secret, since a blank secret is a weak key and not merely a failed match. Its message names the value's type and never its bytes.
+  * `Auth.deferred?` / `Auth.resolve` resolve a secret per request. Only Procs are deferred; a zero-arity Proc is called bare and a one-arity Proc receives the request. A Symbol is a literal.
+  * `Auth.verified?` asks `ok?` before truthiness, so a rejecting verdict object is never read as a pass.
+  * `Auth.normalize` turns any strategy's answer into an `Auth::Verdict` (`ok`, `reason`, `principal`). A rejection never carries a principal.
+  * Shared `CREDENTIALS_MISSING` / `CREDENTIALS_MISMATCH` verdicts.
+  * `Auth::Bearer` is a static API-key strategy. Principal ids map to one or more keys (String, Proc, or an Array of them), which is how rotation works. It reads `Authorization: Bearer` by default, or the raw value of a custom `header:`. It compares against every candidate with no early exit.
+  * A blank literal key raises `Auth::ConfigurationError` (which is an `ArgumentError` and tagged `Axn::Error`) at construction. A blank resolved key, or one token matching two principals, raises it at request time and is never reported as a 401.
+  * `Bearer` publishes `#principals`, `#scheme`, `#header` and `#unauthorized_headers` as neutral metadata, and redacts its keys in `inspect` and `pp`.
+  * New recipe: [Authenticating Inbound Requests](https://teamshares.github.io/axn/recipes/authenticating-inbound-requests).
+
 * [BUGFIX] Two axn call trees interleaved on one thread without a Fiber scheduler (manually resumed Fibers under the default `:thread` isolation, which share one nesting stack) no longer corrupt that stack: an action finishing while another tree's entry sits above its own now removes its own entry instead of popping the other tree's (which left the other tree reading the finished action as its own for the rest of its call), and axn logs a one-time warning that nesting-dependent state (log prefixes, exception attribution) was misattributed while they overlapped. Manually driven fibers remain unsupported; run them under a Fiber scheduler with `isolation_level = :fiber`. An interleave in which one tree starts and finishes entirely while the other is suspended is still not detected (see PRO-3283).
 
 * [BREAKING] `done!` is now refused inside any callable the contract evaluates — a `default:`, a `preprocess:`, or a validation's `if:`/`unless:` condition or callable option (`inclusion: { in: -> { … } }`, a `numericality:` bound), on `expects` or `exposes` — and settles the call as an `Axn::MisplacedFlowControl` exception saying where it was called. Previously such a `done!` settled as a success immediately and skipped the rest of inbound and all of outbound validation, so a result could report `ok?` with a required exposure unset and `exposes` defaults never applied. **Migration:** move the early exit into `call` or a `before` hook (`before { done!("nothing to do") if … }`), where outbound validation still runs after it. `fail!` is still allowed in these callables, since a failure promises no exposures. A `done!` from `call` or a hook is unchanged.
