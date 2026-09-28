@@ -894,8 +894,18 @@ module Axn
         # comment); `framework_projection_owner?(nil)` is false, so a nil owner correctly counts as
         # displacing here too — the same "framework-owned or displacing" split `displacing_projection`
         # itself draws from the table, just read from the dispatched answer instead.
+        #
+        # A FRAMEWORK-owned `as_json` (Codex review, PR #296, round 15) does not return early: ActiveSupport's
+        # real `Data#as_json`/`Struct#as_json` is `to_h.as_json` — an implicit `self.to_h` call, dispatched
+        # POLYMORPHICALLY to whatever `to_h` resolves to for this exact value — so a subclass overriding
+        # `to_h` still displaces even though `as_json` itself is framework-owned, exactly the same
+        # "framework as_json falls through to check to_h too" structure `displacing_projection` itself
+        # already has for the table-based case; only a NON-framework `as_json` owner short-circuits here.
         def effective_projection_displaces?(value)
-          return !framework_projection_owner?(owner_of(value, :as_json)) if value.respond_to?(:as_json)
+          if value.respond_to?(:as_json)
+            owner = owner_of(value, :as_json)
+            return true unless framework_projection_owner?(owner)
+          end
 
           # `respond_to?(:to_h)` denied — same as `as_json` above, this can be a LIE hiding a real `to_h`
           # (the exact symmetric case to the `as_json` one this function exists for) or a genuine absence —

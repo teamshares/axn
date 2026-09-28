@@ -135,6 +135,26 @@ RSpec.describe Axn::Internal::Reflection::Values do
         .to raise_error(Axn::Extensions::Serialization::UnserializableValue)
     end
 
+    # Codex review, PR #296, round 15: a subclass's own `to_h` override is ALREADY caught by the
+    # TABLE-based check above (`Data#as_json` dispatches `self.to_h` polymorphically) -- but if the SAME
+    # subclass ALSO overrides `respond_to?`/`respond_to_missing?` (for ANY reason, even an inert
+    # pass-through), that routes the render-time check through the DISPATCH-based `effective_projection_
+    # displaces?` instead, which returned early once it found `Data`'s own FRAMEWORK-owned `as_json`,
+    # without ever checking whether the `to_h` IT dispatches to is itself overridden.
+    it "raises for a subclass whose own to_h is displacing even when it ALSO overrides respond_to? as an " \
+       "inert pass-through, which forces the dispatch-based check rather than the table-based one" do
+      subclass = Class.new(s) do
+        def to_h = { name: }
+        def respond_to?(...) = super # rubocop:disable Lint/UselessMethodDefinition -- deliberately inert, that's the point of this example
+      end
+      klass = shaped_action(type: s)
+      value = subclass.new(name: "a", internal_notes: "x")
+
+      expect(value.as_json).to eq("name" => "a") # confirms the Rails mechanism this test is actually pinning
+      expect { Axn::Extensions::Serialization.render(klass.call(value:)) }
+        .to raise_error(Axn::Extensions::Serialization::UnserializableValue)
+    end
+
     it "raises for Enumerable mixed into a Data subclass (Enumerable is not a framework projection owner)" do
       subclass = Class.new(s) do
         include Enumerable
