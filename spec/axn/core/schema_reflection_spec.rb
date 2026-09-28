@@ -593,6 +593,24 @@ RSpec.describe "Axn class-level schema reflection" do
       expect(klass.input_schema_residues).to eq([])
     end
 
+    # A gated check with no keyword is reached by two passes on a field's own property and by one at a
+    # collision; it is named once either way, and its callable is named rather than rendered (an address would
+    # change the document on every boot).
+    {
+      "a field's own property" => proc { expects :v, type: String, validate: ->(_) {}, if: -> { true } },
+      "a collision with a shape member" => proc {
+        expects(:payload, type: Hash) { field :v, type: String, optional: true }
+        expects :v, on: :payload, type: String, validate: ->(_) {}, if: -> { true }
+      },
+    }.each do |label, body|
+      it "names a gated validate: once at #{label}, without rendering it" do
+        action = build_axn(&body)
+
+        expect(action.input_schema_residues.count { |r| r.summary.include?("validate") }).to eq(1)
+        expect(JSON.generate(action.input_schema)).not_to include("#<Proc")
+      end
+    end
+
     it "names each constraint input_schema leaves out, by the property keys the schema uses" do
       gapped = build_axn do
         expects :payload, type: Hash, of: { values: { klass: Array, of: Integer } }

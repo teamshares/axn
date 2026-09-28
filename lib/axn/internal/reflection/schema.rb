@@ -2229,13 +2229,14 @@ module Axn
               baseline = build_property(config.with(validations: context), subfield: true)
               fragment = build_property(config.with(validations: context.merge(key => ungated_options(opt))), subfield: true)
               fragment = fragment.except(*RESIDUE_UNGATEABLE_KEYS).reject { |name, value| same_schema_value?(baseline[name], value) }
-              # A check no keyword states even with its gate open is still left out, so it is named as written —
-              # unless it is one `report_unexpressed_checks` already names per surviving type, which runs over the
-              # same declared entries wherever this does.
+              # A check no keyword states even with its gate open is still left out, so it is named — unless it is
+              # one `report_unexpressed_checks` already names per surviving type, which runs over the same declared
+              # entries wherever this does. It is named in `report_unstated_checks`' own words, so where both passes
+              # run (a field's own property) `record_residue` keeps one, and a callable is never rendered.
               if fragment.empty?
                 next if PER_TYPE_REPORTED_KEYS.include?(key)
 
-                fragment = { key => reported_options(opt) }
+                next Residue.new(summary: gated_unstated_summary(config, key, opt), kind: :conditional)
               end
               fragment = fragment.reject { |name, value| unconditionally_enforced?(stated, name, value) }
               next if fragment.empty?
@@ -2773,10 +2774,19 @@ module Axn
           prop = report_unexpressed_checks(prop, [declared_config])
           gates = declaration_gates(declared_config)
           unstated_entry_fragments(declared_config.validations, prop).reduce(prop) do |acc, (key, options)|
-            conditional = Axn::Validation::Base.entry_effectively_gated?(options, gates)
-            prefix = conditional ? "#{GATED_RESIDUE}; " : ""
-            record_residue(acc, "#{prefix}#{unstated_check_sentence(key, options)}", kind: conditional ? :conditional : :inherent)
+            if Axn::Validation::Base.entry_effectively_gated?(options, gates)
+              record_residue(acc, gated_unstated_summary(declared_config, key, options), kind: :conditional)
+            else
+              record_residue(acc, unstated_check_sentence(key, options), kind: :inherent)
+            end
           end
+        end
+
+        # A gated check no keyword states, in the one wording both passes that reach it use, so `record_residue`
+        # keeps a single copy where both run.
+        def gated_unstated_summary(config, key, options)
+          phase = definitely_transforms_wire_value?([config]) ? "after transformation, " : ""
+          "#{phase}#{GATED_RESIDUE}; #{unstated_check_sentence(key, options)}"
         end
 
         # A callable is named rather than rendered: its only rendering is an object address, and asking it for
