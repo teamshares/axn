@@ -593,6 +593,18 @@ RSpec.describe "Axn class-level schema reflection" do
       expect(klass.input_schema_residues).to eq([])
     end
 
+    # A JSON number arrives as an Integer or a Float, and `"number"` cannot say which a field wants, so any numeric
+    # class short of `Numeric` or the Integer-and-Float pair is named. `Integer` alone is the stated `1.0` exception.
+    {
+      Float => true, BigDecimal => true, Rational => true, Numeric => false, [Integer, Float] => false, Integer => false
+    }.each do |type, named|
+      it "#{named ? 'names' : 'does not name'} the numeric wire form of type: #{type.inspect}" do
+        action = build_axn { expects :n, type: }
+
+        expect(action.input_schema_residues.any? { |r| r.summary.include?("a JSON number arrives") }).to be(named)
+      end
+    end
+
     # A subfield directly under a non-object or `model:` parent is not nested into the document, so it is named at
     # the root, as a deeper one is.
     it "names a depth-1 subfield the schema leaves out under a non-object parent" do

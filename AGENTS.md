@@ -141,7 +141,9 @@ out of `Axn::Internal`. Adding a new error class, or deciding whether it should 
   `coerce:` (or a tool invoker's coercion) parses into the declared type, an explicit `nil` a `default:` fills, an
   absent or `nil` value a `preprocess:` Proc rescues — since the field keeps its declared type, requiredness and
   nullability; widening for these would loosen every coerced field of every tool while saving no caller, whose
-  canonical spelling always passes). One stated looseness has no residue: a non-blank literal `default:` that
+  canonical spelling always passes). JSON Schema cannot tell `1` from `1.0`, so `"integer"` admits a `1.0` a Ruby
+  `Integer` check rejects — stated, not named on every Integer field; any other numeric class short of `Numeric` or
+  the Integer-and-Float pair is named as a residue. One stated looseness has no residue: a non-blank literal `default:` that
   fails the field's own checks (`type: String, default: 123`) makes the field omittable though the omitted call
   fails — a self-contradictory declaration, documented rather than annotated on every defaulted field, since
   checking it would mean running the field's validators, `validate:` callables included. Tier 2 — `format:`, exclusion sets, every `if:`/`unless:`-gated

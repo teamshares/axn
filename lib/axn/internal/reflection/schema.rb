@@ -2772,6 +2772,7 @@ module Axn
             prop = prop.merge(allOf: Array(prop[:allOf]) + [{ anyOf: [{ type: "string" }, { enum: BLANK_WIRE_VALUES }] }])
           end
           prop = report_unexpressed_checks(prop, [declared_config])
+          prop = report_numeric_wire_form(prop, validations)
           gates = declaration_gates(declared_config)
           unstated_entry_fragments(declared_config.validations, prop).reduce(prop) do |acc, (key, options)|
             if Axn::Validation::Base.entry_effectively_gated?(options, gates)
@@ -2787,6 +2788,28 @@ module Axn
         def gated_unstated_summary(config, key, options)
           phase = definitely_transforms_wire_value?([config]) ? "after transformation, " : ""
           "#{phase}#{GATED_RESIDUE}; #{unstated_check_sentence(key, options)}"
+        end
+
+        # A JSON number reaches the runtime as an Integer (`1`) or a Float (`1.5`, `1.0`), and JSON Schema's `number`
+        # cannot tell the two apart. A declared numeric class is therefore exact on the wire only as `Numeric` or as
+        # the Integer-and-Float pair; any other set (`Float` alone rejects `1`, and `BigDecimal` or `Rational` reject
+        # every JSON number) is named. `Integer` alone is the stated exception: `"integer"` also admits `1.0`, and
+        # naming that on every Integer field would say nothing a caller acts on.
+        def report_numeric_wire_form(prop, validations)
+          numeric = declared_type_tokens(validations).select do |token|
+            class_token?(token) && (Internal::Identity.same?(token, ::Numeric) || strict_descendant?(token, ::Numeric))
+          end
+          return prop if numeric.empty? || numeric.any? { |token| Internal::Identity.same?(token, ::Numeric) }
+          # Only where a JSON number still reaches a numeric branch: one a narrowing dropped admits none.
+          return prop unless projected_types(prop).intersect?(%w[number integer])
+
+          integer = numeric.any? { |token| Internal::Identity.same?(token, ::Integer) }
+          float = numeric.any? { |token| Internal::Identity.same?(token, ::Float) }
+          return prop if integer && (float || numeric.size == 1)
+
+          names = numeric.map { |token| Axn::Internal::Rendering.module_name(token) }.join(", ")
+          record_residue(prop, "the runtime checks for a Ruby #{names}, and a JSON number arrives as an Integer (1) or a " \
+                               "Float (1.5)")
         end
 
         # A callable is named rather than rendered: its only rendering is an object address, and asking it for
