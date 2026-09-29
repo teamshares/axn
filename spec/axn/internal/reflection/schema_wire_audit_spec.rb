@@ -95,6 +95,8 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
       "acceptance" => { acceptance: true },
       "confirmation" => { confirmation: true },
       "validate" => { validate: ->(value) { "is one" if value == 1 } },
+      # An option ActiveModel resolves per call: the schema cannot narrow for it, and must not render it.
+      "num only_integer per call" => { numericality: { only_integer: ->(_record) { true } } },
       "cmp other_than:1" => { comparison: { other_than: 1 } },
       "num odd" => { numericality: { odd: true } },
     }
@@ -316,6 +318,24 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
 
     expect(accepted).to be > 1000
     expect(wrong).to be_empty, "these schemas reject what the runtime accepts:\n  #{wrong.join("\n  ")}"
+  end
+
+  # A callable's only rendering is an object address, which would change the document on every boot. The corpus
+  # carries callables (`validate:`, per-call options, Proc gates), so no emitted document may contain one.
+  it "never renders a callable's address into a document" do
+    rendered = []
+    each_cell do |tname, tklass, vname, vopts, tolname, tol|
+      closed_gates.each do |gname, gate|
+        next if gname != "ungated" && vopts.empty?
+
+        klass = declare(:in, gate.call({ type: tklass }.merge(vopts)).merge(tol), nil)
+        next if klass.nil?
+
+        rendered << "#{tname} / #{vname} / #{tolname} / #{gname}" if JSON.generate(klass.input_schema).match?(/#<(Proc|Method)/)
+      end
+    end
+
+    expect(rendered).to be_empty, "these documents render a callable:\n  #{rendered.join("\n  ")}"
   end
 
   # `default:` is not a validator, so the walk above never declares one — and a default changes what reaches

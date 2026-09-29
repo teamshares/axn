@@ -2405,7 +2405,13 @@ module Axn
           end
         end
 
+        # A callable is named by what it is, never rendered: its only rendering is an object address, which would
+        # change the document on every boot.
+        PER_CALL_RENDERING = "(resolved per call)"
+
         def mentionable_rendering(value)
+          return PER_CALL_RENDERING if Axn::Internal::Identity.kind?(value, ::Proc) || Axn::Internal::Identity.kind?(value, ::Method)
+
           Axn::Internal::Rendering.value_rendering(value) || Axn::Internal::Rendering.class_name(value)
         end
 
@@ -2890,10 +2896,18 @@ module Axn
         end
 
         # A numeric entry's options no keyword states, gate options kept so the caller can tell a conditional one.
+        # A narrowing ActiveModel resolves per call (a Proc or Symbol `only_integer:`, a Proc `in:`) is stated only
+        # when literal; resolved per call, the schema cannot narrow for it, so it is named like an unkeyworded one.
+        # (Per-call bounds reach their residue per type, and `only_numeric:` is read truthily, not resolved.)
+        PER_CALL_STATED_NUMERIC_OPTIONS = %i[only_integer in].freeze
+
         def unstated_numeric_options(entry)
           return {} unless Axn::Internal::Identity.kind?(entry, ::Hash)
 
-          unstated = entry.except(*STATED_NUMERIC_OPTIONS)
+          per_call = entry.slice(*PER_CALL_STATED_NUMERIC_OPTIONS).select do |_key, value|
+            Axn::Internal::Identity.kind?(value, ::Proc) || Axn::Internal::Identity.kind?(value, ::Symbol)
+          end
+          unstated = entry.except(*STATED_NUMERIC_OPTIONS).merge(per_call)
           unstated.empty? ? {} : unstated.merge(entry.slice(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS))
         end
 
