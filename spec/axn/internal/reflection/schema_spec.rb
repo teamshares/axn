@@ -1973,9 +1973,8 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(described_class.build_output(no_of.external_field_configs)[:properties][:items]).not_to have_key(:items)
     end
 
-    # The same block, on the other side and with the class named. INPUT elements arrive as JSON, where the only
-    # value a shape's members can be read off is an object, so no `of:` is needed there; on OUTPUT, `of: Hash` is
-    # what pins each element to a member-keyed object and lets the members be published.
+    # The same block, on the other side and with the class named: INPUT publishes the members without `of:`, and
+    # on OUTPUT `of: Hash` is what pins each element to a member-keyed object and lets the members be published.
     it "describes a shaped array's items on INPUT without of:, and on OUTPUT once of: Hash names the element" do
       klass = Class.new do
         include Axn
