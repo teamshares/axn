@@ -667,6 +667,16 @@ RSpec.describe "Axn class-level schema reflection" do
       expect(action.input_schema_residues.map(&:summary)).to include(a_string_including("only_integer", "Nosy"))
     end
 
+    # A value passes a union through any branch, so a branch admitting every JSON value leaves nothing to name.
+    it "names no type check for a union one branch of which admits every JSON value" do
+      stub_const("Money", Class.new)
+      broad = build_axn { expects :n, type: [Object, Money], optional: true }
+      narrow = build_axn { expects :n, type: [Money, String], optional: true }
+
+      expect(broad.input_schema_residues).to be_empty
+      expect(narrow.input_schema_residues).not_to be_empty
+    end
+
     # A JSON number arrives as an Integer or a Float, and `"number"` cannot say which a field wants, so any numeric
     # class short of `Numeric` or the Integer-and-Float pair is named. `Integer` alone is the stated `1.0` exception.
     {

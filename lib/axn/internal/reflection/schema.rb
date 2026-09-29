@@ -2946,12 +2946,14 @@ module Axn
         # its untyped node says less than the runtime. `Object`/`Kernel`/`BasicObject` admit every JSON value
         # and so constrain nothing a type could have stated; `Comparable` rejects an Array, and a custom value
         # class rejects everything a client can send it that a `preprocess:` does not turn into one.
+        # Asked of the WHOLE union, since a value passes a union through any branch: `[Object, Money]` admits every
+        # JSON value through `Object` and so constrains nothing, whatever `Money` alone would reject.
         def unknown_type_constrains?(validations)
-          declared_type_tokens(validations).any? do |token|
-            next false unless unknown_class_token?(token)
-            next true unless Internal::Identity.kind?(token, ::Module)
+          tokens = declared_type_tokens(validations)
+          return false unless tokens.any? { |token| unknown_class_token?(token) }
 
-            JSON_VALUE_CLASSES.any? { |klass| !Internal::NativeMethods.includes_module?(klass, token) }
+          JSON_VALUE_CLASSES.any? do |klass|
+            tokens.none? { |token| Internal::Identity.kind?(token, ::Module) && Internal::NativeMethods.includes_module?(klass, token) }
           end
         end
 
