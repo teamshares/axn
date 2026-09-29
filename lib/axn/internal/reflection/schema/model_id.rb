@@ -192,6 +192,7 @@ module Axn
             explicit_id = field_configs.find { |c| c.field == id_field && !c.validations[:model] }
             merge_model_id_type_into_sibling!(properties[id_field], [config], explicit_id) if properties[id_field]
             properties[id_field] = with_model_lookup_residue(properties[id_field], [config]) if properties[id_field]
+            properties[config.field] = with_model_raw_key_residue(properties[config.field], [config]) if properties[config.field]
             # A default at ANY depth under the model applies at read time (value-level defaults,
             # PRO-2889) — no synthesis is involved — so descendant omittability is the ordinary
             # annotation-derived rule, same as every other parent.

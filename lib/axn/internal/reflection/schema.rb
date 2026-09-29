@@ -1270,8 +1270,9 @@ module Axn
         # type(s) and its subfields' shape is omitted, since object properties can't represent a non-object
         # branch (deep descendants there are in dropped_deep_subfields; its children still shape
         # requiredness via required_child?, matching runtime).
-        # `node`'s own representative config (the FIRST non-model config at a merged node) shapes the
-        # property itself (type, nullability) — see NodeAnnotation. `node.configs` is EVERY config at the
+        # `node`'s own representative config (the FIRST non-model config at a merged node) decides the
+        # annotation's nullability — see NodeAnnotation — and every route's own check is conjoined onto the
+        # property by `apply_explicit_child!`. `node.configs` is EVERY config at the
         # node: it decides both whether to nest at all (node_configs_block_nesting?, the same predicate the
         # drop pass uses, so a route the tree drops from is never re-nested) and, threaded on as parent
         # configs, which `shape:` members might collide with an implicit child.
@@ -1308,10 +1309,14 @@ module Axn
           # `prop[:required]`, which also carries shape members that a bare nil parent never triggers.
           #
           # The node is typed `object` only where the runtime rejects every other value too: a type check that
-          # runs on every call, or a required child, which a non-object value leaves absent. Otherwise — an
-          # untyped parent, or one whose type check is gated — a String or Array reaches the children as nothing
-          # and passes, and `properties` (which JSON Schema applies to objects alone) says all there is to say.
-          if nested_node_object_only?(node, node_configs, ann)
+          # runs on every call, or a required child read by key, which a non-object value leaves absent. Otherwise
+          # — an untyped parent, or one whose type check is gated — a String or Array reaches the children as
+          # nothing and passes, and `properties` (which JSON Schema applies to objects alone) says all there is to
+          # say; a child read by `method_call:` reads a method off it instead, which is named, exactly as at an
+          # implicit intermediate (`apply_implicit_node!`).
+          object_only = nested_node_object_only?(node, node_configs, ann)
+          prop.replace(record_residue(prop, METHOD_READ_RESIDUE)) if !object_only && subtree_reads_methods?(node)
+          if object_only
             prop[:type] = ann[node].nullable ? %w[object null] : "object"
           elsif !preprocessed?(node_configs) &&
                 node_configs.any? { |c| presence_rejects_blank?(gate_closed_validations(c, c.validations)) }
@@ -1328,7 +1333,7 @@ module Axn
         def nested_node_object_only?(node, node_configs, ann)
           return false if preprocessed?(node_configs)
 
-          node_configs.any? { |c| gate_closed_validations(c, c.validations).key?(:type) } || children_require_presence?(node.children, ann)
+          node_configs.any? { |c| gate_closed_validations(c, c.validations).key?(:type) } || subtree_requires_object?(node, ann)
         end
 
         def preprocessed?(configs) = configs.any? { |c| c.respond_to?(:preprocess) && c.preprocess }
@@ -1346,11 +1351,10 @@ module Axn
         # object property. Both are enforced at runtime, so both are emitted, each required per its OWN
         # route's configs — not the node as a whole.
         #
-        # ACCEPTED DIVERGENCE (looser-than-runtime, the only such case here): at a merged model+non-model
-        # node the non-model route's raw-key object property admits an object value that runtime ALWAYS
-        # rejects — the model resolver reads the raw key as the record, and a JSON object is never a model
-        # instance, so only absent/null are JSON-satisfiable. Left as-is: sending the object yields a normal,
-        # recoverable validation error, and the generated `<leaf>_id` already advertises the working path.
+        # At a merged model+non-model node the non-model route's raw-key property admits values the runtime
+        # always rejects — the model resolver reads the raw key as the record, and a JSON value is never a model
+        # instance, so only a blank passes. That looseness is named on the property (`name_model_lookups!`), and
+        # the generated `<leaf>_id` advertises the working path.
         def apply_children!(prop, children, parent_configs, ann, carried: NO_SHAPE_MEMBERS)
           required_model_ids = []
           model_id_siblings = []
@@ -1361,16 +1365,10 @@ module Axn
           # has no member to collide with at any key, so the per-key lookup below is skipped outright. Measured
           # at +15% allocations for a shape-free action with 21 subfield children before this guard, ~0 after.
           ancestor_shapes = ancestor_configs.any? { |c| c.validations[:shape] }
-          # The ENFORCED list (`ancestor_configs`, every route) is right for nullability, but wrong for "what
-          # did the ancestor actually EMIT here" — `apply_structured_schema!` builds a node's property from
-          # the REPRESENTATIVE route alone, so a later, non-representative route's shape member is declared
-          # but never reaches the document. Restricted the same way `property_representative` restricts
-          # everywhere else that has to name the config a property was built FROM (judging every route let a
-          # merged node's non-representative EXACT route mask its representative's APPROXIMATE one — the
-          # property actually conjoined was the representative's fake hint, not the exact route the
-          # unrestricted list also saw). `carried` is already representative-restricted by construction, so
-          # it is unaffected here.
-          emitted_ancestor_configs = Array(property_representative(parent_configs)) + carried
+          # What the ancestor actually EMITTED at a child's key is named through `property_routes`, the one owner
+          # of which routes a property is built from, so the member a child is conjoined with is judged by the
+          # configs that produced it.
+          emitted_ancestor_configs = property_routes(parent_configs) + carried
           children.each do |key, node|
             if node.implicit?
               apply_implicit_node!(prop, key, node, ancestor_configs, ann)
@@ -1379,8 +1377,8 @@ module Axn
 
             model_configs = node.configs.select { |c| c.validations[:model] }
             non_model_configs = node.configs.reject { |c| c.validations[:model] }
-            # The object property is built from ONE of them; see property_representative, which every layer that
-            # has to name that config reads (requiredness annotation, and the size cap's shape charge).
+            # The object property is built from the representative and conjoined with every other non-model route
+            # (`conjoined_route_property`); `property_routes` names them for every layer that must.
 
             unless model_configs.empty?
               apply_model_id_child!(prop, key, node, model_configs, children, parent_configs, ann, required_model_ids,
@@ -1467,13 +1465,12 @@ module Axn
         # trusting its emitted property as an exact constraint worth conjoining — see that method for the two
         # separate reasons a side can be untrustworthy (a transform, or an unknown class) and how each is
         # handled, and for how the same judgment recurses through `merge_emitted_maps` for a name colliding one
-        # level down. `emitted_members`, not `members`: at a merged node `apply_structured_schema!` only ever
-        # builds `member_prop` from the REPRESENTATIVE route, so approximateness is judged on that route alone —
-        # `members` (every route) stays for nullability just below, an ENFORCED question the representative
-        # restriction does not apply to.
+        # level down. `emitted_members` are the members of the routes the parent's property was built from
+        # (`property_routes`), plus the carried ones; `members` (every ancestor config) stays for nullability just
+        # below, an ENFORCED question.
         #
-        # `null` survives only when every non-model route tolerates nil (runtime enforces all of them; the
-        # property itself is built from the first non-model config), EVERY colliding shape member tolerates nil
+        # `null` survives only when every non-model route tolerates nil (runtime enforces all of them), EVERY
+        # colliding shape member tolerates nil
         # too — merged or not, since a member this node declined to merge is still enforced, and a non-nullable
         # one forbids nil however permissive the node's own declaration is — and no required descendant is
         # stranded, a nil node yielding every descendant absent (PRO-2857), so a required one below it forbids
@@ -1483,7 +1480,7 @@ module Axn
         def apply_explicit_child!(prop, key, node, representative, non_model_configs, members, emitted_members, ann)
           merged_members = merged_explicit_members(node, members)
           member_prop = prop[:properties][key]
-          child_prop = build_property(representative, subfield: true)
+          child_prop = conjoined_route_property(representative, non_model_configs)
           # Descendants of a transformed value belong to its post-transform contract. Finish that
           # subtree before the collision can stand it down; otherwise descent rewrites the retained
           # wire type and attaches post-transform children to it.
@@ -1508,6 +1505,23 @@ module Axn
                     !subtree_requires_presence?(node, ann)
           reject_null!(child_prop) unless null_ok
           prop[:properties][key] = child_prop.compact
+        end
+
+        # The property of a node every non-model route declares. Each route's own check runs on every call, so
+        # a second route's type, blank floor or bounds are conjoined with the representative's exactly as an
+        # ancestor's shape member is (`conjoin_shape_member_property`, which also stands a transforming or gated
+        # route down and names what it still enforces) — building from the representative alone let the
+        # document admit what the other route rejects.
+        def conjoined_route_property(representative, routes)
+          prop = build_property(representative, subfield: true)
+          own = [representative]
+          routes.each do |route|
+            next if route.equal?(representative)
+
+            prop = conjoin_shape_member_property(build_property(route, subfield: true), prop, member_configs: [route], own_configs: own)
+            own += [route]
+          end
+          prop
         end
 
         # The nested twin of `build_input`'s own model branch — its own method rather than another key
@@ -1540,21 +1554,11 @@ module Axn
           # `explicit_id` nil (no SUBFIELD sibling exists), so the model's own property was built and then lost to
           # the shape member's, with nothing deciding between them.
           #
-          # Restricted to the REPRESENTATIVE config's OWN shape, not every route at a merged parent node: at
-          # a merged node `apply_structured_schema!` (building the parent's OWN property, via
-          # `property_representative`) only ever merges the FIRST non-model route's shape — a member declared
-          # on a LATER, non-representative route never reaches `prop[:properties]` at all. Searching every
-          # `parent_configs` (what `shape_members_at` alone does — correct for `apply_implicit_node!`'s use,
-          # an intermediate node with no representative of its own) found a member that was never actually
-          # emitted, so the check believed something had already claimed the key while NOTHING had: the
-          # model's own property was skipped, but nothing replaced it, leaving `id_field` `required` with no
-          # matching entry in `properties` at all — worse than losing the type, JSON Schema then admits any
-          # value there. The representative's own shape PLUS the members carried from a shallower hop — the
-          # ancestor's shape reaches this node's property too (PRO-3399), so a carried `field :company_id,
-          # type: String` claims the key exactly as one on the node's own route does, and leaving the carry
-          # out would discard the declared `id_type:` one level up.
-          representative = property_representative(parent_configs)
-          explicit_id ||= emitted_shape_member_at(prop, representative, carried, id_field)
+          # Searched among the routes the parent's property was built FROM (`property_routes`) plus the members
+          # carried from a shallower hop — the ancestor's shape reaches this node's property too (PRO-3399), so a
+          # carried `field :company_id, type: String` claims the key exactly as one on the node's own route does,
+          # and leaving the carry out would discard the declared `id_type:` one level up.
+          explicit_id ||= emitted_shape_member_at(prop, property_routes(parent_configs), carried, id_field)
           if explicit_id
             # Deferred rather than merged here directly (see the post-loop pass in `apply_children!`):
             # this sibling's OWN entry in `children` hasn't necessarily been visited yet, so
@@ -1583,11 +1587,10 @@ module Axn
         # The `shape:` member claiming `id_field`, but ONLY where that member's property was actually EMITTED
         # — asked of `prop[:properties]` itself rather than inferred from which route declared it.
         #
-        # Declaring a member and emitting one are not the same thing, and the gap is what this guards. At a
-        # merged node `apply_structured_schema!` builds the property from the REPRESENTATIVE route alone, and
-        # a merged ancestor member is conjoined only where the ancestor emitted one to conjoin with — so a
-        # member on a later route is found by `shape_members_at` while nothing of it is in the document.
-        # Treating such a member as the sibling that claims the key skipped the generated id property, and the
+        # Declaring a member and emitting one are not the same thing, and the gap is what this guards: a member
+        # is found by `shape_members_at` whether or not anything of it reached the document (a gated `shape:`,
+        # or a route whose transform stood it down). Treating such a member as the sibling that claims the key
+        # skipped the generated id property, and the
         # deferred `merge_model_id_type_into_sibling!` pass then found nothing at that key to merge into:
         # `id_field` came out `required` with no entry in `properties` at all, which JSON Schema reads as "any
         # value permitted" — looser than emitting nothing, and the same failure the route restriction here was
@@ -1597,11 +1600,10 @@ module Axn
         # actually answer at this point: a shape member's property is written by `build_property` (and the
         # ancestor merge) strictly before `apply_children!` runs, while a subfield SIBLING at the same key is
         # found through `children` above and has already set `explicit_id` by the time this is reached.
-        def emitted_shape_member_at(prop, representative, carried, id_field)
+        def emitted_shape_member_at(prop, routes, carried, id_field)
           return nil unless prop[:properties].key?(id_field)
 
-          sources = carried.empty? ? Array(representative) : Array(representative) + carried
-          shape_members_at(sources, id_field).first
+          shape_members_at(carried.empty? ? routes : routes + carried, id_field).first
         end
 
         # An implicit node (a dotted-path intermediate with no declaration of its own) emits a bare object
@@ -1611,9 +1613,9 @@ module Axn
         # the node's configs), so emission and the drop pass agree: a non-nestable member (a scalar, or a
         # mixed union like `type: [Hash, Array]`) on ANY route blocks and its deep configs stay in
         # dropped_deep_subfields rather than forcing a self-contradictory property. The block is judged from
-        # the member configs directly, NOT from a pre-seeded property: at a merged node the object property
-        # is built from the first non-model config, so a scalar member declared on a LATER config seeds
-        # nothing to collide with, yet must still block (matching SubfieldTree, which scans every config).
+        # the member configs directly, NOT from a pre-seeded property: a member whose property never reached
+        # the document (a gated `shape:`, or a route whose transform stood it down) seeds nothing to collide
+        # with, yet must still block (matching SubfieldTree, which scans every config).
         #
         # A blocked merge omits the deep SHAPE but not the deep OBLIGATION: runtime validates the dropped
         # subfields regardless of representability, so when the dropped subtree requires presence
@@ -1653,16 +1655,14 @@ module Axn
           # member placeholder) keeps its own. A `method_call:` descendant is the exception to "settles absent":
           # it reads a method off whatever is there, and what that method returns is checked, so that is named.
           #
-          # A shape-member collision is typed by the members, and caps nullability by their OWN nil-tolerance —
-          # nullable only when EVERY colliding member tolerates nil (runtime enforces all routes), read from each
-          # config via nil_allowed? (the same predicate the parent nesting uses) never sniffed off the emitted
-          # property: an untyped nil-tolerant member emits no `type`, so a null branch is invisible there and
-          # property-sniffing would force it non-nullable though runtime accepts a nil member.
-          if members.empty? && (ann[node].nullable || !subtree_requires_object?(node, ann))
+          # A colliding shape member changes none of that: the property it already emitted states its own type
+          # and nullability, which the member enforces whatever the dotted descendants read. An untyped member, or
+          # one whose type check is gated, admits a String the descendants read as absent, so the node is made an
+          # object only where something beneath it requires one — the same rule as with no member at all.
+          if ann[node].nullable || !subtree_requires_object?(node, ann)
             target = record_residue(target, METHOD_READ_RESIDUE) if subtree_reads_methods?(node)
           else
-            nullable = ann[node].nullable && members.all? { |m| nil_admitted_with_gates_closed?(m) }
-            target[:type] = nullable ? %w[object null] : "object"
+            target[:type] = "object"
           end
           target[:required] = nil if target[:required].empty?
           prop[:properties][key] = target.compact
@@ -1691,9 +1691,8 @@ module Axn
         # direction a plain overlay emits too loosely.
         #
         # Taken from what is AT the key rather than from the member config, which is also why the caller guards
-        # on its presence: at a merged node `apply_structured_schema!` only ever emits the REPRESENTATIVE
-        # route's shape, so a member declared on a later route is found by shape_members_at and yet has nothing
-        # emitted to conjoin with. Such a member still caps nullability and still blocks at depth — it simply
+        # on its presence: a member whose property never reached the document is found by shape_members_at and
+        # yet has nothing emitted to conjoin with. Such a member still caps nullability and still blocks at depth — it simply
         # contributes no contents here, exactly as at an implicit child (see apply_implicit_node!).
         #
         # `propertyNames` is deliberately NOT re-exempted (exempt_shaped_keys_from_property_names runs inside
@@ -2863,7 +2862,18 @@ module Axn
 
             id_field = Internal::FieldConfig.model_id_key(key)
             prop[:properties][id_field] = with_model_lookup_residue(prop[:properties][id_field], model_configs)
+            prop[:properties][key] = with_model_raw_key_residue(prop[:properties][key], model_configs) if prop[:properties].key?(key)
           end
+        end
+
+        # The property another declaration emits at a `model:` route's own key — a non-model route merged onto the
+        # node, an ancestor's shape member, or another `model:` route's generated id. The route reads that key as
+        # the record, and a JSON value never is one, so only a blank passes; the property says what the other
+        # declaration accepts, which is more. Conditional exactly when the lookup is.
+        def with_model_raw_key_residue(prop, model_configs)
+          return record_residue(prop, MODEL_RAW_KEY_RESIDUE) unless model_configs.all? { |config| model_lookup_gated?(config) }
+
+          record_residue(prop, "#{GATED_RESIDUE}; #{MODEL_RAW_KEY_RESIDUE}", kind: :conditional)
         end
 
         # How the runtime treats a `default:` (`FieldConfig.resolve_default`): anything answering `call` is

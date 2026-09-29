@@ -59,12 +59,16 @@ module Axn
           # one (a model route emits `<leaf>_id` in place of the object, so it shapes no object property). Nil at a
           # pure-model node, which emits no object property at all.
           #
-          # One owner for three readers, because each of them has to name the SAME config: `apply_children!`, which
-          # emits the property; `annotate_node!`, which decides its nullability; and the projection size cap, which
-          # charges that config's shape and must charge no other — a second route to one wire path is enforced at
-          # runtime but its `shape:`/`of:` is never emitted, so charging it rejected a contract over a schema it
-          # does not have.
+          # `apply_children!` builds the property from it and conjoins every other route onto it
+          # (`property_routes`); `annotate_node!` decides the node's nullability from it, which the emitter then
+          # caps by every route's own nil-tolerance.
           def property_representative(configs) = configs.reject { |c| c.validations[:model] }.first
+
+          # Every route whose own declaration reaches a subfield node's object property: each non-`model:` route,
+          # since each one's check runs on every call and `apply_explicit_child!` conjoins them all. One owner for
+          # the readers that must name what the property was built FROM — the shape members an ancestor emitted at
+          # a child's key, and the projection size cap, which charges each of their shapes.
+          def property_routes(configs) = configs.reject { |c| c.validations[:model] }
 
           def object_type_branches(config)
             type_opt = config.validations[:type]
