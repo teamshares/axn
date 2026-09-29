@@ -587,9 +587,19 @@ module Axn
         token ? true : false
       end
 
-      # Whether ActiveModel resolves this option against the record on each call (`resolve_value`): a Symbol
-      # names a method, and anything responding to `call` is called. THE test, so every reader agrees on it.
-      def self.resolved_per_call?(value) = value.is_a?(::Symbol) || value.respond_to?(:call)
+      # Whether ActiveModel may resolve this option against the record on each call (`resolve_value`): a Symbol
+      # names a method, and anything answering `call` is called. Asked WITHOUT dispatching to the option, since a
+      # declaration and a reflection read may run no caller code: an exact built-in literal of the kind these
+      # options take is literal, and any other object counts as resolved per call — the direction that makes the
+      # schema say less, never more. THE test, so every reader agrees on it.
+      PER_CALL_LITERAL_CLASSES = [::NilClass, ::TrueClass, ::FalseClass, ::Integer, ::Float, ::String, ::Range, ::Array].freeze
+
+      def self.resolved_per_call?(value)
+        klass = Axn::Internal::Identity.class_of(value)
+        return true if Axn::Internal::Identity.same?(klass, ::Symbol)
+
+        PER_CALL_LITERAL_CLASSES.none? { |literal| Axn::Internal::Identity.same?(klass, literal) }
+      end
 
       # The test `only_integer:` actually applies, handed to reflection rather than restated there: the emitted
       # pattern has to agree with the validator that runs, and a copy in the emitter would drift from it in

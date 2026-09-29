@@ -653,6 +653,20 @@ RSpec.describe "Axn class-level schema reflection" do
       expect(summaries).not_to include("SECRET")
     end
 
+    # Whether an option is resolved per call is decided without asking it: its own `respond_to?` is caller code.
+    it "never asks a per-call option whether it is callable" do
+      asked = []
+      stub_const("Nosy", Class.new do
+        define_method(:respond_to?) { |*args| asked << args.first and super(*args) }
+        define_method(:call) { |*| true }
+      end)
+      action = build_axn { expects :n, type: [Integer, Float], numericality: { only_integer: Nosy.new } }
+
+      action.input_schema_residues
+      expect(asked).not_to include(:call)
+      expect(action.input_schema_residues.map(&:summary)).to include(a_string_including("only_integer", "Nosy"))
+    end
+
     # A JSON number arrives as an Integer or a Float, and `"number"` cannot say which a field wants, so any numeric
     # class short of `Numeric` or the Integer-and-Float pair is named. `Integer` alone is the stated `1.0` exception.
     {
