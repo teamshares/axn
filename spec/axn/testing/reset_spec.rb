@@ -73,7 +73,7 @@ RSpec.describe Axn::Testing do
       expect(Axn::Strategies.all.keys).to eq(before_keys)
     end
 
-    # `Tools::Registry`'s recorded action classes accumulate every action class defined in the
+    # `Tools::Registry`'s recorded action classes are every action class still alive in the
     # process; clearing them mid-suite would make `Axn.tools_for` blind to classes still loaded.
     # Named (via stub_const) rather than anonymous: an anonymous class is filtered out of
     # `all_classes` as stale on every enumeration regardless of `reset!`, so it can't demonstrate

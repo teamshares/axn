@@ -6,8 +6,45 @@ require "axn/internal/rendering"
 
 module Axn
   module Tools
-    # Process-global tool registry: the registered adapter keys and every include-Axn class.
+    # Process-global tool registry: the registered adapter keys and every live include-Axn class.
     module Registry
+      # The recorded classes, held WEAKLY. Enumeration only ever yields a class whose name resolves to
+      # that very object (`_currently_defined?`), and a resolving constant is itself a strong reference,
+      # so a class nothing but this set references is one enumeration rejects anyway. Holding such a
+      # class strongly would only pin it — every anonymous action (`Class.new { include Axn }`,
+      # `Axn::Factory.build`, a spec's `build_axn`), with its contract and compiled validators — for
+      # the life of the process.
+      #
+      # Insertion-ordered and identity-keyed, so `all_classes` enumerates in declaration order and a
+      # class registered twice appears once. A deleted class is tombstoned (`false`) rather than removed, because
+      # `ObjectSpace::WeakMap#delete` does not exist before Ruby 3.3; the tombstone is keyed as weakly as
+      # a live entry, so it vanishes with its class.
+      class WeakClassSet
+        def initialize
+          @entries = ObjectSpace::WeakMap.new
+          @last_seq = 0
+        end
+
+        def <<(klass)
+          @entries[klass] = (@last_seq += 1) unless include?(klass)
+          self
+        end
+
+        def delete(klass)
+          @entries[klass] = false if include?(klass)
+          self
+        end
+
+        def include?(klass) = @entries[klass].is_a?(Integer)
+
+        def to_a
+          live = []
+          @entries.each { |klass, seq| live << [seq, klass] if seq }
+          live.sort_by!(&:first).map!(&:last)
+        end
+      end
+      private_constant :WeakClassSet
+
       extend self
 
       # A nil source on RE-registration keeps the existing source: the idempotent "ensure this
@@ -42,14 +79,15 @@ module Axn
       end
 
       # Only currently-defined, named classes survive. Every entry that isn't _currently_defined? is
-      # deleted from _classes here, releasing its strong ref so a process-global Set can't pin dead
-      # classes forever. That covers both cases _currently_defined? rejects: a stale NAMED reference
-      # left by a Zeitwerk reload (the reloaded constant points at a fresh object), and a transient
-      # anonymous class (name nil) that never got a constant. An anonymous class can never be a usable
-      # tool anyway (no stable tool_name, no const_source_location for tool_root membership), and
-      # `members` runs at adapter setup — well after class definition — so the "anonymous now, named
-      # later" window is effectively never open at enumeration. Iterates a snapshot (_classes.to_a) so
-      # a mid-enumeration registration can't corrupt the backing Set and deleting while walking is safe.
+      # deleted from _classes here, so a class rejected once stays rejected. That covers both cases
+      # _currently_defined? rejects: a stale NAMED reference left by a Zeitwerk reload (the reloaded
+      # constant points at a fresh object), and a transient anonymous class (name nil) that never got
+      # a constant. Neither is pinned in the meantime: `_classes` holds its entries weakly. An
+      # anonymous class can never be a usable tool anyway (no stable tool_name, no
+      # const_source_location for tool_root membership), and `members` runs at adapter setup — well
+      # after class definition — so the "anonymous now, named later" window is effectively never open
+      # at enumeration. Iterates a snapshot (_classes.to_a) so a mid-enumeration registration can't
+      # corrupt the backing set and deleting while walking is safe.
       def all_classes
         live = []
         _classes.to_a.each do |klass|
@@ -155,7 +193,7 @@ module Axn
               # raising was registered in the same window but belongs to its own (valid) file, and
               # Ruby marks that file loaded so a later glob iteration would no-op — dropping it here
               # would leave the valid tool's constant defined yet permanently absent from _classes.
-              before = _classes.dup
+              before = _classes.to_a
               require file
             rescue StandardError, ScriptError => e
               expanded = File.expand_path(file)
@@ -253,7 +291,7 @@ module Axn
         # `_rollback_registrations(before)` must never read `before` unassigned — that was a second,
         # structurally separate bug (`_classes - nil` raising `TypeError`) that a raise anywhere above
         # the old assignment point used to trigger.
-        before = _classes.dup
+        before = _classes.to_a
 
         return unless loader.respond_to?(:eager_load_dir)
 
@@ -284,7 +322,7 @@ module Axn
       # return nil) are left registered — they're excluded from `members` by the name filter anyway,
       # and dropping one risks unregistering a nested dependency's not-yet-named class.
       def _rollback_registrations(before)
-        (_classes - before).each do |added|
+        (_classes.to_a - before).each do |added|
           src = _class_source_file(added)
           next unless src
 
@@ -413,7 +451,7 @@ module Axn
       end
 
       def _classes
-        @classes ||= Set.new
+        @classes ||= WeakClassSet.new
       end
 
       def _adapter_sources

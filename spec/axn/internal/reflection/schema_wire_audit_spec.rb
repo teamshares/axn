@@ -41,9 +41,9 @@ require "json"
 module SchemaWireAudit
   OMITTED = Object.new.freeze # "the key is not sent at all", distinct from every JSON value including nil
 
-  # One class per cell for the whole run, shared by every example that walks that cell. An axn class is kept alive
-  # once declared, so declaring the same cell once per example multiplied both the run time and the resident memory
-  # of a lane that runs beside others on one CI runner.
+  # One class per cell for the whole run, shared by every example that walks that cell, so each cell pays its
+  # declaration once rather than once per example. The trade is that this Hash keeps every cell's class resident
+  # until the process exits.
   def self.cells = (@cells ||= {})
 
   # The gate positions the defaulted walk varies: a default meeting a gated check is reached by the ungated
