@@ -2864,9 +2864,15 @@ module Axn
 
         # Whether a `default:` is computed on the call rather than used as written: the runtime calls anything that
         # answers `call` (`FieldConfig.resolve_default`), a Proc, a Method or a callable object alike. Asked of the
-        # value's CLASS through a bound read, so the value itself runs nothing.
+        # value's CLASS through a bound read, so the value itself runs nothing — and for a class or module (a
+        # service object with a `.call`), of its singleton class, which is where its own methods live.
         def computed_default?(value)
-          Internal::NativeMethods.public_instance_method?(Internal::Identity.class_of(value), :call)
+          lookup = if Internal::Identity.kind?(value, ::Module)
+                     Internal::NativeMethods.module_singleton_class(value)
+                   else
+                     Internal::Identity.class_of(value)
+                   end
+          Internal::NativeMethods.public_instance_method?(lookup, :call)
         end
 
         # A requirement a gate relaxes is named as conditional only when the gate ALONE relaxes it: where an ungated

@@ -384,6 +384,11 @@ RSpec.describe "Axn class-level schema reflection" do
     expect(computed.input_schema.dig(:properties, :v)).not_to have_key(:default)
     expect(computed.input_schema_residues).not_to be_empty
     expect(literal.input_schema.dig(:properties, :v, :default)).to eq("a")
+
+    # A service class with its own `.call` is computed too: its methods live on its singleton class.
+    service = Class.new { def self.call = "s" }
+    served = build_axn { expects :v, type: String, default: service }
+    expect(served.input_schema.dig(:properties, :v)).not_to have_key(:default)
   end
 
   # The gate relaxes the requirement only where nothing ungated may still reject an omitted value; a `validate:`
