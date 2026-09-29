@@ -1539,17 +1539,13 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(payload[:properties][:company_id]).to include(type: "integer")
     end
 
-    # at a MERGED parent node (two routes reaching the same wire path — `as:` disambiguates their shared
-    # reader, the same construction this file's own "merged node" examples use elsewhere),
-    # `apply_structured_schema!` merges a shape member into the emitted property ONLY from the
-    # representative (first non-model) route — a member on a LATER, non- representative route never
-    # reaches `prop[:properties]` at all. Searching every route (`shape_members_at` alone) found a
-    # member that was never actually emitted, so the check believed something had already claimed the
-    # key while nothing had: the model's own property was skipped in favor of it, but nothing replaced
-    # it — `company_id` ended up `required` with no matching entry in `properties`, JSON Schema
-    # admitting any value there.
-    it "ignores a shape: member on a NON-representative route at a merged parent node — it never " \
-       "reaches the emitted property, so it must not suppress the model's own generated id" do
+    # At a MERGED parent node (two routes reaching the same wire path — `as:` disambiguates their shared
+    # reader, the same construction this file's own "merged node" examples use elsewhere) every route's
+    # check runs, so a shape member on the NON-representative route is conjoined into the parent's
+    # property too. It is then the sibling that claims the id key: its own type wins over the unenforced
+    # `id_type:`, exactly as a member on the representative route does, and the id stays required with a
+    # property of its own.
+    it "states a shape: member on a NON-representative route at a merged parent node as the model id's sibling" do
       klass = Class.new do
         include Axn
         expects :root, type: Hash
@@ -1562,7 +1558,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       end
 
       payload = klass.input_schema.dig(:properties, :root, :properties, :sub, :properties, :payload)
-      expect(payload[:properties][:company_id]).to include(type: "integer")
+      expect(payload[:properties][:company_id]).to include(type: "string")
       expect(payload[:required]).to include("company_id")
     end
 
@@ -4699,10 +4695,11 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         expect(dropped).to eq([])
       end
 
-      # An UNTYPED nil-tolerant member emits no `:type`, so nullability must be read from the member
-      # config (nil_allowed?), not sniffed off the emitted property. (`optional: true` alone declares no
-      # validator and raises at runtime, so the nil-tolerance is carried by a real validator here.)
-      it "keeps a merged untyped nil-tolerant member nullable when the colliding deep child is optional" do
+      # An UNTYPED nil-tolerant member emits no `:type`, and an optional deep child reads a String as absent,
+      # so the member's own property is the whole story: it admits null and a non-object alike, as the runtime
+      # does. (`optional: true` alone declares no validator and raises at runtime, so the nil-tolerance is
+      # carried by a real validator here.)
+      it "keeps a merged untyped nil-tolerant member untyped when the colliding deep child is optional" do
         klass = Class.new do
           include Axn
           expects :payload, type: Hash do
@@ -4714,9 +4711,10 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
         bar = schema[:properties][:payload][:properties][:bar]
-        expect(bar[:type]).to eq(%w[object null])
+        expect(bar).not_to have_key(:type)
         expect(bar[:properties][:baz]).to include(type: %w[string null])
         expect(klass.call(payload: { bar: nil })).to be_ok # schema agrees: nil member accepted
+        expect(klass.call(payload: { bar: "abc" })).to be_ok # and a String, which the child reads as absent
       end
 
       it "strips null from a merged untyped nil-tolerant member when the colliding deep child is required" do
@@ -11074,6 +11072,64 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       node = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)[:properties][:f]
 
       expect(node[:additionalProperties]).to include(type: %w[string null])
+    end
+  end
+
+  # One example per site `merge_corner_product_spec` found, in the fast lane: each is a declaration a developer
+  # would write, and each read the node from one of its routes alone.
+  describe "several declarations meeting at one wire node" do
+    def node_at(klass, *path) = path.reduce(klass.input_schema) { |node, key| node[:properties][key] }
+
+    it "conjoins a second explicit route's type onto the property" do
+      klass = build_axn do
+        expects :payload, type: Hash
+        expects :inner, on: :payload, as: :pin, type: Hash
+        expects :company, on: "payload.inner", as: :by_path, type: Hash, optional: true
+        expects :company, on: :pin, as: :by_alias, type: Hash
+      end
+      node = node_at(klass, :payload, :inner, :company)
+
+      expect(node).to include(type: "object", minProperties: 1)
+      expect(klass.call(payload: { inner: { company: {} } })).not_to be_ok
+    end
+
+    it "leaves a dotted intermediate untyped where the colliding member is untyped and nothing beneath requires it" do
+      klass = build_axn do
+        expects :payload, type: Hash do
+          field :company, optional: true
+        end
+        expects :leaf, on: "payload.company", type: String, optional: true
+      end
+
+      expect(node_at(klass, :payload, :company)).not_to have_key(:type)
+      expect(klass.call(payload: { company: "a" })).to be_ok
+    end
+
+    it "does not make an explicit node an object for a required child read with method_call:" do
+      klass = build_axn do
+        expects :payload, type: Hash
+        expects :company, on: :payload
+        expects :size, on: "payload.company", method_call: true, type: Integer
+      end
+      node = node_at(klass, :payload, :company)
+
+      expect(node).not_to have_key(:type)
+      expect(klass.call(payload: { company: "abc" })).to be_ok
+      expect(residue_summaries(klass)).to include(described_class::METHOD_READ_RESIDUE)
+    end
+
+    it "names the raw key of a model: route where another declaration emits a property at it" do
+      record = Class.new { def self.fetch(_id) = new }
+      klass = build_axn do
+        expects :payload, type: Hash do
+          field :company, type: Hash, optional: true
+        end
+        expects :company, on: :payload, model: { klass: record, finder: :fetch }
+      end
+
+      expect(klass.call(payload: { company_id: 1, company: { "a" => 1 } })).not_to be_ok
+      expect(klass.input_schema_residues.map(&:path)).to include(%i[payload company])
+      expect(residue_summaries(klass)).to include(described_class::Vocabulary::MODEL_RAW_KEY_RESIDUE)
     end
   end
 end

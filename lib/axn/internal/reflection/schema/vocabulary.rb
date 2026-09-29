@@ -51,6 +51,11 @@ module Axn
 
           # A `model:` id is checked against the records its lookup can find, which no document can state.
           MODEL_LOOKUP_RESIDUE = "the id must name a record the model lookup finds; one it does not find is rejected"
+
+          # A `model:` route reads its own key as the record itself, which no JSON value is, so another declaration
+          # that puts a property at that key admits values the route rejects.
+          MODEL_RAW_KEY_RESIDUE = "a `model:` route also reads this key as the record itself, so a value sent here " \
+                                  "is rejected unless it is blank; the record is looked up by its id"
         end
       end
     end

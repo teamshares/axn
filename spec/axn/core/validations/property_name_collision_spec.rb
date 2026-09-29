@@ -3057,10 +3057,9 @@ RSpec.describe "declaration-time property name collisions" do
         end
       end
 
-      # A wire path declared by TWO routes is one merged node, and the emitter builds its object property from
-      # ONE of them (`Schema.property_representative` — the first non-model route). The other route is enforced
-      # at runtime but its `shape:`/`of:` is never emitted, so charging it rejected a contract over a schema
-      # that does not carry it.
+      # A wire path declared by TWO routes is one merged node. Each route is enforced at runtime, so the emitter
+      # conjoins every non-model route into the property (`Schema.property_routes`), and each route's `shape:`/`of:`
+      # is charged where it lands — once per name, however many routes repeat it.
       describe "a second route to a wire path the emitter already built" do
         def merged_axn(first_of:, second_of:)
           build_axn do
@@ -3071,11 +3070,19 @@ RSpec.describe "declaration-time property name collisions" do
           end
         end
 
-        it "charges nothing for the second route's of:, which is never emitted" do
-          wide = wide_type
-          klass = merged_axn(first_of: Data.define(:sm1), second_of: wide)
+        it "emits both routes' of:, conjoined" do
+          klass = merged_axn(first_of: Data.define(:sm1), second_of: Data.define(:sm1, :sm2))
+          node = klass.input_schema.dig(:properties, :a, :properties, :b, :properties, :c)
 
-          expect(klass.input_schema.dig(:properties, :a, :properties, :b, :properties, :c, :items, :properties).keys).to eq([:sm1])
+          expect(node.dig(:items, :properties).keys).to eq([:sm1])
+          expect(node[:allOf].map { |branch| branch.dig(:items, :properties).keys }).to eq([%i[sm1 sm2]])
+        end
+
+        it "charges the second route's of:, which the property carries" do
+          wide = wide_type
+
+          expect { merged_axn(first_of: Data.define(:sm1), second_of: wide).input_schema }
+            .to raise_error(ArgumentError, /names more than 25000 JSON properties/)
         end
 
         it "still charges the route the property IS built from" do

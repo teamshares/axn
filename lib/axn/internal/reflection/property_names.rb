@@ -876,9 +876,9 @@ module Axn
         # depth (`apply_nested_subfields!` returns at the blocking node) while `dropped` deliberately records only
         # the deep configs it reports to the author, a depth-1 subfield under such a parent being silently omitted.
         #
-        # WHICH config shapes the property is a separate question, because one wire path can be declared by two
-        # routes and the emitter builds from ONE of them. At a subfield node that is `Schema.property_representative`
-        # — the very config `apply_children!` emits from. At top level it is the last config declared with that wire
+        # WHICH configs shape the property is a separate question, because one wire path can be declared by two
+        # routes. At a subfield node that is `Schema.property_routes` — every route `apply_children!` conjoins into
+        # the property, whose shapes the trie charges once per name however many routes repeat it. At top level it is the last config declared with that wire
         # key, because `build_input` writes `properties[config.field]` per config and a later write wins; that too is
         # reachable only by assigning configs onto a class (a declared duplicate is rejected outright), and if it
         # ever drifts it UNDER-counts, which only loosens the bound.
@@ -912,7 +912,7 @@ module Axn
             owns = if path.ancestors.empty?
                      top_level.key?(config)
                    else
-                     Schema.property_representative(path.node.configs).equal?(config)
+                     Schema.property_routes(path.node.configs).any? { |route| route.equal?(config) }
                    end
             [config, input_property_path(config, path.wire_path), owns]
           end
