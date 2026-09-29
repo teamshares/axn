@@ -76,8 +76,9 @@ RSpec.describe "Axn include does not shadow a pre-existing base-class class meth
 
     residues = tool_class.input_schema_residues
 
-    expect(residues.map { |r| [r.path, r.kind] }).to eq([[[], :inherent]])
-    expect(residues.sole.summary).to include("name (on: company.profile)")
+    root = residues.select { |r| r.path.empty? }
+    expect(root.map(&:kind)).to eq([:inherent])
+    expect(root.sole.summary).to include("name (on: company.profile)")
     expect(Axn.config.logger).to have_received(:warn).with(a_string_including("omits deep subfield(s)")).once
   end
 

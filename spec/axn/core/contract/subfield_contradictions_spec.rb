@@ -1000,7 +1000,7 @@ RSpec.describe Axn::Core::Contract::SubfieldContradictions do
       # ...and the reason it is accepted: nothing of that member reaches the document, so the generated id
       # owns the key uncontested.
       inner = klass.input_schema.dig(:properties, :outer, :properties, :mid, :properties, :payload, :properties, :inner)
-      expect(inner[:properties][:company_id]).to include(description: "ID of the DeadCo record")
+      expect(inner[:properties][:company_id][:description]).to start_with("ID of the DeadCo record")
       expect(inner[:properties][:company_id]).not_to have_key(:properties)
     end
 

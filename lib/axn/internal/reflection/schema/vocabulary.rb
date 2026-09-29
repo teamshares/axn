@@ -48,6 +48,9 @@ module Axn
                           "its condition opens"
 
           GATED_REQUIRED_RESIDUE = "required on the calls its condition opens"
+
+          # A `model:` id is checked against the records its lookup can find, which no document can state.
+          MODEL_LOOKUP_RESIDUE = "the id must name a record the model lookup finds; one it does not find is rejected"
         end
       end
     end

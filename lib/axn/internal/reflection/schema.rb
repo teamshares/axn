@@ -1417,6 +1417,13 @@ module Axn
           model_id_siblings.each do |id_field, model_configs, explicit_id|
             merge_model_id_type_into_sibling!(prop[:properties][id_field], model_configs, explicit_id, id_field) if prop[:properties][id_field]
           end
+          # Named once the id's property is final, whichever declaration wrote it.
+          children.each do |key, node|
+            next if node.implicit? || node.configs.none? { |c| c.validations[:model] }
+
+            id_field = Internal::FieldConfig.model_id_key(key)
+            prop[:properties][id_field] = with_model_lookup_residue(prop[:properties][id_field])
+          end
           # A required nested model id can't be null (a null token resolves the model to nil at runtime).
           # Done after the loop so it survives an explicit id subfield declared after the model: subfield.
           required_model_ids.each { |id_field| reject_null!(prop[:properties][id_field]) if prop[:properties][id_field] }
@@ -2810,6 +2817,13 @@ module Axn
           names = numeric.map { |token| Axn::Internal::Rendering.module_name(token) }.join(", ")
           record_residue(prop, "the runtime checks for a Ruby #{names}, and a JSON number arrives as an Integer (1) or a " \
                                "Float (1.5)")
+        end
+
+        # A null-only id never reaches the lookup, so it has nothing to name.
+        def with_model_lookup_residue(prop)
+          return prop if prop.nil? || projected_types(prop) == ["null"]
+
+          record_residue(prop, MODEL_LOOKUP_RESIDUE)
         end
 
         # A callable is named rather than rendered: its only rendering is an object address, and asking it for

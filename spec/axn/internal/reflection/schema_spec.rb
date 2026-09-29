@@ -1128,7 +1128,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       # The explicit uuid type/format survives — NOT overwritten by the generic, unconstrained
       # model-id property that `expects :company, model:` would otherwise generate.
       expect(schema[:properties][:company_id]).to include(type: "string", format: "uuid")
-      expect(schema[:properties][:company_id]).not_to have_key(:description)
+      expect(schema[:properties][:company_id][:description]).not_to include("ID of the")
 
       # `required` lists company_id exactly once, even though both the explicit field and the
       # model: field each independently contribute a required "company_id" entry.
@@ -1505,7 +1505,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           expects :company, model: { klass: Struct.new(:id), id_type: Integer }
         end
 
-        expect(klass.input_schema[:properties][:company_id]).to eq(default: 1, type: "integer")
+        expect(klass.input_schema[:properties][:company_id].except(:description)).to eq(default: 1, type: "integer")
       end
 
       it "does the same merge for a NESTED untyped sibling, regardless of which is declared first " \
@@ -1526,7 +1526,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
         [declared_model_first, declared_sibling_first].each do |klass|
           company_id = klass.input_schema.dig(:properties, :payload, :properties, :company_id)
-          expect(company_id).to eq(default: 1, type: "integer")
+          expect(company_id.except(:description)).to eq(default: 1, type: "integer")
         end
       end
 
@@ -1778,7 +1778,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       end
 
       schema = klass.input_schema.dig(:properties, :payload)
-      expect(schema[:properties][:company_id]).to eq(type: "integer")
+      expect(schema[:properties][:company_id].except(:description)).to eq(type: "integer")
       expect(schema[:required]).to include("company_id")
     end
 

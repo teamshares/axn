@@ -593,6 +593,22 @@ RSpec.describe "Axn class-level schema reflection" do
       expect(klass.input_schema_residues).to eq([])
     end
 
+    # A `model:` id passes only when its lookup finds a record, which no document states — named on the id whichever
+    # declaration wrote its property.
+    it "names the model lookup on a generated id and on an explicit sibling id" do
+      stub_const("LookupCo", Struct.new(:id) { def self.find(id) = id == 1 ? new(id) : nil })
+      generated = build_axn { expects :company, model: { klass: LookupCo, finder: :find, id_type: Integer } }
+      sibling = build_axn do
+        expects :company_id, type: Integer
+        expects :company, model: { klass: LookupCo, finder: :find }
+      end
+
+      expect(generated.call(company_id: 2)).not_to be_ok
+      [generated, sibling].each do |action|
+        expect(action.input_schema_residues.map { |r| [r.path, r.kind] }).to eq([[[:company_id], :inherent]])
+      end
+    end
+
     # A JSON number arrives as an Integer or a Float, and `"number"` cannot say which a field wants, so any numeric
     # class short of `Numeric` or the Integer-and-Float pair is named. `Integer` alone is the stated `1.0` exception.
     {
