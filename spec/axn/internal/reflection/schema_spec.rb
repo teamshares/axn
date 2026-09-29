@@ -4254,6 +4254,28 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(schema[:properties][:payload][:properties][:meta][:properties][:id]).to include(type: "integer")
     end
 
+    # A required `method_call:` descendant reads a method off whatever the intermediate holds (`"abc".size`), so it
+    # does not make the intermediate an object; a required plain-key read beside it still does.
+    it "types an implicit intermediate as an object only for a required plain-key read, never for a method_call: one" do
+      method_only = Class.new do
+        include Axn
+        expects :payload, type: Hash
+        expects :size, on: "payload.x", type: Integer, method_call: true
+        def call = nil
+      end
+      mixed = Class.new do
+        include Axn
+        expects :payload, type: Hash
+        expects :detail, on: "payload.x", type: String
+        expects :size, on: "payload.x", type: Integer, method_call: true
+      end
+
+      expect(method_only.call(payload: { x: "abc" })).to be_ok
+      expect(method_only.input_schema.dig(:properties, :payload, :properties, :x)).not_to have_key(:type)
+      expect(method_only.input_schema_residues.map(&:summary)).to include(a_string_including("read with `method_call:`"))
+      expect(mixed.input_schema.dig(:properties, :payload, :properties, :x)).to include(type: "object")
+    end
+
     it "makes an all-optional deep chain omittable and nullable at every level" do
       klass = Class.new do
         include Axn

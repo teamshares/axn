@@ -874,6 +874,24 @@ module Axn
           node.children.each_value.any? { |child| child.configs.any?(&:method_call) || subtree_reads_methods?(child) }
         end
 
+        # Whether something beneath `node` that reads by plain KEY is required on every call — which is what rejects a
+        # value at `node` that is not an object, since a key read off anything else settles absent. A `method_call:`
+        # declaration proves nothing about that: it reads a method off whatever is there (`"abc".size`), so its own
+        # requiredness is left out, and so is everything reached only through it. The same own-level rule
+        # `node_optional?` applies, asked of a child's plain-key, ungated routes alone.
+        def subtree_requires_object?(node, ann)
+          node.children.each_value.any? do |child|
+            next subtree_requires_object?(child, ann) if child.implicit?
+
+            child.configs.any? do |config|
+              next false if config.method_call || requiredness_conditionally_relaxable?(config)
+
+              !usable_default?(config, subfield: true) &&
+                (!nil_tolerance_rescues_absence?(config) || subtree_requires_object?(child, ann))
+            end
+          end
+        end
+
         # Whether a node may be absent from its parent object. An implicit node (a dotted-path
         # intermediate with no declaration of its own) is omittable exactly when nothing beneath it
         # requires presence. An explicit node follows the single-level rule at every depth: a usable
@@ -1628,18 +1646,19 @@ module Axn
           # An implicit intermediate's annotation is nullable exactly when nothing beneath requires presence (a
           # nil parent digs every descendant to nil, PRO-2857). With no colliding member, that same condition
           # means nothing at this key rejects a value that is not an object either: a descendant read off a
-          # String or a number settles absent too (PRO-2886). So such a node adds only its `properties`, which
-          # JSON Schema applies to an object alone, and states no `type` of its own — whatever the key already
-          # carries (a `model:` route's generated id, a declared type's member placeholder) keeps its own. A
-          # `method_call:` descendant is the exception to "settles absent": it reads a method off whatever is
-          # there, and what that method returns is checked, so that is named.
+          # String or a number settles absent too (PRO-2886) — and so does one whose only required descendants
+          # read by `method_call:`, which accept whatever answers the method (`subtree_requires_object?`). So such
+          # a node adds only its `properties`, which JSON Schema applies to an object alone, and states no `type`
+          # of its own — whatever the key already carries (a `model:` route's generated id, a declared type's
+          # member placeholder) keeps its own. A `method_call:` descendant is the exception to "settles absent":
+          # it reads a method off whatever is there, and what that method returns is checked, so that is named.
           #
           # A shape-member collision is typed by the members, and caps nullability by their OWN nil-tolerance —
           # nullable only when EVERY colliding member tolerates nil (runtime enforces all routes), read from each
           # config via nil_allowed? (the same predicate the parent nesting uses) never sniffed off the emitted
           # property: an untyped nil-tolerant member emits no `type`, so a null branch is invisible there and
           # property-sniffing would force it non-nullable though runtime accepts a nil member.
-          if members.empty? && ann[node].nullable
+          if members.empty? && (ann[node].nullable || !subtree_requires_object?(node, ann))
             target = record_residue(target, METHOD_READ_RESIDUE) if subtree_reads_methods?(node)
           else
             nullable = ann[node].nullable && members.all? { |m| nil_admitted_with_gates_closed?(m) }

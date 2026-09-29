@@ -1092,7 +1092,9 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
   # `model:` routes use a finder that resolves any token, so the id's own type is never what rejects a call
   # here, and the one `id_type:` row that states a type keeps its payloads inside it (the model id's narrower
   # type is a stated exception to the exact core).
-  def relaxed_declarations = relaxed_model_id_declarations.merge(relaxed_value_declarations, raw_array_shape_grid)
+  def relaxed_declarations
+    relaxed_model_id_declarations.merge(relaxed_method_read_declarations, relaxed_value_declarations, raw_array_shape_grid)
+  end
 
   # Every raw `shape:` spelling a distributing `type: Array` (or a bag's `klass: Array`) can carry, at each position
   # it can be written: {field, raw member, `of:` bag} x {explicit `container:` Array / Hash / none}. A spelling a
@@ -1164,10 +1166,6 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
         expects :payload, type: Hash
         expects :detail, on: "payload.company_id", type: String, optional: true
       }, in_payload],
-      "optional method_call dotted subfield" => [proc {
-        expects :payload, type: Hash
-        expects :size, on: "payload.company_id", type: String, optional: true, method_call: true
-      }, in_payload + [{ payload: { company_id: "abc" } }, { payload: { company_id: [1, 2] } }]],
       "id_type beside a differently typed sibling" => [proc {
         expects :company, model: { klass: record, finder: :fetch, id_type: Integer }
         expects :company_id, type: String
@@ -1178,6 +1176,36 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
       "id_type Float" => [proc {
         expects :company, model: { klass: record, finder: :fetch, id_type: Float }
       }, [{ company_id: 1 }, { company_id: 1.5 }]],
+    }
+  end
+
+  # The same keys read with `method_call:`, which reads a method off whatever the key holds rather than settling
+  # absent — alone, beside a `model:` id sharing the key, and beside a plain-key read that still wants an object.
+  def relaxed_method_read_declarations
+    record = audit_record
+    in_payload = [1, "s", nil, { detail: "x" }, { detail: 5 }, {}].map { |id| { payload: { company_id: id } } } + [{ payload: {} }]
+    {
+      # A REQUIRED `method_call:` descendant reads a method off whatever the key holds, so it rejects no value for
+      # not being an object — with or without a `model:` id sharing the key.
+      "model id + required method_call dotted claim" => [proc {
+        expects :payload, type: Hash
+        expects :company, on: :payload, model: { klass: record, finder: :fetch }
+        expects :size, on: "payload.company_id", type: Integer, method_call: true
+      }, in_payload + [{ payload: { company_id: "abc" } }, { payload: { company_id: [1, 2] } }]],
+      "required method_call dotted subfield" => [proc {
+        expects :payload, type: Hash
+        expects :size, on: "payload.company_id", type: Integer, method_call: true
+      }, in_payload + [{ payload: { company_id: "abc" } }, { payload: { company_id: [1, 2] } }]],
+      # ...while a required plain-key read beside it still rejects a non-object.
+      "required method_call beside a required key read" => [proc {
+        expects :payload, type: Hash
+        expects :detail, on: "payload.company_id", type: String
+        expects :size, on: "payload.company_id", type: Integer, method_call: true
+      }, in_payload + [{ payload: { company_id: "abc" } }, { payload: { company_id: { detail: "x", size: 2 } } }]],
+      "optional method_call dotted subfield" => [proc {
+        expects :payload, type: Hash
+        expects :size, on: "payload.company_id", type: String, optional: true, method_call: true
+      }, in_payload + [{ payload: { company_id: "abc" } }, { payload: { company_id: [1, 2] } }]],
     }
   end
 
