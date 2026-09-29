@@ -944,7 +944,7 @@ module Axn
             conditionals << clause
             return state_gate_open_contract!(clause, prop, config)
           end
-          return record_residue(prop, GATED_REQUIRED_RESIDUE, kind: :conditional) if gate_relaxes_requiredness?(config, node.children, ann)
+          return with_gated_requirement(prop, [config]) if gate_relaxes_requiredness?(config, node.children, ann)
 
           required << required_key(config.field)
           prop
@@ -1433,7 +1433,7 @@ module Axn
           return if prop[:required].include?(required_key(key))
 
           if node_optional?(node, ann, configs.reject { |c| requiredness_conditionally_relaxable?(c) })
-            prop[:properties][key] = record_residue(prop[:properties][key], GATED_REQUIRED_RESIDUE, kind: :conditional)
+            prop[:properties][key] = with_gated_requirement(prop[:properties][key], configs)
           else
             prop[:required] << required_key(key)
           end
@@ -1580,7 +1580,7 @@ module Axn
           return if sibling_id_rescued?(children, key, node)
 
           if node_optional?(node, ann, model_configs.reject { |c| requiredness_conditionally_relaxable?(c) })
-            prop[:properties][id_field] = record_residue(prop[:properties][id_field], GATED_REQUIRED_RESIDUE, kind: :conditional) if prop[:properties][id_field]
+            prop[:properties][id_field] = with_gated_requirement(prop[:properties][id_field], model_configs)
             return
           end
 
@@ -2860,6 +2860,18 @@ module Axn
             id_field = Internal::FieldConfig.model_id_key(key)
             prop[:properties][id_field] = with_model_lookup_residue(prop[:properties][id_field], model_configs)
           end
+        end
+
+        # A requirement a gate relaxes is named as conditional only when the gate ALONE relaxes it: where an ungated
+        # check whose nil verdict is unknowable (a `validate:`) is also why the position is optional, that check's own
+        # residue says so, and calling the requirement conditional would claim the check goes away with the gate.
+        def with_gated_requirement(prop, configs)
+          return prop if prop.nil?
+
+          relaxed = configs.select { |config| requiredness_conditionally_relaxable?(config) }
+          return prop unless relaxed.all? { |config| requiredness_conditionally_relaxable?(config, unknowable_relaxes: false) }
+
+          record_residue(prop, GATED_REQUIRED_RESIDUE, kind: :conditional)
         end
 
         # A null-only id never reaches the lookup, so it has nothing to name. The lookup is conditional when every

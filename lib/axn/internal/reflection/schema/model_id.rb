@@ -196,7 +196,7 @@ module Axn
             # Only a gate imposes the requirement: the id is left out of `required`, and the conditional
             # requirement is named on it, exactly as an ordinary field's is.
             if requiredness_conditionally_relaxable?(config) && !stranded
-              properties[id_field] = record_residue(properties[id_field], GATED_REQUIRED_RESIDUE, kind: :conditional) if properties[id_field]
+              properties[id_field] = with_gated_requirement(properties[id_field], [config])
               return
             end
 

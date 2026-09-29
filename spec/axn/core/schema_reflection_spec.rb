@@ -375,6 +375,16 @@ RSpec.describe "Axn class-level schema reflection" do
     expect(Array(klass.input_schema.dig(:properties, :payload, :required))).not_to include("company_id")
   end
 
+  # The gate relaxes the requirement only where nothing ungated may still reject an omitted value; a `validate:`
+  # that may is named by its own residue, and the requirement is not called conditional.
+  it "calls a requirement conditional only where the gate alone relaxes it" do
+    with_validate = build_axn { expects :v, presence: false, validate: ->(_) {}, type: { klass: String, if: -> { false } } }
+    gate_only = build_axn { expects :v, presence: false, type: { klass: String, if: -> { false } } }
+
+    expect(with_validate.input_schema_residues.map(&:summary)).not_to include("required on the calls its condition opens")
+    expect(gate_only.input_schema_residues.map(&:summary)).to include("required on the calls its condition opens")
+  end
+
   # A pattern resolved per call may match the empty string a nil is tested as, so its nil verdict is as
   # unknowable as a `validate:`'s, and it does not keep the field required.
   it "leaves a field optional when its only nil-rejecting check is a per-call format: pattern" do

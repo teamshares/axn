@@ -101,7 +101,9 @@ module Axn
           # vacuously (`[].all?`) mark the node omittable and lose that test. Only a GATE — which skips the
           # gated check entirely when closed — genuinely relaxes requiredness. Own-level emission is
           # unaffected (this governs ancestor propagation only; see annotate_node!).
-          def requiredness_conditionally_relaxable?(config)
+          # `unknowable_relaxes: false` asks the stricter question: whether the GATE alone relaxes the requirement,
+          # an entry whose nil verdict is unknowable counting as one that may still reject an omitted value.
+          def requiredness_conditionally_relaxable?(config, unknowable_relaxes: true)
             gate_keys = Internal::FieldConfig::CONDITIONAL_GATE_KEYS
             decl_gates = config.validations.slice(*gate_keys)
             # `entries` are the real VALIDATORS — shared options (strict:, on:, …) aren't validators and
@@ -115,7 +117,7 @@ module Axn
             # an omitted value, it would keep in `required` a field the runtime accepts omitted once its gates close.
             shared = shared_validation_options(config.validations)
             entries.all? do |key, opt|
-              nil_verdict_unknowable?(key, opt, shared) || nil_tolerant_validation?(key, opt, shared) ||
+              (unknowable_relaxes && nil_verdict_unknowable?(key, opt, shared)) || nil_tolerant_validation?(key, opt, shared) ||
                 entry_effective_gate_keys(opt, decl_gates).any?
             end
           end

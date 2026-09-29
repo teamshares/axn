@@ -592,9 +592,7 @@ module Axn
             named_members(members).each do |m, name|
               key = name.to_sym
               props[key] = build_property(m, for_output:, ancestry:).compact
-              if !for_output && !optional_for_schema?(m) && requiredness_conditionally_relaxable?(m)
-                props[key] = record_residue(props[key], GATED_REQUIRED_RESIDUE, kind: :conditional)
-              end
+              props[key] = with_gated_requirement(props[key], [m]) if !for_output && !optional_for_schema?(m) && requiredness_conditionally_relaxable?(m)
               # A member whose presence obligation can be gated off — either wholesale by a declaration-level
               # gate, or because every nil-rejecting entry is nil-tolerant or covered by a per-validator (nested)
               # gate — can legitimately be omitted on a call whose gate is closed (outbound, the serializer emits
