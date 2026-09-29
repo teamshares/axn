@@ -2,6 +2,7 @@
 
 require "date"
 require "time"
+require "bigdecimal"
 # A residue renders the fragment it declined to conjoin verbatim, so the builder cannot load without an encoder.
 require "json"
 
@@ -2409,16 +2410,39 @@ module Axn
         # change the document on every boot.
         PER_CALL_RENDERING = "(resolved per call)"
 
-        # Ruby's default `to_s` for an object with none of its own, whose address would likewise change per boot.
-        DEFAULT_OBJECT_RENDERING = /\A#<[^>]*0x\h+[^>]*>\z/
+        # The literal classes whose rendering says what the value is, each read through its OWN class's `to_s`
+        # bound to the value — the exact class only, so the text is the built-in one and no override can run.
+        # Anything else, a callable object included, is named by its class: its own `to_s` is caller code, which
+        # reflection may never run, and Ruby's default one is an address that would change on every boot.
+        LITERAL_RENDERINGS = {
+          ::Float => ::Float.instance_method(:to_s), ::Regexp => ::Regexp.instance_method(:to_s),
+          ::Rational => ::Rational.instance_method(:to_s), ::Complex => ::Complex.instance_method(:to_s),
+          ::BigDecimal => ::BigDecimal.instance_method(:to_s), ::Date => ::Date.instance_method(:to_s),
+          ::DateTime => ::DateTime.instance_method(:to_s), ::Time => ::Time.instance_method(:to_s)
+        }.freeze
+        RANGE_EXCLUDE_END = ::Range.instance_method(:exclude_end?)
+        RANGE_BEGIN = ::Range.instance_method(:begin)
+        RANGE_END = ::Range.instance_method(:end)
+        private_constant :LITERAL_RENDERINGS, :RANGE_EXCLUDE_END, :RANGE_BEGIN, :RANGE_END
 
         def mentionable_rendering(value)
+          # A String (a subclass included) is read through `Text.renderable`, whose reads are bound.
+          return Axn::Internal::Text.renderable(value) if Axn::Internal::Identity.kind?(value, ::String)
           return PER_CALL_RENDERING if Axn::Internal::Identity.kind?(value, ::Proc) || Axn::Internal::Identity.kind?(value, ::Method)
+          return range_rendering(value) if exactly?(value, ::Range)
 
-          rendered = Axn::Internal::Rendering.value_rendering(value)
-          return Axn::Internal::Rendering.class_name(value) if rendered.nil? || rendered.match?(DEFAULT_OBJECT_RENDERING)
+          to_s = LITERAL_RENDERINGS[Axn::Internal::Identity.class_of(value)]
+          return Axn::Internal::Text.renderable(to_s.bind_call(value)) if to_s
 
-          rendered
+          Axn::Internal::Rendering.class_name(value)
+        end
+
+        # A Range's endpoints are reduced like any other value, so an endpoint of a caller's class runs nothing.
+        def range_rendering(range)
+          ends = [RANGE_BEGIN.bind_call(range), RANGE_END.bind_call(range)].map do |endpoint|
+            Axn::Internal::Identity.nil_value?(endpoint) ? "" : JSON.generate(json_mentionable(endpoint))
+          end
+          ends.join(RANGE_EXCLUDE_END.bind_call(range) ? "..." : "..")
         end
 
         # An authored `description:` survives a stand-down even though the declaration's constraints do not:

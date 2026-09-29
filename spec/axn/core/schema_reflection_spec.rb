@@ -638,6 +638,21 @@ RSpec.describe "Axn class-level schema reflection" do
       expect(summaries.join).not_to match(/0x\h+/)
     end
 
+    # Reflection never runs caller code, so a residue names an option by its class rather than asking it for text.
+    it "never runs a per-call option's own to_s while naming it" do
+      calls = []
+      stub_const("Chatty", Class.new do
+        define_method(:call) { |*| true }
+        define_method(:to_s) { calls << :to_s and "SECRET" }
+      end)
+      action = build_axn { expects :n, type: [Integer, Float], numericality: { only_integer: Chatty.new, greater_than: Chatty.new } }
+
+      summaries = action.input_schema_residues.map(&:summary).join
+      expect(calls).to be_empty
+      expect(summaries).to include("Chatty")
+      expect(summaries).not_to include("SECRET")
+    end
+
     # A JSON number arrives as an Integer or a Float, and `"number"` cannot say which a field wants, so any numeric
     # class short of `Numeric` or the Integer-and-Float pair is named. `Integer` alone is the stated `1.0` exception.
     {
