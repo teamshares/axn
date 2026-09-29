@@ -677,6 +677,16 @@ RSpec.describe "Axn class-level schema reflection" do
       expect(narrow.input_schema_residues).not_to be_empty
     end
 
+    # A same-key gate inside the `model:` bag, blank or not, replaces the declaration's for the lookup, which then
+    # runs on every call.
+    it "names a model lookup as always applying when its entry overrides the declaration gate" do
+      stub_const("LookupCo", Struct.new(:id) { def self.find(id) = id == 1 ? new(id) : nil })
+      action = build_axn { expects :company, model: { klass: LookupCo, finder: :find, id_type: Integer, if: nil }, if: -> { false } }
+
+      expect(action.call(company_id: 2)).not_to be_ok
+      expect(action.input_schema_residues.select { |r| r.summary.include?("model lookup") }.map(&:kind)).to eq([:inherent])
+    end
+
     # A JSON number arrives as an Integer or a Float, and `"number"` cannot say which a field wants, so any numeric
     # class short of `Numeric` or the Integer-and-Float pair is named. `Integer` alone is the stated `1.0` exception.
     {

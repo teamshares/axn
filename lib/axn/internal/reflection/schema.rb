@@ -2862,14 +2862,23 @@ module Axn
           end
         end
 
-        # A null-only id never reaches the lookup, so it has nothing to name. A DECLARATION gate skips the lookup on
-        # the calls it closes, so the lookup is conditional when every model route is declaration-gated; one ungated
-        # route looks up on every call. (A gate inside the `model:` bag does not stop the lookup.)
+        # A null-only id never reaches the lookup, so it has nothing to name. The lookup is conditional when every
+        # model route's lookup is gated; one ungated route looks up on every call.
         def with_model_lookup_residue(prop, model_configs)
           return prop if prop.nil? || projected_types(prop) == ["null"]
-          return record_residue(prop, MODEL_LOOKUP_RESIDUE) unless model_configs.all? { |config| conditionally_gated?(config) }
+          return record_residue(prop, MODEL_LOOKUP_RESIDUE) unless model_configs.all? { |config| model_lookup_gated?(config) }
 
           record_residue(prop, "#{GATED_RESIDUE}; #{MODEL_LOOKUP_RESIDUE}", kind: :conditional)
+        end
+
+        # Measured: the lookup is skipped only by a DECLARATION gate key the `model:` entry does not itself mention.
+        # A key the entry mentions — blank or not — replaces the declaration's for that key, and an entry's own gate
+        # never skips the lookup (`model: { …, if: nil }, if: -> { false }` looks up on every call).
+        def model_lookup_gated?(config)
+          entry = config.validations[:model]
+          config.validations.slice(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS).each_key.any? do |key|
+            !Axn::Validation::Base.entry_carries_option?(entry, key)
+          end
         end
 
         # A callable is named rather than rendered: its only rendering is an object address, and asking it for
