@@ -1969,6 +1969,21 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(described_class.build_output(no_of.external_field_configs)[:properties][:items]).not_to have_key(:items)
     end
 
+    # The same block, on the other side and with the class named: INPUT publishes the members without `of:`, and
+    # on OUTPUT `of: Hash` is what pins each element to a member-keyed object and lets the members be published.
+    it "describes a shaped array's items on INPUT without of:, and on OUTPUT once of: Hash names the element" do
+      klass = Class.new do
+        include Axn
+        expects(:rows, type: Array) { field :id, type: Integer }
+        exposes(:out, type: Array, of: Hash) { field :id, type: Integer }
+        def call = nil
+      end
+      items = { type: "object", properties: { id: { type: "integer" } }, required: ["id"] }
+
+      expect(klass.input_schema.dig(:properties, :rows, :items)).to eq(items)
+      expect(klass.output_schema.dig(:properties, :out, :items)).to eq(items)
+    end
+
     it "keeps scalar array item types when a shape reads members off the scalar element (of: String + field :length)" do
       # Runtime accepts string elements (OfValidator checks the class; ShapeValidator reads String#length),
       # so forcing object items would reject a valid string array. The scalar item type is preserved, and the
