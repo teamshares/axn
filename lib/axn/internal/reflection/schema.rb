@@ -1207,7 +1207,7 @@ module Axn
           # reaches validation with a value — requiredness is tier 1, and listing the field in `required`
           # would reject that call. Both modes resolve toward omittable. A Proc whose value then fails the
           # field's own checks is the same accepted divergence as a non-blank invalid literal default.
-          return true if value.is_a?(Proc)
+          return true if computed_default?(value)
           return false if blank_default_rejected?(config)
 
           subfield ? config.applied_default? : true
@@ -1234,7 +1234,7 @@ module Axn
           return false unless config.respond_to?(:default)
 
           value = config.default
-          return false if value.nil? || value.is_a?(Proc)
+          return false if value.nil? || computed_default?(value)
 
           validations = gate_closed_validations(config, config.validations)
           return true if presence_blank?(value) && presence_rejects_blank?(validations)
@@ -2862,6 +2862,13 @@ module Axn
           end
         end
 
+        # Whether a `default:` is computed on the call rather than used as written: the runtime calls anything that
+        # answers `call` (`FieldConfig.resolve_default`), a Proc, a Method or a callable object alike. Asked of the
+        # value's CLASS through a bound read, so the value itself runs nothing.
+        def computed_default?(value)
+          Internal::NativeMethods.public_instance_method?(Internal::Identity.class_of(value), :call)
+        end
+
         # A requirement a gate relaxes is named as conditional only when the gate ALONE relaxes it: where an ungated
         # check whose nil verdict is unknowable (a `validate:`) is also why the position is optional, that check's own
         # residue says so, and calling the requirement conditional would claim the check goes away with the gate.
@@ -3021,7 +3028,7 @@ module Axn
         def with_input_default(prop, config, subfield:, for_output: false)
           declared_default = declared_attribute(config, :default)
           return prop if declared_default.nil?
-          return for_output ? prop : record_residue(prop, PROC_DEFAULT_RESIDUE) if declared_default.is_a?(Proc)
+          return for_output ? prop : record_residue(prop, PROC_DEFAULT_RESIDUE) if computed_default?(declared_default)
 
           emit_default = subfield ? config.applied_default? : true
           prop[:default] = normalize_schema_literal(declared_default) if emit_default

@@ -161,7 +161,7 @@ module Axn
             return false unless usable_default?(config, subfield: true)
 
             value = declared_attribute(config, :default)
-            return true if value.is_a?(Proc)
+            return true if computed_default?(value)
 
             !presence_blank?(value)
           end

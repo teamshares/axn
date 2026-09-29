@@ -375,6 +375,17 @@ RSpec.describe "Axn class-level schema reflection" do
     expect(Array(klass.input_schema.dig(:properties, :payload, :required))).not_to include("company_id")
   end
 
+  # The runtime calls any default that answers `call`, not only a Proc, so each is left out and named as computed.
+  it "treats every callable default as computed, and keeps a literal one" do
+    holder = Class.new { def self.now = "x" }
+    computed = build_axn { expects :v, type: String, default: holder.method(:now) }
+    literal = build_axn { expects :v, type: String, default: "a" }
+
+    expect(computed.input_schema.dig(:properties, :v)).not_to have_key(:default)
+    expect(computed.input_schema_residues).not_to be_empty
+    expect(literal.input_schema.dig(:properties, :v, :default)).to eq("a")
+  end
+
   # The gate relaxes the requirement only where nothing ungated may still reject an omitted value; a `validate:`
   # that may is named by its own residue, and the requirement is not called conditional.
   it "calls a requirement conditional only where the gate alone relaxes it" do
