@@ -1208,7 +1208,7 @@ module Axn
           # would reject that call. Both modes resolve toward omittable. A Proc whose value then fails the
           # field's own checks is the same accepted divergence as a non-blank invalid literal default.
           return true if computed_default?(value)
-          return false if blank_default_rejected?(config)
+          return false if broken_default?(value) || blank_default_rejected?(config)
 
           subfield ? config.applied_default? : true
         end
@@ -1234,7 +1234,7 @@ module Axn
           return false unless config.respond_to?(:default)
 
           value = config.default
-          return false if value.nil? || computed_default?(value)
+          return false if value.nil? || default_invocation(value) != :literal
 
           validations = gate_closed_validations(config, config.validations)
           return true if presence_blank?(value) && presence_rejects_blank?(validations)
@@ -2833,16 +2833,20 @@ module Axn
         # every JSON number) is named. `Integer` alone is the stated exception: `"integer"` also admits `1.0`, and
         # naming that on every Integer field would say nothing a caller acts on.
         def report_numeric_wire_form(prop, validations)
-          numeric = declared_type_tokens(validations).select do |token|
+          tokens = declared_type_tokens(validations)
+          numeric = tokens.select do |token|
             class_token?(token) && (Internal::Identity.same?(token, ::Numeric) || strict_descendant?(token, ::Numeric))
           end
-          return prop if numeric.empty? || numeric.any? { |token| Internal::Identity.same?(token, ::Numeric) }
+          return prop if numeric.empty?
           # Only where a JSON number still reaches a numeric branch: one a narrowing dropped admits none.
           return prop unless projected_types(prop).intersect?(%w[number integer])
 
-          integer = numeric.any? { |token| Internal::Identity.same?(token, ::Integer) }
-          float = numeric.any? { |token| Internal::Identity.same?(token, ::Float) }
-          return prop if integer && (float || numeric.size == 1)
+          # Asked of the WHOLE union: a JSON number passes through any branch admitting its Ruby class, `Object` or
+          # `Numeric` included.
+          admits = ->(klass) { tokens.any? { |token| Internal::Identity.kind?(token, ::Module) && Internal::NativeMethods.includes_module?(klass, token) } }
+          integer = admits.call(::Integer)
+          return prop if integer && admits.call(::Float)
+          return prop if integer && numeric.all? { |token| Internal::Identity.same?(token, ::Integer) }
 
           names = numeric.map { |token| Axn::Internal::Rendering.module_name(token) }.join(", ")
           record_residue(prop, "the runtime checks for a Ruby #{names}, and a JSON number arrives as an Integer (1) or a " \
@@ -2862,18 +2866,26 @@ module Axn
           end
         end
 
-        # Whether a `default:` is computed on the call rather than used as written: the runtime calls anything that
-        # answers `call` (`FieldConfig.resolve_default`), a Proc, a Method or a callable object alike. Asked of the
-        # value's CLASS through a bound read, so the value itself runs nothing — and for a class or module (a
-        # service object with a `.call`), of its singleton class, which is where its own methods live.
-        def computed_default?(value)
+        # How the runtime treats a `default:` (`FieldConfig.resolve_default`): anything answering `call` is
+        # `instance_exec`ed through its `to_proc`, so it is COMPUTED when it answers both (a Proc, a Method, a
+        # service class with `.to_proc`), BROKEN when it answers `call` alone (the omitted call raises converting
+        # it), and LITERAL otherwise. Asked of the value's class through bound reads, so the value runs nothing —
+        # for a class or module, of its singleton class, which is where its own methods live.
+        def default_invocation(value)
           lookup = if Internal::Identity.kind?(value, ::Module)
                      Internal::NativeMethods.module_singleton_class(value)
                    else
                      Internal::Identity.class_of(value)
                    end
-          Internal::NativeMethods.public_instance_method?(lookup, :call)
+          return :literal unless Internal::NativeMethods.public_instance_method?(lookup, :call)
+
+          Internal::NativeMethods.public_instance_method?(lookup, :to_proc) ? :computed : :broken
         end
+
+        def computed_default?(value) = default_invocation(value) == :computed
+
+        # A default the runtime cannot apply (it raises on the omitted call) supplies nothing to the schema.
+        def broken_default?(value) = default_invocation(value) == :broken
 
         # A requirement a gate relaxes is named as conditional only when the gate ALONE relaxes it: where an ungated
         # check whose nil verdict is unknowable (a `validate:`) is also why the position is optional, that check's own
@@ -3035,6 +3047,7 @@ module Axn
           declared_default = declared_attribute(config, :default)
           return prop if declared_default.nil?
           return for_output ? prop : record_residue(prop, PROC_DEFAULT_RESIDUE) if computed_default?(declared_default)
+          return prop if broken_default?(declared_default)
 
           emit_default = subfield ? config.applied_default? : true
           prop[:default] = normalize_schema_literal(declared_default) if emit_default

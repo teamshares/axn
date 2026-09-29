@@ -385,10 +385,23 @@ RSpec.describe "Axn class-level schema reflection" do
     expect(computed.input_schema_residues).not_to be_empty
     expect(literal.input_schema.dig(:properties, :v, :default)).to eq("a")
 
-    # A service class with its own `.call` is computed too: its methods live on its singleton class.
-    service = Class.new { def self.call = "s" }
+    # A service class is computed too when the runtime can convert it (`instance_exec(&default)` needs `to_proc`):
+    # its methods live on its singleton class. One answering `call` alone raises on the omitted call, so it makes
+    # nothing omittable and emits no default.
+    service = Class.new do
+      def self.call = "s"
+      def self.to_proc = method(:call).to_proc
+    end
     served = build_axn { expects :v, type: String, default: service }
+    expect(served.call).to be_ok
     expect(served.input_schema.dig(:properties, :v)).not_to have_key(:default)
+    expect(Array(served.input_schema[:required])).not_to include("v")
+
+    call_only = Class.new { def self.call = "s" }
+    broken = build_axn { expects :v, type: String, default: call_only }
+    expect(broken.call).not_to be_ok
+    expect(broken.input_schema.dig(:properties, :v)).not_to have_key(:default)
+    expect(Array(broken.input_schema[:required])).to include("v")
   end
 
   # The gate relaxes the requirement only where nothing ungated may still reject an omitted value; a `validate:`
@@ -716,7 +729,8 @@ RSpec.describe "Axn class-level schema reflection" do
     # A JSON number arrives as an Integer or a Float, and `"number"` cannot say which a field wants, so any numeric
     # class short of `Numeric` or the Integer-and-Float pair is named. `Integer` alone is the stated `1.0` exception.
     {
-      Float => true, BigDecimal => true, Rational => true, Numeric => false, [Integer, Float] => false, Integer => false
+      Float => true, BigDecimal => true, Rational => true, Numeric => false, [Integer, Float] => false, Integer => false,
+      [Object, Float] => false, [Integer, BigDecimal] => true
     }.each do |type, named|
       it "#{named ? 'names' : 'does not name'} the numeric wire form of type: #{type.inspect}" do
         action = build_axn { expects :n, type: }
