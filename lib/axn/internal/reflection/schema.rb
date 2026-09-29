@@ -1417,13 +1417,7 @@ module Axn
           model_id_siblings.each do |id_field, model_configs, explicit_id|
             merge_model_id_type_into_sibling!(prop[:properties][id_field], model_configs, explicit_id, id_field) if prop[:properties][id_field]
           end
-          # Named once the id's property is final, whichever declaration wrote it.
-          children.each do |key, node|
-            next if node.implicit? || node.configs.none? { |c| c.validations[:model] }
-
-            id_field = Internal::FieldConfig.model_id_key(key)
-            prop[:properties][id_field] = with_model_lookup_residue(prop[:properties][id_field])
-          end
+          name_model_lookups!(prop, children)
           # A required nested model id can't be null (a null token resolves the model to nil at runtime).
           # Done after the loop so it survives an explicit id subfield declared after the model: subfield.
           required_model_ids.each { |id_field| reject_null!(prop[:properties][id_field]) if prop[:properties][id_field] }
@@ -2819,11 +2813,27 @@ module Axn
                                "Float (1.5)")
         end
 
-        # A null-only id never reaches the lookup, so it has nothing to name.
-        def with_model_lookup_residue(prop)
-          return prop if prop.nil? || projected_types(prop) == ["null"]
+        # Each nested model id's lookup, named once the id's property is final, whichever declaration wrote it.
+        def name_model_lookups!(prop, children)
+          children.each do |key, node|
+            next if node.implicit?
 
-          record_residue(prop, MODEL_LOOKUP_RESIDUE)
+            model_configs = node.configs.select { |c| c.validations[:model] }
+            next if model_configs.empty?
+
+            id_field = Internal::FieldConfig.model_id_key(key)
+            prop[:properties][id_field] = with_model_lookup_residue(prop[:properties][id_field], model_configs)
+          end
+        end
+
+        # A null-only id never reaches the lookup, so it has nothing to name. A DECLARATION gate skips the lookup on
+        # the calls it closes, so the lookup is conditional when every model route is declaration-gated; one ungated
+        # route looks up on every call. (A gate inside the `model:` bag does not stop the lookup.)
+        def with_model_lookup_residue(prop, model_configs)
+          return prop if prop.nil? || projected_types(prop) == ["null"]
+          return record_residue(prop, MODEL_LOOKUP_RESIDUE) unless model_configs.all? { |config| conditionally_gated?(config) }
+
+          record_residue(prop, "#{GATED_RESIDUE}; #{MODEL_LOOKUP_RESIDUE}", kind: :conditional)
         end
 
         # A callable is named rather than rendered: its only rendering is an object address, and asking it for

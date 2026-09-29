@@ -609,6 +609,16 @@ RSpec.describe "Axn class-level schema reflection" do
       end
     end
 
+    # A declaration-gated `model:` looks up only on the calls its gate opens.
+    it "names a declaration-gated model lookup as conditional" do
+      stub_const("LookupCo", Struct.new(:id) { def self.find(id) = id == 1 ? new(id) : nil })
+      action = build_axn { expects :company, model: { klass: LookupCo, finder: :find, id_type: Integer }, if: -> { false } }
+
+      expect(action.call(company_id: 2)).to be_ok
+      lookup = action.input_schema_residues.select { |r| r.summary.include?("model lookup") }
+      expect(lookup.map(&:kind)).to eq([:conditional])
+    end
+
     # A JSON number arrives as an Integer or a Float, and `"number"` cannot say which a field wants, so any numeric
     # class short of `Numeric` or the Integer-and-Float pair is named. `Integer` alone is the stated `1.0` exception.
     {
