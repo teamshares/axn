@@ -2849,7 +2849,9 @@ RSpec.describe "declaration-time property name collisions" do
           26.times { |f| expects(:"f#{f}", type: Array, of: String, &declaration) }
         end
 
-        expect(klass.input_schema.dig(:properties, :f0)).to eq({ type: "array", items: { type: "string" }, minItems: 1 })
+        expect(klass.input_schema.dig(:properties, :f0).except(:items)).to eq({ type: "array", minItems: 1 })
+        expect(klass.input_schema.dig(:properties, :f0, :items, :type)).to eq("string")
+        expect(klass.input_schema.dig(:properties, :f0, :items)).not_to have_key(:properties)
       end
 
       # The corollary in the other direction: the same width of members that DO emit is still charged, and still

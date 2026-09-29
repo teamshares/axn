@@ -535,11 +535,10 @@ module Axn
           _validate_reader_names!(reader_names)
 
           validations, metadata = _partition_field_options(fields, **)
-          # Ahead of the block form's own write to this slot (a block legitimately builds a distributing
-          # shape; a raw kwarg no longer may) — reads the caller's own `shape:`, not what a block would replace
-          # it with, so a field declaring BOTH no longer has the raw one silently discarded (see PRO-3191, and
-          # `_reject_raw_shape_before_block_overwrite!` for the two later rounds that joined it here).
-          _reject_raw_shape_before_block_overwrite!(validations, "`shape:` on #{_declared_fields_label(fields)}", fields.map(&:to_s).inspect)
+          # Ahead of the block form's own write to this slot — reads the caller's own `shape:`, not what a block
+          # would replace it with (see `_reject_raw_shape_before_block_overwrite!`).
+          _reject_raw_shape_before_block_overwrite!(validations, "`shape:` on #{_declared_fields_label(fields)}", _declared_fields_label(fields),
+                                                    block:)
           validations[:shape] = _build_shape(fields, validations:, &block) if block
           # Minted here, after the block form's per-member pre-pass, and threaded to BOTH of this declaration's
           # edges — the snapshot below and the `of:` chain `_parse_field_configs` descends (see
@@ -586,18 +585,7 @@ module Axn
             # top-level-over-subfield. Skipped where no subfield exists: with an empty tree every
             # top-level tolerance is exercisable and no segment is read, so a subfield-free contract sees
             # none of this — which is also what keeps the per-declaration tree build off that path.
-            #
-            # With ONE exception, which is why the empty case routes rather than returning: the model-id
-            # object claim (PRO-3396) needs no subfield to arise, a top-level `<field>_id` carrying its own
-            # `shape:` block claiming the key beside a `model:` field. Gating it on a subfield existing made
-            # the same two declarations legal or illegal depending on whether an unrelated subfield happened
-            # to be declared elsewhere. `check_model_id_claims!` still builds nothing when no `model:` is
-            # declared, so the subfield-free path stays free for every contract that cannot trip it.
-            if subfield_configs.empty?
-              SubfieldContradictions.check_model_id_claims!(retained + configs)
-            else
-              SubfieldContradictions.check!(retained + configs, subfield_configs)
-            end
+            SubfieldContradictions.check!(retained + configs, subfield_configs) unless subfield_configs.empty?
 
             # Every declaration check has passed; NOW mutate the class (matching _expects_subfields'
             # validate-before-commit ordering), so a rescued declaration error never leaves the class
@@ -685,9 +673,9 @@ module Axn
           end
 
           # Same refusal as `expects`, and for the same ordering reason: reads the caller's own `shape:` ahead
-          # of the block form's write to the slot (see PRO-3191, and `_reject_raw_shape_before_block_overwrite!`
-          # for the later rounds that joined it here).
-          _reject_raw_shape_before_block_overwrite!(validations, "`shape:` on #{_declared_fields_label(fields)}", fields.map(&:to_s).inspect)
+          # of the block form's write to the slot.
+          _reject_raw_shape_before_block_overwrite!(validations, "`shape:` on #{_declared_fields_label(fields)}", _declared_fields_label(fields),
+                                                    block:)
           validations[:shape] = _build_shape(fields, validations:, outbound: true, &block) if block
 
           # Ahead of the `user_facing:` walk below so a member carrying both an unusable name and a rejected
@@ -1668,10 +1656,10 @@ module Axn
           field_opts = opts.slice(*SHAPE_MEMBER_FIELD_OPTIONS)
           field_validations, metadata = _partition_field_options([name], **opts.except(*SHAPE_MEMBER_FIELD_OPTIONS))
 
-          # Same refusal, same ordering reason, at the member's own slot: a `field :rows, type: Array, shape:
-          # {...} do ... end` no longer has its raw `shape:` silently replaced by the subblock's (see PRO-3191,
-          # and `_reject_raw_shape_before_block_overwrite!` for the later rounds that joined it here).
-          _reject_raw_shape_before_block_overwrite!(field_validations, "`shape:` on shape member `#{_shape_member_label(name)}`", [name].map(&:to_s).inspect)
+          # Same refusal, same ordering reason, at the member's own slot: a `field :rows, type: Array, shape: {...}
+          # do ... end` would otherwise have its raw `shape:` silently replaced by the subblock's.
+          _reject_raw_shape_before_block_overwrite!(field_validations, "`shape:` on shape member `#{_shape_member_label(name)}`",
+                                                    _declared_fields_label([name]), block: subblock)
           field_validations[:shape] = _build_shape([name], validations: field_validations, outbound:, &subblock) if subblock
 
           config = _parse_field_configs(name, metadata:, **field_opts, **field_validations).first
@@ -1806,38 +1794,35 @@ module Axn
               else
                 Internal::ShapeGraph::ANY_CONTAINER
               end
+          elsif !::Array.equal?(bag[:klass])
+            _reject_distributing_inner_shape!(detached[:container], fields)
           end
-          _reject_distributing_inner_shape!(detached[:container], fields)
           _reject_non_class_container!(detached[:container])
           bag[:shape] = detached
         end
 
-        # `::Array` is the one class a shape reads perfectly well off and still may not be stored at a BAG
-        # position, because `container: Array` is not a gate at that key: `ShapeValidator` reads it as
-        # "distribute over the elements" (see `_folded_element_container`, which sidesteps the same reading by
-        # storing `ANY_CONTAINER`). So a bag arriving here with it declares one thing and means another, both
-        # ways of arriving at it, and each produces a contract no reader of the declaration could predict —
-        # `of: { klass: Array, shape: … }` validates the members against `rows[i][j]` while emitting
-        # `items: { type: "array" }` and publishing none of them, and an explicit `container: Array` beside
-        # `klass: Hash` enforces nothing at all (a Hash element distributes to no elements) while the schema
-        # promises the members as `items.properties`. Refused rather than assigned a reading, because the
-        # recursion this ticket adds already spells the level below (`of: { klass: Array, of: { shape: … } }`)
-        # and emits it correctly — and because a spelling refused today can be granted a meaning later
-        # (PRO-3192) without contradicting anything released.
+        # A HAND-WRITTEN `container: Array` on a bag's shape is refused unless the bag's own `klass:` is `Array`
+        # (where it merely restates what would be derived), because it is not a gate at that key:
+        # `ShapeValidator` reads it as "distribute over the elements", so beside `klass: Hash` (or no `klass:`) a
+        # Hash element distributes to nothing and its members go unchecked on every call — the declaration says
+        # one thing and enforces none of it. A container DERIVED from `klass: Array` is the same reading reached by
+        # naming it: the members are read off each element of each Array element, which is what it says, and
+        # reflection names the members it cannot state (`UNSTATED_SHAPE_RESIDUE`) — so that spelling is not
+        # refused. The level below is still best written as the nesting it is (`of: { klass: Array, of: {
+        # shape: ... } }`), which emits `items.items.properties`.
         #
         # Identity on axn's side, as every other read of this key is: a shape may put any object in that slot.
         def _reject_distributing_inner_shape!(container, fields)
           return unless ::Array.equal?(container)
 
           raise ArgumentError,
-                "a `shape:` inside an `of:` bag cannot sit at `container: Array` (on " \
+                "a `shape:` inside an `of:` bag cannot name `container: Array` (on " \
                 "#{_declared_fields_label(fields)}) — `ShapeValidator` reads that container as \"distribute " \
-                "over the elements\" rather than as a gate, so the members describe what is inside each " \
-                "element instead of the element itself, and the emitted schema and the runtime disagree about " \
-                "which value carries them. Where the members belong to the level below, write it as the " \
-                "nesting it is (`of: { klass: Array, of: { shape: ... } }`), which emits " \
-                "`items.items.properties`; where they belong to this level, name the class they are read off " \
-                "(`klass: Hash`, or the object's own class) and leave the shape's `container:` to be derived."
+                "over the elements\" rather than as a gate, so an element that is not an Array has its members " \
+                "checked by nothing. Where the members belong to the level below, write it as the nesting it is " \
+                "(`of: { klass: Array, of: { shape: ... } }`); where they belong to this level, name the class " \
+                "they are read off (`klass: Hash`, or the object's own class) and leave the shape's `container:` " \
+                "to be derived."
         end
 
         # A container is what the shaped value is type-checked against (`value.is_a?(container)` in
@@ -2628,13 +2613,11 @@ module Axn
         # earlier, pre-canonicalization pass decide an ordering question (which of two defects in another bag is
         # reported first) it has no business deciding.
         #
-        # `where`/`declaration_where` are two different renderings of the same field, because the two guard
-        # families were never unified and format it differently: `where` is `_reject_unshaped_shape!`'s own ``
-        # `shape:` on :h `` form, `declaration_where` is `_reject_validator_context_scope!`'s own
-        # `fields.map(&:to_s).inspect` form (`["h"]`) — passed separately so each renders through this early
-        # call exactly as it would have downstream, and a message pinned against the ordinary (block-free)
-        # spelling of the defect does not have to change to also cover this one.
-        def _reject_raw_shape_before_block_overwrite!(carrier, where, declaration_where)
+        # `where`/`declaration_where` are two different phrases for the same field: `where` is
+        # `_reject_unshaped_shape!`'s own `` `shape:` on :h `` form, `declaration_where` the bare field label
+        # (`:h`) the shared-option scans name — passed separately so each renders through this early call exactly
+        # as it would downstream.
+        def _reject_raw_shape_before_block_overwrite!(carrier, where, declaration_where, block: nil)
           _reject_distributing_shape!(carrier, where)
           _reject_unshaped_shape!(carrier, where)
           _reject_unknown_shape_keys!(carrier, where)
@@ -2643,6 +2626,9 @@ module Axn
           _reject_validator_context_scope!(shape_only, where: declaration_where)
           _reject_validator_except_on!(shape_only, where: declaration_where)
           _reject_strict_validation!(shape_only, where: declaration_where)
+          # Last, so a raw shape broken in its own right is reported as that; one that is well-formed is still
+          # discarded by the block, which is its own defect.
+          _reject_raw_shape_beside_block!(carrier, where) if block
         end
 
         # `of:` names what is INSIDE a container, so the declared type is what decides which grammar the bag is
@@ -2670,10 +2656,17 @@ module Axn
           # though it named the container directly, and one that raises would replace this declaration error
           # with whatever it threw (PRO-3207).
           declared = _declared_type_tokens(declared_klass)
-          container = declared.first if declared.size == 1
           # Identity, not `==`: the declared class is the caller's, and one answering `==` for its own
           # purposes would otherwise choose which grammar its bag is held to.
-          return container if container.equal?(::Array) || container.equal?(::Hash)
+          containers = declared.select { |klass| klass.equal?(::Array) || klass.equal?(::Hash) }
+          return containers.first if declared.size == 1 && containers.size == 1
+          # A union whose one container is `Array` still names one grammar: `OfValidator` applies the element
+          # contract to an Array value and leaves the union's other branches to the type check. A Hash in a union
+          # is not granted the same, since its bag grammar (`keys:`/`values:`) would then be read off a position
+          # that may hold a scalar.
+          # Every other branch must be a type in its own right, since this refusal is the one `type:`'s token
+          # check defers to whenever `of:` is present.
+          return ::Array if containers.size == 1 && containers.first.equal?(::Array) && declared.all? { |token| _supported_type_token?(token) }
 
           # Each declared class is named through the seam that reads its name natively, never by rendering the
           # LIST: `Array#inspect` dispatches every element's own `inspect`, so a declared class defining one
@@ -3025,17 +3018,15 @@ module Axn
 
         # `id_type:` names the JSON wire type of a `model:` field's GENERATED `<field>_id` — the schema
         # property `Reflection::Schema.model_id_property` emits, not something a value is ever checked
-        # `is_a?` against. So its grammar is narrower than `type:`'s, and closed rather than open: a lookup
-        # token is a scalar a client sends over the wire, never a union (there is nothing to dispatch a
-        # union through) and never a Class the emitter has no JSON Schema spelling for.
+        # `is_a?` against. So a class token is always a description: reflection states it where the class has a
+        # scalar JSON spelling and names the omission as a residue where it does not, and the runtime's call is
+        # the same either way. What is refused is a value that names no type at all (a String, a Symbol other
+        # than `:uuid`, a union Array), which is an option that could never mean anything.
         #
-        # Reads `Internal::FieldConfig::MODEL_ID_TYPE_TOKENS`, not a copy of that set here or a read from
-        # `Internal::Reflection::Schema`: `Internal::Reflection::X` derives a JSON view of a contract and
-        # only that, so a declaration-time guard depending upward on it would be a layer inversion
-        # (AGENTS.md's namespace doctrine). `FieldConfig` is the shared, value-level home both this guard
-        # and the reflection layer's own AR-inference map
-        # (`Reflection::Schema::ModelId::AR_PRIMARY_KEY_TYPE_TOKENS`) read the SAME vocabulary from, so a declared
-        # `id_type:` and an inferred one can never mean two different things.
+        # Reads `Internal::FieldConfig::MODEL_ID_TYPE_TOKENS` for the non-class token, not a copy of that set
+        # here or a read from `Internal::Reflection::Schema`: `Internal::Reflection::X` derives a JSON view of a
+        # contract and only that, so a declaration-time guard depending upward on it would be a layer inversion
+        # (AGENTS.md's namespace doctrine).
         def _reject_unsupported_model_id_type!(validations)
           return unless validations.key?(:model)
 
@@ -3043,13 +3034,12 @@ module Axn
           return unless bag.is_a?(::Hash) && bag.key?(:id_type)
 
           id_type = bag[:id_type]
-          allowed = Internal::FieldConfig::MODEL_ID_TYPE_TOKENS
-          return if allowed.any? { |token| Internal::Identity.same?(token, id_type) }
+          return if Internal::Identity.kind?(id_type, ::Module)
+          return if Internal::FieldConfig::MODEL_ID_TYPE_TOKENS.any? { |token| Internal::Identity.same?(token, id_type) }
 
           raise ArgumentError,
-                "model: id_type: must be one of #{allowed.map(&:inspect).join(', ')} (got " \
-                "#{_declared_type_label(id_type)}) — a model id is a scalar lookup token, not a value " \
-                "checked against a type."
+                "model: id_type: must be a class or :uuid (got #{_declared_type_label(id_type)}) — it names the " \
+                "JSON type of the generated id, so a value that is not a type describes nothing."
         end
 
         # `on:` inside a bag is the same dead declaration it is inside any other validator's option bag, and it
@@ -3280,24 +3270,28 @@ module Axn
           POSITIONAL_VALIDATOR_KEYS.any? { |key| Internal::ShapeGraph.carries_key?(bag, key) && bag[key] }
         end
 
-        # A truthy `presence:` under a tolerance is dead machinery: the tolerance is applied to every check at
-        # the position, so the presence validator would accept exactly the values it exists to reject. Refused
-        # at declaration, at a field and at every bag position, through one function — the alternative is two
-        # statements of one rule that can come to disagree about which combinations are legal.
+        # A `presence:` that skips blank values is dead machinery: blankness is the one thing it checks, so under a
+        # blank tolerance it accepts exactly the values it exists to reject. Refused at declaration, at a field and
+        # at every bag position, through one function — the alternative is two statements of one rule that can
+        # come to disagree about which combinations are legal.
         #
-        # `presence: false` is coherent and untouched: explicit suppression, the same intent as the tolerance.
-        # The tolerance is passed rather than read out of `validations`, because at a field it is still a
-        # declaration KWARG when this runs, and at a bag it is the bag's own pair.
+        # Judged on the entry's EFFECTIVE options, the tolerance merged under its own, because that is what
+        # `validates` hands the validator: `allow_blank: true, presence: { allow_blank: false }` runs presence on a
+        # blank value and is live. A nil tolerance alone is not dead machinery either — `allow_nil: true,
+        # presence: true` admits nil and still rejects `""` and `" "`, the spelling for "may be nil, but not
+        # blank". `presence: false` is coherent and untouched: explicit suppression, the same intent as the
+        # tolerance. The tolerance is passed rather than read out of `validations`, because at a field it is still
+        # a declaration KWARG when this runs, and at a bag it is the bag's own pair.
         def _reject_tolerant_presence!(validations, where:, tolerance:)
-          return unless tolerance[:allow_blank] || tolerance[:allow_nil]
-          return unless validations[:presence]
+          entry = validations[:presence]
+          return unless entry && tolerance[:allow_blank]
+          return unless Axn::Validation::Base.effective_entry_options(entry, tolerance)[:allow_blank]
 
           raise ArgumentError,
-                "optional:/allow_blank:/allow_nil: on #{where} cannot be combined with an explicit " \
-                "`presence:` — the tolerance is applied to every check at that position, so the presence " \
-                "check could never fail. For \"may be nil, but not empty\", declare `allow_empty: false` " \
-                "alongside the tolerance; otherwise declare one requiredness signal (drop the tolerance, or " \
-                "drop presence:)."
+                "`presence:` on #{where} skips blank values (optional:/allow_blank: applies to every check at that " \
+                "position), so it could never fail. For \"may be nil, but not blank\", declare `allow_nil: true` " \
+                "with `presence: true`; otherwise declare one requiredness signal (drop the tolerance, or drop " \
+                "presence:)."
         end
 
         # PRO-3192's two positional guards, at a bag position. Reached with the bag's own value constraints and
@@ -4061,21 +4055,6 @@ module Axn
           comparison: %i[other_than],
         }.freeze
 
-        # The validators whose LITERALS reach the emitted schema, where a blank rescuing the RUNTIME cannot
-        # rescue the PROJECTION — and the projection of a satisfiable contract must itself be satisfiable
-        # (AGENTS.md). `inclusion:` emits its set as `enum`, so a wrong-typed set leaves a node nothing can
-        # satisfy: `type: Array, presence: false, inclusion: { in: [1], allow_blank: true }` accepts `[]` at
-        # runtime and emits `{type: "array", enum: [1]}`, which admits neither `1` (wrong type) nor `[]` (not in
-        # the enum). A blank that only passes by being SKIPPED is not in the enum by construction, so no such
-        # declaration can have a satisfiable node, and refusing it is right even though a value passes.
-        #
-        # Measured per key rather than assumed: `comparison:` and `acceptance:` emit only the declared type
-        # (`{type: "array"}`) and carry none of their literals, so their nodes stay satisfiable and the blank
-        # stand-down is sound for them. `exclusion:` emits nothing at all and is the vacuity guard's business.
-        # `spec/axn/core/validations/degenerate_literals_spec.rb` locks the emitted node for both polarities, so
-        # a future emitter that started projecting a comparison bound would fail there rather than here.
-        PROJECTED_LITERAL_KEYS = %i[inclusion].freeze
-
         # The comparison operators ActiveModel decides with `==` rather than `<=>` (activemodel 7.2.2.2,
         # comparison.rb COMPARE_CHECKS): the non-inverted `equal_to` here, and the inverted `other_than` whose
         # own map is `VACUOUS_CONSTRAINT_KEYS`. Named because equality is judgeable at every declared type while
@@ -4127,13 +4106,7 @@ module Axn
             next if literals.nil?
             next if _constraint_satisfiable?(key, literals, klasses, cross_family: _cross_family_admissible?(key, entry))
 
-            # Whether a blank would have passed decides only the WORDING here: the refusal itself is settled by
-            # the projection invariant above, which no runtime-passing blank can satisfy.
-            blank_tolerant = PROJECTED_LITERAL_KEYS.include?(key) &&
-                             Axn::Validation::Base.effective_entry_options(entry, tolerance)[:allow_blank].present?
-
-            raise ArgumentError,
-                  _unsatisfiable_constraint_message(key, entry, klasses, where:, blank_tolerant:, nested:)
+            raise ArgumentError, _unsatisfiable_constraint_message(key, entry, klasses, where:, nested:)
           end
         end
 
@@ -4164,14 +4137,7 @@ module Axn
         # The unsatisfiable message, which names the reason the set or bound matches nothing. An empty Range
         # matches nothing whatever the declared type is, so blaming the literals' TYPE there would name a defect
         # the declaration does not have.
-        def _unsatisfiable_constraint_message(key, entry, klasses, where:, blank_tolerant: false, nested: false)
-          if blank_tolerant
-            return "#{key}: on #{where} can never match — nothing it compares against is of type " \
-                   "#{klasses.map { |klass| _declared_type_label(klass) }.join(' or ')}, so whenever it runs the " \
-                   "only value that could pass is the blank your `allow_blank:` skips, and the emitted schema advertises the set " \
-                   "as an `enum` no value can satisfy at all. Compare against literals of the declared type."
-          end
-
+        def _unsatisfiable_constraint_message(key, entry, klasses, where:, nested: false)
           if _empty_range_set?(key, entry)
             return "#{key}: on #{where} can never match — the Range it names is empty, so it contains no value " \
                    "at all and it rejects every value whenever it runs. Name a Range with at least one value in " \
@@ -4214,7 +4180,6 @@ module Axn
         # reading of the same declaration. Anything they cannot settle resolves to ADMITTED, standing the guard
         # down: this guard's safe direction is admitting a broken declaration, never refusing a working one.
         def _blank_can_satisfy?(entry, key, validations, tolerance, klasses, allow_empty:)
-          return false if PROJECTED_LITERAL_KEYS.include?(key)
           return false unless Axn::Validation::Base.effective_entry_options(entry, tolerance)[:allow_blank]
           return false if _blank_rejected_by_contract?(validations, allow_empty:, tolerant: tolerance.values.any?)
 
@@ -4895,7 +4860,12 @@ module Axn
           # a String names no size at all, which rendered the bounds as an empty "()"). Where the bounds exclude
           # it too, they are the better diagnosis: for a container blank and empty are the same fact, so the
           # size message says it in the axis the author wrote and names `allow_empty:` as the fix.
-          if members.any? { |member| _member_size_within_bounds?(member, minimum, maximum) }
+          # A member counts only if its TYPE is admitted as well: a wrong-typed member is excluded whatever its
+          # size or blankness, and blaming the blank axis for it would describe members the set does not have.
+          blank_axis_closed = members.any? do |member|
+            klasses.any? { |klass| _literal_may_satisfy?(member, klass) } && _member_size_within_bounds?(member, minimum, maximum)
+          end
+          if blank_axis_closed
             _raise_blank_axis_closed_inclusion_set!(where, validations)
           else
             _raise_size_closed_inclusion_set!(where, minimum, maximum)
@@ -5730,7 +5700,7 @@ module Axn
           _reject_unsupported_validator_keys!(validations, where: _declared_fields_label(fields))
           # Computed once and reused for the three refusals below (context-scope, except_on, strict): the same
           # text names the same declaration in every one of them.
-          declaration_where = fields.map(&:to_s).inspect
+          declaration_where = _declared_fields_label(fields)
           _reject_validator_context_scope!(validations, where: declaration_where)
           _reject_validator_except_on!(validations, where: declaration_where)
           _reject_strict_validation!(validations, where: declaration_where)
@@ -6061,7 +6031,6 @@ module Axn
 
           return if _default_presence_applies?(validations, allow_empty:, tolerant:)
 
-          _raise_unverifiable_length_floor!(fields) if length_answer == :unverifiable
           if presence_answer == :permitted
             _raise_emptiness_conflict!(fields, allow_empty:, spelling: "presence:",
                                                says: "that presence spelling drops the only check that would reject an empty value")
@@ -6159,14 +6128,6 @@ module Axn
                 "#{fields.map(&:to_s).inspect} — #{says}, while `allow_empty: #{allow_empty}` says an empty value is " \
                 "#{verdict}. Declare the emptiness axis once: keep `allow_empty: #{allow_empty}` and drop `#{spelling}`, " \
                 "or drop `allow_empty:` and let `#{spelling}` stand."
-        end
-
-        def _raise_unverifiable_length_floor!(fields)
-          raise ArgumentError,
-                "`allow_empty: false` cannot be enforced on #{fields.map(&:to_s).inspect} alongside a `length:` " \
-                "minimum that is not a literal number — ActiveModel resolves it per call, so nothing here can tell " \
-                "whether it forbids an empty value, and one `length:` entry cannot carry two floors. Declare a " \
-                "literal `minimum:` of 1 or more (which forbids empty on its own), or drop `allow_empty:`."
         end
       end
 

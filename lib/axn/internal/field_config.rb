@@ -89,16 +89,13 @@ module Axn
         model_options.is_a?(::Hash) && model_options[:finder] == :find
       end
 
-      # The closed vocabulary a `model:` field's generated `<field>_id` can be typed as — a scalar
-      # lookup token, never a union or a structured type. Lives here rather than under
-      # `Internal::Reflection::Schema`: it is read from BOTH sides of a layer boundary reflection may
-      # not cross upward — Contract's `_reject_unsupported_model_id_type!` confines a declared
-      # `id_type:` to exactly this set at DECLARATION time, and
+      # The tokens reflection INFERS a `model:` field's generated `<field>_id` type as — the vocabulary
       # `Reflection::Schema::ModelId::AR_PRIMARY_KEY_TYPE_TOKENS` maps every inferable ActiveRecord primary-key
-      # type onto one of these SAME tokens — so a declared token and an inferred one can never mean two
-      # different things. `Internal::X` is the home for a value-level mechanism more than one layer
-      # needs with no presence in the action's surface (AGENTS.md); `model_id_key`, right above, is the
-      # same kind of shared naming convention.
+      # type onto. Lives here rather than under `Internal::Reflection::Schema` because it is read from BOTH
+      # sides of a layer boundary reflection may not cross upward: Contract's `_reject_unsupported_model_id_type!`
+      # accepts `:uuid` (the one token that is not a class) from it at DECLARATION time. `Internal::X` is the
+      # home for a value-level mechanism more than one layer needs with no presence in the action's surface
+      # (AGENTS.md); `model_id_key`, right above, is the same kind of shared naming convention.
       MODEL_ID_TYPE_TOKENS = [Integer, String, :uuid].freeze
 
       # Resolve a config's declared default against an action instance: a Proc is instance_exec'd (so

@@ -230,6 +230,9 @@ module Axn
             Axn::Internal::ShapeGraph.self_containing_message(nil)
           end
 
+          UNSTATED_SHAPE_RESIDUE = "its `shape:` members are checked, and the declared class has no JSON object form " \
+                                   "to state them on"
+
           # The `shape:` an `of:` bag carries, overlaid onto the node built from that bag's `klass:`. A bag's shape
           # names the members of the value AT THAT POSITION, so its members are that node's `properties` — the same
           # merge `apply_structured_schema!` makes at a field's items node, written once here so a shape one rung
@@ -243,7 +246,10 @@ module Axn
           def contents_member_schema(node, bag, for_output:, ancestry: nil)
             shape = emitted_contents_edge(bag, :shape)
             return node if nil.equal?(shape)
-            return node unless shape_overlay_applies?(bag, for_output:)
+            # A class with no JSON object form has nowhere to state the members on, while the runtime still reads
+            # them — off each element of an Array (`klass: Array` distributes), or off whichever branch of a union
+            # carries them — so inbound, their omission is named rather than silent.
+            return (for_output ? node : record_residue(node, UNSTATED_SHAPE_RESIDUE)) unless shape_overlay_applies?(bag, for_output:)
 
             member_props, required = member_properties(shape[:members], for_output:, ancestry:)
             # The object type is written back with the position's nullability rather than a bare "object" that would

@@ -794,26 +794,27 @@ RSpec.describe "recursive of:" do
                                        "(Array, Hash, or a class) — got [Hash, Array]")
     end
 
-    # `container: Array` is the one class a shape reads perfectly well off and still may not be stored at a bag
-    # position: `ShapeValidator` reads that key as "distribute over the elements" rather than as a gate. Both
-    # ways of arriving at it are refused, because both produce a contract nobody could read off the
-    # declaration — a `klass: Array` derivation validates the members one level below where they are written
-    # while emitting `items: { type: "array" }` and publishing none of them, and an explicit `container: Array`
-    # beside `klass: Hash` enforces nothing at all while the schema promises the members as `items.properties`.
+    # `container: Array` on a bag's shape is not a gate: `ShapeValidator` reads it as "distribute over the
+    # elements". Derived from `klass: Array`, that is what the declaration says — the members are read off each
+    # element of each Array element, and the document names what it cannot state. Written by hand beside any
+    # other class, a non-Array element distributes to nothing and its members go unchecked, so it is refused.
     describe "an Array container on a bag's shape" do
       distributing_message =
-        "a `shape:` inside an `of:` bag cannot sit at `container: Array` (on :rows) — `ShapeValidator` reads " \
-        "that container as \"distribute over the elements\" rather than as a gate, so the members describe what " \
-        "is inside each element instead of the element itself, and the emitted schema and the runtime disagree " \
-        "about which value carries them. Where the members belong to the level below, write it as the nesting " \
-        "it is (`of: { klass: Array, of: { shape: ... } }`), which emits `items.items.properties`; where they " \
-        "belong to this level, name the class they are read off (`klass: Hash`, or the object's own class) and " \
-        "leave the shape's `container:` to be derived."
+        "a `shape:` inside an `of:` bag cannot name `container: Array` (on :rows) — `ShapeValidator` reads that " \
+        "container as \"distribute over the elements\" rather than as a gate, so an element that is not an Array " \
+        "has its members checked by nothing. Where the members belong to the level below, write it as the " \
+        "nesting it is (`of: { klass: Array, of: { shape: ... } }`); where they belong to this level, name the " \
+        "class they are read off (`klass: Hash`, or the object's own class) and leave the shape's `container:` " \
+        "to be derived."
 
-      it "refuses a shape derived onto it by klass: Array" do
+      it "distributes a shape derived onto it by klass: Array, and names the members it cannot state" do
         shape = sku_shape
-        expect { build_axn { expects :rows, type: Array, of: { klass: Array, shape: } } }
-          .to raise_error(ArgumentError, distributing_message)
+        action = build_axn { expects :rows, type: Array, of: { klass: Array, shape: } }
+
+        expect(action.call(rows: [[{ sku: "a" }]])).to be_ok
+        expect(action.call(rows: [[{ sku: 1 }]])).not_to be_ok
+        expect(action.input_schema.dig(:properties, :rows, :items, :type)).to eq("array")
+        expect(action.input_schema_residues.map(&:summary)).to include(a_string_including("its `shape:` members are checked"))
       end
 
       it "refuses one the shape names for itself" do

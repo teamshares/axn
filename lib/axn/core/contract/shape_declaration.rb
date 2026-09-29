@@ -212,43 +212,55 @@ module Axn
           _reject_unknown_bag_keys!(Internal::ShapeGraph.copy_entries(shape), ClassMethods::SHAPE_OPTION_KEYS, option: "shape:")
         end
 
-        # THE refusal for a raw `shape:` kwarg asking to distribute — the reading PRO-3191 retires. Checked at
-        # every position a raw kwarg can occupy, ahead of the block form's own write to the same slot (a block
-        # legitimately builds a distributing shape; a raw kwarg no longer may), so `carrier` is passed rather
-        # than assumed to be a field's `validations` — a MEMBER's own bag is held to the same rule with no
-        # second definition.
+        # A raw `shape:` whose hand-written `container:` leaves its members checked by nothing on some value the
+        # declaration admits. `ShapeValidator` checks members only on a value that is the container, and reads
+        # `container: Array` as "over the elements" rather than as a gate. So:
         #
-        # Two ways a raw shape can ask to distribute, and each gets its own message because the fix differs.
-        # (a) is decided by `_distributing_shape?`, the one predicate for "does this shape hang off `type:
-        # Array`" — checked whether or not `shape:` itself is a well-formed Hash, since it depends only on
-        # `type:`. (b) reads the shape's own `container:`, which only means something once the shape IS a
-        # Hash — a non-Hash `shape:` has nothing here to read, and is `_reject_unshaped_shape!`'s defect to
-        # report, not this one's, so this stands down rather than raising a less specific error first.
+        #   * beside a type that is not `Array`, `container: Array` distributes a Hash (or object) value to nothing,
+        #     and its members go unchecked on every call;
+        #   * beside `type: Array`, whose shape distributes over the elements, any container but `Array` narrows
+        #     which ELEMENTS are checked — `container: Hash` skips every element that is not a Hash, while the
+        #     element class stays open, so `["abc"]` passes with its members never read. The element class belongs
+        #     in the bag (`of: { klass: Hash, shape: ... }`), where it is checked; `container: Array` there only
+        #     restates what is derived, so it stands.
         #
-        # `container: Array` is the marker `_build_shape` writes for a distributing block (contract.rb:1392) and
-        # `ShapeValidator` reads as "over the elements" rather than as a gate (shape_validator.rb:41) — so a
-        # HAND-WRITTEN one is never legitimate at a raw shape once (a) is refused: a block is the only
-        # remaining producer of it, and a block never reaches this check (see the ordering note at each call
-        # site). Identity with the receiver, as every other read of this key is: a raw shape may put any object
-        # in that slot.
+        # Checked at every position a raw kwarg can occupy, so `carrier` is passed rather than assumed to be a
+        # field's `validations`. Reads the shape's own `container:`, which only means something once the shape IS a
+        # Hash — a non-Hash `shape:` has nothing here to read, and is `_reject_unshaped_shape!`'s defect to report,
+        # so this stands down rather than raising a less specific error first. Identity with the receiver, as every
+        # other read of this key is: a raw shape may put any object in that slot.
         def _reject_distributing_shape!(carrier, where)
           return unless Internal::ShapeGraph.carries_key?(carrier, :shape)
-
-          raise ArgumentError, _distributing_shape_message(where) if _distributing_shape?(carrier)
 
           shape = Internal::ShapeGraph.hash_or_nil(carrier[:shape])
           return if nil.equal?(shape)
 
-          raise ArgumentError, _distributing_container_message(where) if ::Array.equal?(shape[:container])
+          container = shape[:container]
+          return if nil.equal?(container)
+
+          if _distributing_shape?(carrier)
+            raise ArgumentError, _distributing_element_container_message(where, container) unless ::Array.equal?(container)
+          elsif ::Array.equal?(container)
+            raise ArgumentError, _distributing_container_message(where)
+          end
         end
 
-        def _distributing_shape_message(where)
-          "#{where} distributes over an Array's elements, which is no longer a reading `shape:` has — it now " \
-            "names the members of the value itself, and an Array has none of its own. Name the elements' " \
-            "contract where a container's contents are named instead (`of: { klass: Hash, shape: { members: " \
-            "[...] } }`, or `of: { shape: { members: [...] } }` to leave the element class open), or declare " \
-            "the members in a `do ... end` block (`type: Array, of: Hash do field :sku, type: String end`), " \
-            "which still distributes and is the documented spelling."
+        def _distributing_element_container_message(where, container)
+          "#{where} names `container: #{_declared_type_label(container)}` beside `type: Array`, whose shape distributes " \
+            "over the elements — `ShapeValidator` skips an element that is not the container, so any other element " \
+            "has its members checked by nothing. Name the element class where it is checked (`of: { klass: " \
+            "#{_declared_type_label(container)}, shape: { members: [...] } }`), or drop `container:`."
+        end
+
+        # A raw distributing `shape:` (beside `type: Array`) together with a `do ... end` block: the block builds
+        # the slot the raw kwarg names, so the raw members would be discarded without a word and checked by
+        # nothing. Refused at every position a block can be written (a field, an exposure, a shape member).
+        def _reject_raw_shape_beside_block!(carrier, where)
+          return unless _distributing_shape?(carrier)
+
+          raise ArgumentError,
+                "#{where} is declared twice — by the `shape:` option and by the `do ... end` block, which replaces " \
+                "it, so the option's members would be checked by nothing. Declare the members once."
         end
 
         def _distributing_container_message(where)
@@ -639,19 +651,19 @@ module Axn
         def _snapshot_member_shape!(validations, member, name, walk, allowance)
           # A raw member — a duck-typed object in a hand-written `shape: { members: [...] }` list, or a
           # block-declared member whose own `shape:` kwarg had no subblock to be folded by first — reaches
-          # here still carrying whatever it was written with, so this is where its distributing reading is
-          # caught (see PRO-3191). A BLOCK-built member never reaches this branch: its subblock, if it had one
-          # for an Array-typed member, already folded into its `of:` bag during `_build_shape_member`'s own
-          # pre-pass, leaving no top-level `shape:` for this read to find.
+          # here still carrying whatever it was written with, so this is where a hand-written distributing
+          # container is caught.
           _reject_distributing_shape!(validations, "`shape:` on shape member #{_describe_shape_member(member, name)}")
           _reject_unshaped_shape!(validations, "`shape:` on shape member #{_describe_shape_member(member, name)}")
           _reject_unknown_shape_keys!(validations, "`shape:` on shape member #{_describe_shape_member(member, name)}")
           nested = Internal::ShapeGraph.hash_or_nil(validations[:shape])
           return NO_INNER_CONTRACTS if nil.equal?(nested)
 
-          # A member's shape can never distribute here — `_reject_distributing_shape!` above already raised
-          # for one that would — so it is judged at the member's own depth, with no offset to apply.
-          inner = _walk_shape_graph!(nested, walk, allowance, via: member, via_name: name)
+          # A raw `type: Array` member's shape distributes, so it sits one rung further down than it is written
+          # and a value spends two rungs per link reaching its members — judged where it SITS, for the reason
+          # `_distributing_shape_depth` gives, so the declaration bound and the runtime bound stay one bound.
+          depth = _distributing_shape_depth(validations, walk.depth)
+          inner = _walk_shape_graph!(nested, walk.with(depth:), allowance, via: member, via_name: name)
           validations[:shape] = inner.copy
           # The field path's own derivation and check, called from where the walk already is, so a NESTED shape
           # is held to exactly what a field's `shape:` is held to — at every level, since this runs on each
@@ -670,9 +682,10 @@ module Axn
           # Deriving BEFORE the walk instead would defeat that memo outright (a fresh detached node per
           # reference is a fresh identity), which is what keeps a shared sub-shape from costing 2^depth walks.
           _derive_raw_shape_container!(validations)
-          # The one level this member's shape adds below the member: the shape node itself. A distributing
-          # member's shape would add a second, but no member reaching this method carries one.
-          WalkedContracts.new(paths: inner.paths, height: inner.height + 1,
+          # The levels this member's shape adds below the member: the shape node itself, and for a distributing
+          # member the element rung it is read off.
+          rungs = _distributing_shape?(validations) ? 2 : 1
+          WalkedContracts.new(paths: inner.paths, height: inner.height + rungs,
                               edge: inner.height.zero? ? SHAPE_EDGE : inner.edge)
         end
 
@@ -1012,7 +1025,7 @@ module Axn
                 :_snapshot_declared_shape!, :_validate_and_snapshot_shape!, :_walk_shape_graph!,
                 :_distributing_shape_depth,
                 :_reject_unshaped_shape!, :_reject_unknown_shape_keys!, :_reject_distributing_shape!,
-                :_distributing_shape_message, :_distributing_container_message,
+                :_reject_raw_shape_beside_block!, :_distributing_container_message, :_distributing_element_container_message,
                 :_inner_shape_position_label,
                 :_walk_inner_contracts!, :_walk_declared_inner_contracts!, :_new_path_allowance,
                 :_snapshot_inner_shape!, :_snapshot_member_shape!, :_combine_inner_contracts,

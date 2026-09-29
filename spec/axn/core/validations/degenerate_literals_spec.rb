@@ -213,21 +213,17 @@ RSpec.describe "a degenerate literal" do
       expect(acceptance.input_schema[:properties][:v].except(:description)).to eq({ type: "array" })
     end
 
-    it "does NOT let a blank rescue `inclusion:`, whose literals ARE the emitted enum" do
-      # `[]` passes at runtime (the entry skips it), but the emitted node would be
-      # `{type: "array", enum: [1]}` — which admits neither `1` (wrong type) nor `[]` (not in the enum). A blank
-      # that only passes by being SKIPPED is never in the enum, so no such declaration can have a satisfiable
-      # projection, and the invariant makes it refusable even though a value passes.
-      expect { build_axn { expects :v, type: Array, presence: false, inclusion: { in: [1], allow_blank: true } } }
-        .to raise_error(ArgumentError, /inclusion:.*can never match.*allow_blank.*enum/m)
-      expect { build_axn { expects :v, type: String, presence: false, inclusion: { in: [1], allow_blank: true } } }
-        .to raise_error(ArgumentError, /inclusion:.*can never match/m)
+    it "lets a blank rescue `inclusion:` too, leaving out the set its type cannot reach and naming it" do
+      action = build_axn { expects :v, type: Array, presence: false, inclusion: { in: [1], allow_blank: true } }
 
-      # ...and the right-typed set is untouched, so this costs no coverage: the guard never reached it anyway.
-      action = build_axn { expects :v, type: Array, presence: false, inclusion: { in: [["a"]], allow_blank: true } }
-      expect(action.input_schema[:properties][:v]).to eq({ type: "array", enum: [["a"]] })
-      expect(action.call(v: ["a"]).ok?).to be(true)
       expect(action.call(v: []).ok?).to be(true)
+      expect(action.call(v: [1]).ok?).to be(false)
+      expect(action.input_schema[:properties][:v]).not_to have_key(:enum)
+      expect(action.input_schema_residues.map(&:summary)).to include(a_string_including("only the blank value its tolerance skips can pass"))
+
+      # ...and a right-typed set is stated as before.
+      right_typed = build_axn { expects :v, type: Array, presence: false, inclusion: { in: [["a"]], allow_blank: true } }
+      expect(right_typed.input_schema[:properties][:v]).to eq({ type: "array", enum: [["a"]] })
     end
 
     it "keeps refusing where the blank is rejected anyway, so nothing passes after all" do

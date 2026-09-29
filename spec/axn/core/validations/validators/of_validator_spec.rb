@@ -232,10 +232,19 @@ RSpec.describe Axn::Validators::OfValidator do
       end.to raise_error(ArgumentError, "of: requires type: Array or Hash (got [String])")
     end
 
-    it "raises ArgumentError when type: is a union containing Array" do
+    it "applies the element contract to the Array branch of a union whose one container is Array" do
+      action = build_axn { expects :items, type: [Array, String], of: String }
+
+      expect(action.call(items: ["a"])).to be_ok
+      expect(action.call(items: "a")).to be_ok
+      expect(action.call(items: [1])).not_to be_ok
+      expect(action.input_schema.dig(:properties, :items, :items)).to eq(type: "string")
+    end
+
+    it "raises ArgumentError when a union names two containers" do
       expect do
-        build_axn { expects :items, type: [Array, String], of: String }
-      end.to raise_error(ArgumentError, "of: requires type: Array or Hash (got [Array, String])")
+        build_axn { expects :items, type: [Array, Hash], of: String }
+      end.to raise_error(ArgumentError, "of: requires type: Array or Hash (got [Array, Hash])")
     end
 
     it "raises ArgumentError when of: is used without any type:" do
