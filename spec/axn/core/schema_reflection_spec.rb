@@ -627,6 +627,17 @@ RSpec.describe "Axn class-level schema reflection" do
       expect(action.input_schema_residues.map(&:summary)).to include(a_string_including("only_integer", "(resolved per call)"))
     end
 
+    # ActiveModel resolves anything answering `call` per call, not only a Proc; such an object is named by its class.
+    it "names a per-call only_integer: given as a callable object, by its class" do
+      stub_const("PerCallFlag", Class.new { def call(*) = true })
+      action = build_axn { expects :n, type: [Integer, Float], numericality: { only_integer: PerCallFlag.new } }
+
+      expect(action.call(n: 1.5)).not_to be_ok
+      summaries = action.input_schema_residues.map(&:summary)
+      expect(summaries).to include(a_string_including("only_integer", "PerCallFlag"))
+      expect(summaries.join).not_to match(/0x\h+/)
+    end
+
     # A JSON number arrives as an Integer or a Float, and `"number"` cannot say which a field wants, so any numeric
     # class short of `Numeric` or the Integer-and-Float pair is named. `Integer` alone is the stated `1.0` exception.
     {

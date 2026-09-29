@@ -320,7 +320,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
     expect(wrong).to be_empty, "these schemas reject what the runtime accepts:\n  #{wrong.join("\n  ")}"
   end
 
-  # A callable's only rendering is an object address, which would change the document on every boot. The corpus
+  # A callable's or an opaque object's only rendering is an address, which would change the document on every boot. The corpus
   # carries callables (`validate:`, per-call options, Proc gates), so no emitted document may contain one.
   it "never renders a callable's address into a document" do
     rendered = []
@@ -331,7 +331,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
         klass = declare(:in, gate.call({ type: tklass }.merge(vopts)).merge(tol), nil)
         next if klass.nil?
 
-        rendered << "#{tname} / #{vname} / #{tolname} / #{gname}" if JSON.generate(klass.input_schema).match?(/#<(Proc|Method)/)
+        rendered << "#{tname} / #{vname} / #{tolname} / #{gname}" if JSON.generate(klass.input_schema).match?(/#<[^"]*0x\h+/)
       end
     end
 

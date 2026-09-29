@@ -2409,10 +2409,16 @@ module Axn
         # change the document on every boot.
         PER_CALL_RENDERING = "(resolved per call)"
 
+        # Ruby's default `to_s` for an object with none of its own, whose address would likewise change per boot.
+        DEFAULT_OBJECT_RENDERING = /\A#<[^>]*0x\h+[^>]*>\z/
+
         def mentionable_rendering(value)
           return PER_CALL_RENDERING if Axn::Internal::Identity.kind?(value, ::Proc) || Axn::Internal::Identity.kind?(value, ::Method)
 
-          Axn::Internal::Rendering.value_rendering(value) || Axn::Internal::Rendering.class_name(value)
+          rendered = Axn::Internal::Rendering.value_rendering(value)
+          return Axn::Internal::Rendering.class_name(value) if rendered.nil? || rendered.match?(DEFAULT_OBJECT_RENDERING)
+
+          rendered
         end
 
         # An authored `description:` survives a stand-down even though the declaration's constraints do not:
@@ -2896,7 +2902,7 @@ module Axn
         end
 
         # A numeric entry's options no keyword states, gate options kept so the caller can tell a conditional one.
-        # A narrowing ActiveModel resolves per call (a Proc or Symbol `only_integer:`, a Proc `in:`) is stated only
+        # A narrowing ActiveModel resolves per call (a Symbol or callable `only_integer:` or `in:`) is stated only
         # when literal; resolved per call, the schema cannot narrow for it, so it is named like an unkeyworded one.
         # (Per-call bounds reach their residue per type, and `only_numeric:` is read truthily, not resolved.)
         PER_CALL_STATED_NUMERIC_OPTIONS = %i[only_integer in].freeze
@@ -2904,9 +2910,7 @@ module Axn
         def unstated_numeric_options(entry)
           return {} unless Axn::Internal::Identity.kind?(entry, ::Hash)
 
-          per_call = entry.slice(*PER_CALL_STATED_NUMERIC_OPTIONS).select do |_key, value|
-            Axn::Internal::Identity.kind?(value, ::Proc) || Axn::Internal::Identity.kind?(value, ::Symbol)
-          end
+          per_call = entry.slice(*PER_CALL_STATED_NUMERIC_OPTIONS).select { |_key, value| Axn::Validation::Base.resolved_per_call?(value) }
           unstated = entry.except(*STATED_NUMERIC_OPTIONS).merge(per_call)
           unstated.empty? ? {} : unstated.merge(entry.slice(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS))
         end

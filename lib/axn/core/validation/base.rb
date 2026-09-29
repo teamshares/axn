@@ -582,10 +582,14 @@ module Axn
       # its `else` branch calls a callable too, so testing for Proc alone would miss a callable object.
       def self.declared_only_integer?(entry_opts)
         token = validator_entry_options(entry_opts)[:only_integer]
-        return false if token.is_a?(::Symbol) || token.respond_to?(:call)
+        return false if resolved_per_call?(token)
 
         token ? true : false
       end
+
+      # Whether ActiveModel resolves this option against the record on each call (`resolve_value`): a Symbol
+      # names a method, and anything responding to `call` is called. THE test, so every reader agrees on it.
+      def self.resolved_per_call?(value) = value.is_a?(::Symbol) || value.respond_to?(:call)
 
       # The test `only_integer:` actually applies, handed to reflection rather than restated there: the emitted
       # pattern has to agree with the validator that runs, and a copy in the emitter would drift from it in
