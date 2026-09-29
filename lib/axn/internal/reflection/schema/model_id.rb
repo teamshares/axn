@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "axn/internal/field_config"
+# An `id_type:` class is named in a residue through the non-dispatching renderer.
+require "axn/internal/rendering"
 # A model id renders through the same serializer every other emitted literal does.
 require "axn/internal/reflection/values"
 # A gated id's requirement is named with the shared residue sentence.
@@ -135,7 +137,7 @@ module Axn
           end
 
           def unstated_id_type_residue(id_type)
-            "its `id_type:` (#{PropertyNames.renderable_module_name(id_type)}) has no JSON type a lookup token " \
+            "its `id_type:` (#{Axn::Internal::Rendering.module_name(id_type)}) has no JSON type a lookup token " \
               "can take, so the id's type is not stated"
           end
 

@@ -3223,19 +3223,27 @@ module Axn
         # set wherever it rejects every value; what reaches here is the set a tolerated BLANK rescues — `type:
         # Array, presence: false, inclusion: { in: ["a"], allow_blank: true }` accepts `[]` and nothing else — and
         # emitting it would leave a node no value satisfies, `[]` included. So the set is left out and named.
-        # Asked only where the node states a single `type`, and a member whose JSON type this cannot classify
-        # counts as admitted, so the answer errs toward keeping the set.
+        # The node's types are read from wherever it states them — a `type` (an Array of them when nullable) and
+        # each branch of a union's `anyOf` — so a union is judged like a single type. A node stating none is not
+        # judged, and a member whose JSON type this cannot classify counts as admitted, so the answer errs toward
+        # keeping the set. A `null` member a nullable node admits keeps the set: the node is satisfiable, and the
+        # tolerated non-nil blank it still refuses is the stated blank-axis exception.
         UNREACHABLE_ENUM_RESIDUE = "only the blank value its tolerance skips can pass: no member of its `inclusion:` " \
                                    "set is of the declared type"
 
         def enum_unreachable?(node, values)
-          types = node[:type] && Array(node[:type])
-          return false unless types
+          types = stated_json_types(node)
+          return false if types.empty?
 
           values.none? do |value|
             json_type = literal_json_type(value)
             json_type.nil? || types.include?(json_type) || (json_type == "integer" && types.include?("number"))
           end
+        end
+
+        # Every JSON type a node states: its own `type` (one, or an Array of them) and each `anyOf` branch's.
+        def stated_json_types(node)
+          Array(node[:type]) + Array(node[:anyOf]).flat_map { |branch| branch.is_a?(::Hash) ? Array(branch[:type]) : [] }
         end
 
         def literal_json_type(value)
@@ -3651,7 +3659,7 @@ module Axn
           # An `array` branch of a union counts: `items` constrains an array alone, so it is exact at the union's
           # own node beside a scalar branch it says nothing about.
           json_type = json_type_for(validations, for_output:)
-          in_items = (Array(json_type[:type]) + Array(json_type[:anyOf]).flat_map { |branch| Array(branch[:type]) }).include?("array")
+          in_items = stated_json_types(json_type).include?("array")
           container = of_container(validations)
           nothing = ShapePropertyPlan.new(emitted: false, in_items:, type_schema: {}, shape:, container:)
 

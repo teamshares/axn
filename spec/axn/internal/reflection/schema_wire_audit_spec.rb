@@ -1169,6 +1169,24 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
       "inclusion only a tolerated blank can pass" => [proc {
         expects :n, type: Array, presence: false, inclusion: { in: ["a"], allow_blank: true }
       }, [[], [1], ["a"], nil].map { |n| { n: } }],
+      # The same set on a union and in an `of:` bag, where the node states its types as `anyOf` branches.
+      "inclusion only a tolerated blank can pass, on a union" => [proc {
+        expects :n, type: [Array, String], presence: false, inclusion: { in: [1], allow_blank: true }
+      }, [[], "", [1], "a", nil].map { |n| { n: } }],
+      "inclusion only a tolerated blank can pass, on a two-container union" => [proc {
+        expects :n, type: [Array, Hash], presence: false, inclusion: { in: [1], allow_blank: true }
+      }, [[], {}, [1], { "a" => 1 }].map { |n| { n: } }],
+      "inclusion only a tolerated blank can pass, on a union in an of: bag" => [proc {
+        expects :n, type: Array, of: { klass: [Array, String], presence: false, inclusion: { in: [1], allow_blank: true } }
+      }, [[[]], [""], [[1]], ["a"]].map { |n| { n: } }],
+      # A nullable node keeps the set: `null` satisfies it. The tolerated non-nil blank it still refuses (`[]`) is
+      # the stated blank-axis exception, so these rows leave that payload out and hold everything else.
+      "inclusion on a nullable union a nil satisfies" => [proc {
+        expects :n, type: [Array, NilClass], presence: false, inclusion: { in: [1], allow_blank: true }
+      }, [nil, [1], ["a"], "a"].map { |n| { n: } }],
+      "inclusion on a nil-tolerant Array a nil satisfies" => [proc {
+        expects :n, type: Array, allow_nil: true, presence: false, inclusion: { in: [1], allow_blank: true }
+      }, [nil, [1], ["a"]].map { |n| { n: } }],
       "of: klass Array with a shape" => [proc {
         expects :rows, type: Array, of: { klass: Array, shape: { members: [sku] } }
       }, [[[{ sku: "a" }]], [[{ sku: 1 }]], [[1]], [{ sku: "a" }], [[]]].map { |rows| { rows: } }],
