@@ -75,9 +75,12 @@ eager-load), `lib/axn/tools/adapter_roots.rb`, `lib/axn/core/tool_declaration.rb
   (breaks other adapters on the shared class).
 - `on: :ambient_context` fields are **auto-excluded** from `input_schema` — you get a clean model-facing
   schema; don't re-add them.
-- Reflection is best-effort, biased **stricter** than runtime (a schema-following call is normally not
-  rejected) — a bias, not a guarantee. Documented **looser** cases: an invalid literal `default:`, and any
-  property whose `description` contains `Additional constraints apply…`. Collision reports cover conditional
+- The input schema is **exact at its core and never stricter** than runtime elsewhere
+  ([what it promises](docs/reference/class.md#what-the-schema-promises)): a schema-following call is never
+  rejected for a reason the schema could state. It may be **looser**: an invalid literal `default:`, and any
+  property whose `description` contains `Additional constraints apply…` (also listed, structured, by
+  `input_schema_residues`). The stated exceptions (a `model:` id's narrower type, the blank axis, and a
+  second spelling of a call the schema already admits) are in AGENTS.md. Collision reports cover conditional
   validators, checks on transformed values or their descendants, and checks without an equivalent keyword
   on a surviving JSON type (for example, numeric bounds on strings). Preserve these descriptions even
   inside schema branches; their JSON examples may be validator options rather than executable schemas.

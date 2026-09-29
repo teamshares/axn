@@ -154,8 +154,8 @@ module Axn
         # Judge only the REAL validators: ActiveModel's shared options (if:/unless:/on:/strict:/
         # allow_blank:/allow_nil:) ride in the validations hash but aren't validators, so a restored
         # `strict: true` under a tolerance flag must not read as a nil-rejecting validator and wrongly
-        # mark the field required. The judgment is static-maximal: gated validators are counted as if
-        # their gates were open (a condition can only relax enforcement at runtime, never tighten it).
+        # mark the field required. Gated validators are counted as if their gates were open; schema
+        # reflection asks it of the gate-closed validations instead, and names what a gate relaxes.
         v = validator_entries(validations)
         return true if v.empty?
 
@@ -254,12 +254,15 @@ module Axn
       # outright unless the entry disables that (`allow_nil: false`), and even then accepts a value that is a
       # MEMBER of the accept set — so an explicit nil in the set is accepted with the skip disabled. With no
       # set of its own AM compares against its default `["1", true]`, which excludes nil, so the absence of a
-      # set is not tolerance. Membership is the shared literal-set judgment, which answers "unknown" for a set
-      # reflection may not read — and unknown resolves to nil-REJECTING, the safe direction.
+      # set is not tolerance. Membership is the shared literal-set judgment, which answers nil ("unknown") for a
+      # set reflection may not read, and so does this; a caller reading it as a boolean treats unknown as
+      # nil-rejecting.
       def self.acceptance_admits_nil?(entry_opts)
         return true unless entry_opts.is_a?(Hash) && entry_opts[:allow_nil] == false
+        # No set of its own, or a nil one, compares against a set that excludes nil (AM's default, or none).
+        return false unless entry_carries_option?(entry_opts, :accept) && !entry_opts[:accept].nil?
 
-        set_includes_nil?(entry_opts, keys: %i[accept]) == true
+        set_includes_nil?(entry_opts, keys: %i[accept])
       end
 
       # Whether a `type:` ENTRY would let a nil through — nil is an instance of at least one declared klass
@@ -579,9 +582,23 @@ module Axn
       # its `else` branch calls a callable too, so testing for Proc alone would miss a callable object.
       def self.declared_only_integer?(entry_opts)
         token = validator_entry_options(entry_opts)[:only_integer]
-        return false if token.is_a?(::Symbol) || token.respond_to?(:call)
+        return false if resolved_per_call?(token)
 
         token ? true : false
+      end
+
+      # Whether ActiveModel may resolve this option against the record on each call (`resolve_value`): a Symbol
+      # names a method, and anything answering `call` is called. Asked WITHOUT dispatching to the option, since a
+      # declaration and a reflection read may run no caller code: an exact built-in literal of the kind these
+      # options take is literal, and any other object counts as resolved per call — the direction that makes the
+      # schema say less, never more. THE test, so every reader agrees on it.
+      PER_CALL_LITERAL_CLASSES = [::NilClass, ::TrueClass, ::FalseClass, ::Integer, ::Float, ::String, ::Range, ::Array].freeze
+
+      def self.resolved_per_call?(value)
+        klass = Axn::Internal::Identity.class_of(value)
+        return true if Axn::Internal::Identity.same?(klass, ::Symbol)
+
+        PER_CALL_LITERAL_CLASSES.none? { |literal| Axn::Internal::Identity.same?(klass, literal) }
       end
 
       # The test `only_integer:` actually applies, handed to reflection rather than restated there: the emitted
@@ -597,8 +614,9 @@ module Axn
       # exactly when the pattern does not. `with:` is asked first, as AM asks it.
       #
       # Only a literal Regexp answers: `Regexp#match?` on one runs no user code, while a Proc/Symbol option is
-      # resolved against the record at validation time (AM's `resolve_value`) and reflection may never run it
-      # — unknown, which resolves to nil-REJECTING. Exact-class, since a subclass could override `match?`.
+      # resolved against the record at validation time (AM's `resolve_value`) and reflection may never run it,
+      # so it answers nil ("unknown"), which a caller reading it as a boolean treats as nil-rejecting.
+      # Exact-class, since a subclass could override `match?`.
       # The entry is read in the shape AM acts on, so a bare `format: /re/` is judged as the `with:` it becomes.
       def self.format_admits_nil?(entry_opts)
         opts = validator_entry_options(entry_opts)
@@ -607,8 +625,6 @@ module Axn
           with.match?("")
         elsif (without = opts[:without]).instance_of?(Regexp)
           !without.match?("")
-        else
-          false
         end
       end
 

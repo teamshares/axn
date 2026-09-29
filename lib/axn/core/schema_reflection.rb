@@ -21,7 +21,19 @@ module Axn
       def self.included(base)
         _extend_reflection(base, :input_schema, InputSchemaMethod)
         _extend_reflection(base, :output_schema, OutputSchemaMethod)
+        _extend_reflection(base, :input_schema_residues, InputSchemaResiduesMethod)
       end
+
+      # One constraint the contract enforces that `input_schema` does not state. `path` is the property
+      # keys from the root to the property it qualifies, exactly as the schema spells them (empty for the
+      # root); `summary` is the clause that property's `description` also carries; `kind` is `:conditional`
+      # (applies only when an `if:`/`unless:` gate opens), `:inherent` (JSON Schema has no faithful keyword
+      # for it) or `:unfixed` (axn could state it and does not yet).
+      #
+      # The schema is exact for its core vocabulary — types, requiredness, nullability, nesting, literal
+      # enums and literal bounds — and never stricter than the runtime for everything else. What it leaves
+      # out is listed here, so a caller obeying the schema can still be rejected, but never silently.
+      Residue = Data.define(:path, :summary, :kind)
 
       def self._extend_reflection(base, name, mod)
         if Axn::Core::MethodShadowing.externally_defined?(base, name)
@@ -82,7 +94,13 @@ module Axn
       # reopened to add another collision — the ordinary shape of a reload, and of a concern included after
       # the first reflection — got the new residue in its schema and no warning about it ever. Keying on the
       # rendered gaps keeps repeated reads quiet while a genuinely new one still speaks.
+      #
+      # Only an `:unfixed` residue is warned about. A conditional or inherent one is the schema keeping its
+      # promise — it leaves out what it cannot state faithfully — and is ordinary for any action with a gate
+      # or a pattern JSON Schema cannot spell; warning on each would teach authors to ignore the channel. They
+      # are still in the property's `description` and in `input_schema_residues`.
       def self.warn_inexpressible_constraints(klass, residues)
+        residues = residues.select { |_path, residue| residue.kind == :unfixed }
         return if residues.empty?
 
         # Preparation and bookkeeping are part of the side channel too. Neither a frozen class,
@@ -118,27 +136,11 @@ module Axn
       end
       private_class_method :_unwarned_gaps
 
-      module InputSchemaMethod
-        # The property-name rules run here rather than at declaration: a projection is the only thing a
-        # colliding or unrenderable name can harm, and this is where one is first demanded. Validated once per
-        # class, over the schema being returned rather than a second build of it.
-        def input_schema
-          residues = []
-          Axn::Internal::Reflection::PropertyNames.validated_input(self) { Axn::Internal::Reflection::Schema.build_input_for(self, residues:) }
-                                                  .tap { _warn_dropped_deep_subfields }
-                                                  .tap { _warn_inexpressible_constraints(residues) }
-        end
-
+      # What both inbound readers report about a deep subfield the document leaves out. Its own module because
+      # either reader may be the only one installed: an adapter base owning `input_schema` still gets
+      # `input_schema_residues`, and that is the class that most needs this.
+      module DroppedSubfieldReporting
         private
-
-        # A collision constraint the document cannot state: a conditional check, a check on a transformed
-        # value or its descendants, or a check with no keyword for the surviving JSON types. The schema
-        # itself says so in the relevant `description` (which is what an adapter passes on to its caller);
-        # this is the same gap said once, to the author, for the same reason the deep-subfield warning
-        # above exists: a silent narrowing of the document is what PRO-3405 set out to stop.
-        def _warn_inexpressible_constraints(residues)
-          SchemaReflection.warn_inexpressible_constraints(self, residues)
-        end
 
         # A deep subfield whose chain passes through a `model:` or non-object parent has no JSON-object
         # representation, so it validates at runtime but is absent from the input schema. Surface that
@@ -169,6 +171,68 @@ module Axn
         # The UTF-8 property a declared name renders as, falling back to the escaped `inspect` when its bytes
         # have no UTF-8 rendering at all. Same rule the declaration errors use, for the same reason.
         def _schema_name_label(name) = Axn::Internal::Reflection::PropertyNames.renderable_label(name)
+      end
+
+      module InputSchemaMethod
+        include DroppedSubfieldReporting
+
+        # The property-name rules run here rather than at declaration: a projection is the only thing a
+        # colliding or unrenderable name can harm, and this is where one is first demanded. Validated once per
+        # class, over the schema being returned rather than a second build of it.
+        def input_schema
+          residues = []
+          Axn::Internal::Reflection::PropertyNames.validated_input(self) { Axn::Internal::Reflection::Schema.build_input_for(self, residues:) }
+                                                  .tap { _warn_dropped_deep_subfields }
+                                                  .tap { _warn_inexpressible_constraints(residues) }
+        end
+
+        private
+
+        # A collision constraint the document cannot state: a conditional check, a check on a transformed
+        # value or its descendants, or a check with no keyword for the surviving JSON types. The schema
+        # itself says so in the relevant `description` (which is what an adapter passes on to its caller);
+        # this is the same gap said once, to the author, for the same reason the deep-subfield warning
+        # above exists: a silent narrowing of the document is what PRO-3405 set out to stop.
+        def _warn_inexpressible_constraints(residues)
+          SchemaReflection.warn_inexpressible_constraints(self, residues)
+        end
+      end
+
+      # Guarded separately from `input_schema`: an adapter base that owns `input_schema` still leaves this
+      # name free, and it is exactly those classes whose adapter most needs to know what the schema omits.
+      # Built through `PropertyNames.validate_inbound!`, the same build the reader performs, for the same
+      # reason setup uses it — the class's own `input_schema` may not be axn's.
+      #
+      # A subfield with no JSON representation, at any depth, is left out of the document entirely, so no node
+      # carries its residue; it is reported here at the root. A deep one also gets the once-per-class warning
+      # `input_schema` gives.
+      module InputSchemaResiduesMethod
+        include DroppedSubfieldReporting
+
+        def input_schema_residues
+          node_residues = Axn::Internal::Reflection::PropertyNames.validate_inbound!(self).map do |path, residue|
+            Residue.new(path: path.freeze, summary: residue.summary, kind: residue.kind)
+          end
+          _warn_dropped_deep_subfields
+          (node_residues + _unrepresented_subfield_residues).freeze
+        end
+
+        private
+
+        # Every subfield whose ancestor path the emitter blocks — `Schema.path_blocked?`, the predicate property
+        # attribution and the deep-drop list already ask — so a depth-1 child of an Array or `model:` parent is
+        # named exactly as a deep one is.
+        def _unrepresented_subfield_residues
+          tree = _resolved_subfields.tree
+          subfield_configs.filter_map do |config|
+            path = tree.index[config]
+            next unless path && !path.ancestors.empty? && Axn::Internal::Reflection::Schema.path_blocked?(path.ancestors)
+
+            summary = "#{_schema_name_label(config.field)} (on: #{_schema_name_label(config.on)}) is validated at runtime " \
+                      "but absent from the schema: it is nested under a model: or non-object parent"
+            Residue.new(path: [].freeze, summary: summary.freeze, kind: :inherent)
+          end
+        end
       end
 
       module OutputSchemaMethod

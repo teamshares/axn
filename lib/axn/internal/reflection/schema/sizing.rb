@@ -7,8 +7,8 @@ module Axn
     module Reflection
       module Schema
         # The SIZE axis and the BLANK axis, which overlap without being the same question: a `length:` bound
-        # is a size the author wrote, while a size meaning for `absence:` is one axn infers, and only the
-        # former may be counted static-maximally.
+        # is a size the author wrote, while a size meaning for `absence:` is one axn infers from a check that
+        # always runs.
         #
         # The six pure derivations here (`declared_size_minimum`/`_maximum`, the `absence_bounds_*` pair,
         # `blank_values_are_empty?`, `absence_ceiling_bounds_every_token?`) are what `Core::Contract`'s
@@ -120,12 +120,30 @@ module Axn
           # check rejects every empty value, 3 or more is all the contract admits and the floor is exact. Truthiness
           # decides the tolerance, not key presence: a nil-tolerance injects an explicit `allow_blank: false`.
           #
-          # A GATED entry may be open on a given call, and is counted as if it were — static-maximal, which can
-          # leave the input schema stricter than a closed-gate runtime but never looser, and is the policy for
-          # every gated constraint here.
+          # A GATED entry never reaches here: `build_property` reads the gate-closed validations, so a gated
+          # floor is left out and named as a residue instead.
           #
           # Only `length:` is consulted, never a `size:`: `size` is absent from KNOWN_VALIDATION_KEYS, so a
           # declaration carrying it raises "Unknown key(s) :size" and can never reach reflection.
+          # Whether a `length:` stands aside for a blank that nothing else rejects — "blank, or within these
+          # bounds", which no size keyword states. Both bounds are then left out and reported.
+          def blank_tolerant_length?(validations)
+            return false unless validations[:length]
+
+            length = effective_entry_options(validations[:length], shared_validation_options(validations))
+            length[:allow_blank] == true && !empty_value_rejected?(validations)
+          end
+
+          # Whether a blank-tolerant `length:` loses a bound it declares: always its floor ("blank, or at least
+          # N" has no keyword), and its ceiling unless every blank value is empty.
+          def blank_tolerant_length_unstated?(validations)
+            return false unless blank_tolerant_length?(validations)
+
+            length = effective_entry_options(validations[:length], shared_validation_options(validations))
+            floor = Axn::Validation::Base.declared_length_floor(length)
+            Axn::Validation::Base.emittable_length_floor?(floor) || !blank_values_are_empty?(validations)
+          end
+
           def declared_size_minimum(validations)
             # Whether an empty value can get through at all decides BOTH branches below: it is the floor of 1 a
             # presence/emptiness check imposes on its own, and it is what tells a blank-tolerant `length:` apart
@@ -148,11 +166,14 @@ module Axn
           # field carrying `absence:` beside a dropped floor emitted no ceiling at all, a node LOOSER than the
           # contract it projects.
           #
-          # Blank-tolerance cannot loosen either one (an empty value measures 0, which every emittable ceiling
-          # admits), and a GATED entry is counted as if its gate were open — the static-maximal policy every
-          # constraint here follows.
+          # A blank-tolerant `length:` whose blank is not rejected anyway keeps its ceiling only where every blank
+          # value is empty (a container: an empty one measures 0, which every ceiling admits). A String's blank is
+          # any run of whitespace, of any length, which no `maxLength` admits — so there the bound is left out and
+          # named as a residue (`blank_tolerant_length_unstated?`). A gated entry never reaches here (see
+          # declared_size_minimum).
           def declared_size_maximum(validations)
             return 0 if absence_bounds_size?(validations)
+            return nil if blank_tolerant_length?(validations) && !blank_values_are_empty?(validations)
 
             length = effective_entry_options(validations[:length], shared_validation_options(validations))
             declared = Axn::Validation::Base.declared_length_ceiling(length)
@@ -202,13 +223,10 @@ module Axn
           #   * every declared type is one whose blank values are its empty ones, since only there does the blank
           #     axis land on the size axis at all;
           #   * the entry is UNGATED — by a gate of its own OR by one the whole declaration carries, since either
-          #     stops it running. This is the one bound here not counted static-maximally, and the asymmetry is
-          #     between an AUTHORED bound and an INFERRED one. A `length:` ceiling is a size constraint the author
-          #     wrote, so it is emitted as written whatever gates it. A size meaning for `absence:` is one axn
-          #     infers, and it may only infer it from a check that always runs: `presence: { unless: :archived },
-          #     absence: { if: :archived }` is a working contract, and deriving a `maxItems: 0` from its
-          #     conditional half would put a ceiling on the document that the contract does not carry on the
-          #     calls where the gate is closed — most of them.
+          #     stops it running. The emitter reads gate-closed validations anyway, but the declaration guards ask
+          #     this of the raw ones: `presence: { unless: :archived }, absence: { if: :archived }` is a working
+          #     contract, and deriving a `maxItems: 0` from its conditional half would put a ceiling on a
+          #     judgment the contract does not carry on the calls where the gate is closed — most of them.
           def absence_bounds_size?(validations)
             return false unless absence_bounds_blankness?(validations)
 
@@ -252,15 +270,11 @@ module Axn
           # type mapping and its own key lookup rather than an enumeration beside them — so a token whose emitted
           # type changes cannot leave this answering the old one.
           #
-          # A token the map does not know falls through to the permissive `"string"`, which IS size-bearing, so
-          # it vetoes. That is the right answer for an unknown token and the wrong one for `NilClass`, whose only
-          # value is `nil` — blank, and with no size to bound. `NilClass` is absent from `TYPE_MAP`, so a union
-          # naming it emits a spurious string branch (measured: `type: [Array, NilClass], presence: false` emits
-          # `anyOf: [array, string, null]` while the runtime rejects `"x"`), and this inherits that. Not corrected
-          # here: the mapping is a pre-existing looseness with a blast radius of its own — the nullability pass
-          # already contributes a `"null"` branch — and it is tracked in PRO-3233.
+          # A token the map does not know emits no type, but its values may still carry one (a String subclass,
+          # or anything `length:` measures through `to_s`), so it counts as size-bearing and vetoes.
           def token_carries_a_size?(token)
-            !size_ceiling_key_for(single_type_for(token, for_output: false)[:type]).nil?
+            known = known_type_for(token, for_output: false)
+            known.nil? || !size_ceiling_key_for(known[:type]).nil?
           end
 
           def blank_is_empty_class?(token)

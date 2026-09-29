@@ -115,7 +115,7 @@ module Axn
           def field_render_guard(config, watched:, ancestry: nil)
             return nil if conditionally_gated?(config)
 
-            validations = effective_validations(config.validations, for_output: true)
+            validations = effective_validations(config.validations)
             of = validations[:of]
             shape = validations[:shape]
             return nil unless of || shape
@@ -208,7 +208,7 @@ module Axn
           # `contents_node_schema` does — a map bag descends through `map_values_render_guard`, anything else
           # through this same builder).
           def contents_render_guard(bag, ancestry, watched:)
-            shape = emitted_contents_edge(bag, :shape, for_output: true)
+            shape = emitted_contents_edge(bag, :shape)
             # Watched unconditionally on `shape` (not gated on `overlay`, unlike the classes/members computed
             # below): `shape_overlay_applies?` itself asks `member_keyed_object_type?` of EVERY token here, so
             # a token's current opacity is what decides which branch runs, not only what a branch that already
@@ -243,7 +243,7 @@ module Axn
               end
             members = overlay ? member_render_guards(shape[:members], ancestry, watched:) : nil
 
-            inner = emitted_contents_edge(bag, :of, for_output: true)
+            inner = emitted_contents_edge(bag, :of)
             items = nil
             values = nil
             unless nil.equal?(inner)

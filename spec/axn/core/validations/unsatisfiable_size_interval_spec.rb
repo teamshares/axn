@@ -334,17 +334,21 @@ RSpec.describe "a declaration whose admissible sizes form an empty interval" do
       end
 
       # What the stand-down costs, pinned so it reads as a known consequence of the gate policy rather than an
-      # oversight: this one IS unsatisfiable (only an empty container matches `[]`, and the floor is 3) and now
-      # declares, emitting a node no document satisfies. A gate is exactly the case where reflection's
-      # static-maximal emission and a satisfiable contract can disagree, and that gap is the emitter's. The
-      # alternative is refusing every gated type, which is what costs the satisfiable `"abc"` case above.
+      # oversight: this one IS unsatisfiable while its gate is closed (only an empty container matches `[]`, and
+      # the floor is 3) and still declares. The emitter reflects the gated `type:` with its gate closed — left
+      # out and named — so the node carries the always-run bounds, typed per JSON type, and admits nothing an
+      # enum of `[[]]` beside a floor of 3 rules out. The alternative is refusing every gated type, which is
+      # what costs the satisfiable `"abc"` case above.
       it "also stands down where the members make it genuinely unsatisfiable" do
         action = nil
         expect do
           action = declare(type: { klass: Array, if: -> { false } }, presence: false, length: { minimum: 3 },
                            inclusion: { in: [[]] })
         end.not_to raise_error
-        expect(action.input_schema[:properties][:f]).to eq({ type: "array", enum: [[]], minItems: 3 })
+        prop = action.input_schema[:properties][:f]
+        expect(prop).to include(enum: [[]], minItems: 3)
+        expect(prop).not_to have_key(:type)
+        expect(prop[:description]).to include('"type":"array"')
       end
     end
 
@@ -418,13 +422,18 @@ RSpec.describe "a declaration whose admissible sizes form an empty interval" do
 
       # And the emitter keeps bounding the ARRAY branch, which is the same derivation answering the OTHER
       # question: `maxItems: 0` is right for that branch whatever a sibling admits, and dropping it would leave
-      # a non-empty array schema-valid and runtime-invalid. The node stays satisfiable through the boolean
-      # branch, so nothing forbidden is emitted.
-      it "still bounds the container branch in the emitted schema" do
+      # a non-empty array schema-valid and runtime-invalid. The boolean branch the ceiling never reaches is held
+      # to the blank axis as a value set — `absence:` rejects `true` — and the node stays satisfiable through
+      # `false`, so nothing forbidden is emitted.
+      it "still bounds the container branch in the emitted schema, and the boolean one by blankness" do
         action = declare(type: [Array, :boolean], presence: false, absence: true)
 
-        expect(action.input_schema[:properties][:f])
-          .to eq({ anyOf: [{ type: "array", maxItems: 0 }, { type: "boolean" }] })
+        expect(action.input_schema[:properties][:f]).to eq(
+          anyOf: [{ type: "array", maxItems: 0 }, { type: "boolean" }],
+          allOf: [{ anyOf: [{ type: "string" }, { enum: ["", [], {}, false, nil] }] }],
+        )
+        expect(action.call(f: false)).to be_ok
+        expect(action.call(f: true)).not_to be_ok
       end
     end
 
@@ -471,19 +480,16 @@ RSpec.describe "a declaration whose admissible sizes form an empty interval" do
       end
 
       # A GATED contradiction: the guard stands down (a bound that may not be enforced cannot support "no
-      # value satisfies this"), while reflection stays static-maximal — so the node describes the gates-OPEN
-      # reading, which for a contradiction admits nothing. That gap is the emitter's and is tracked as
-      # PRO-3233. Pinned here because the conjunction made the `is:` spelling JOIN that gap rather than create
-      # it: measured at the merge base, a gated `minimum: 3, maximum: 2` already emitted
-      # `{minItems: 3, maxItems: 2}` while accepting every size, and the gated `is:` spelling emitted
-      # `{minItems: 2, maxItems: 2}` — satisfiable, but naming a size the gates-open contract rejects. The two
-      # spellings now agree, which is the direction that matters for a projection.
-      it "emits the gates-open reading for a gated contradiction, in either spelling" do
+      # value satisfies this"), and reflection leaves the gated bounds out, naming them — so the node no longer
+      # describes the gates-open reading, which for a contradiction admitted nothing while the runtime accepted
+      # every size whenever the gate was closed (PRO-3233 item 3). Both spellings agree on that.
+      it "leaves a gated contradiction's bounds out, in either spelling, and names them" do
         [{ minimum: 3, maximum: 2, if: -> { false } }, { is: 2, maximum: 1, if: -> { false } }].each do |length|
           action = declare(type: Array, presence: false, length:)
           prop = action.input_schema[:properties][:f]
 
-          expect(prop[:minItems]).to be > prop[:maxItems]
+          expect(prop).not_to include(:minItems, :maxItems)
+          expect(prop[:description]).to include("applies only on the calls its condition opens")
           expect(action.call(f: %w[a b c d]).ok?).to be(true)
         end
       end

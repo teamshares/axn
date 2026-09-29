@@ -15,7 +15,33 @@ module Axn
           # Whether the field's validators, taken together, permit a nil/omitted value — the one question
           # requiredness and nullability turn on, owned by Validation::Base so a field config's own
           # `optional?` answers it identically.
-          def nil_accepted?(config) = Axn::Validation::Base.nil_accepted?(config.validations)
+          #
+          # An entry whose nil verdict reflection cannot know — a `validate:` callable, or a set or pattern resolved
+          # per call — is left out of the question rather than counted as rejecting nil: counting it would publish
+          # a field as required (or non-null) that the runtime may accept omitted, which is the one direction the
+          # schema may never err in. Such an entry is always named as a residue instead.
+          def nil_accepted?(config) = Axn::Validation::Base.nil_accepted?(nil_judgeable_validations(config.validations))
+
+          def nil_judgeable_validations(validations)
+            shared = shared_validation_options(validations)
+            validations.reject { |key, opt| nil_verdict_unknowable?(key, opt, shared) }
+          end
+
+          # The validators whose nil verdict turns on an option resolved per call are exactly those whose admits-nil
+          # predicate can answer "unknown" (nil); every other validator's verdict does not depend on a resolved
+          # option (a `length:` records an error on nil whatever its bound, bar `maximum:`, which never does).
+          def nil_verdict_unknowable?(key, opt, shared)
+            return false unless opt
+
+            options = -> { effective_entry_options(opt, shared) }
+            case key
+            when :validate then true
+            when :inclusion, :exclusion then set_includes_nil?(options.call).nil?
+            when :format then Axn::Validation::Base.format_admits_nil?(options.call).nil?
+            when :acceptance then Axn::Validation::Base.acceptance_admits_nil?(options.call).nil?
+            else false
+            end
+          end
 
           # Whether the config's declaration carries a declaration-level if:/unless: gate — the signal
           # that its enforcement (NOT its shape) is conditional at runtime. Asked of a config here and of
@@ -75,7 +101,9 @@ module Axn
           # vacuously (`[].all?`) mark the node omittable and lose that test. Only a GATE — which skips the
           # gated check entirely when closed — genuinely relaxes requiredness. Own-level emission is
           # unaffected (this governs ancestor propagation only; see annotate_node!).
-          def requiredness_conditionally_relaxable?(config)
+          # `unknowable_relaxes: false` asks the stricter question: whether the GATE alone relaxes the requirement,
+          # an entry whose nil verdict is unknowable counting as one that may still reject an omitted value.
+          def requiredness_conditionally_relaxable?(config, unknowable_relaxes: true)
             gate_keys = Internal::FieldConfig::CONDITIONAL_GATE_KEYS
             decl_gates = config.validations.slice(*gate_keys)
             # `entries` are the real VALIDATORS — shared options (strict:, on:, …) aren't validators and
@@ -85,9 +113,12 @@ module Axn
             some_gate = decl_gates.any? || entries.any? { |_key, opt| entry_self_gated?(opt) }
             return false unless some_gate
 
+            # An entry whose nil verdict is unknowable is left out here as in `nil_accepted?`: counted as rejecting
+            # an omitted value, it would keep in `required` a field the runtime accepts omitted once its gates close.
             shared = shared_validation_options(config.validations)
             entries.all? do |key, opt|
-              nil_tolerant_validation?(key, opt, shared) || entry_effective_gate_keys(opt, decl_gates).any?
+              (unknowable_relaxes && nil_verdict_unknowable?(key, opt, shared)) || nil_tolerant_validation?(key, opt, shared) ||
+                entry_effective_gate_keys(opt, decl_gates).any?
             end
           end
 

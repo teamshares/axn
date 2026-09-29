@@ -129,11 +129,32 @@ out of `Axn::Internal`. Adding a new error class, or deciding whether it should 
   legitimately fire later than declaration — "before anything can consume it," not "at
   declaration" — if only the emitted schema reveals the problem. Before writing a guard or size
   budget against a projection, read `internal-docs/agent-notes/guards-and-projections.md` first.
-  The projection of a satisfiable contract must itself be satisfiable: "biased stricter" (see
-  `docs/reference/class.md`) licenses a node admitting FEWER values, never one admitting NONE — an
-  unsatisfiable node is the signature of the runtime and the emitter disagreeing about what a validator
-  targets, and it satisfies a directional invariant vacuously. And a contract that admits nothing has no
-  honest projection at all, so refuse it at declaration rather than teaching the emitter to paper over it.
+  The projection of a satisfiable contract must itself be satisfiable — an unsatisfiable node is the
+  signature of the runtime and the emitter disagreeing about what a validator targets. And a contract that
+  admits nothing has no honest projection at all, so refuse it at declaration rather than teaching the
+  emitter to paper over it.
+- **The input schema is exact at its core and never stricter elsewhere.** Tier 1 — property names, `type`,
+  `required`, nullability, nesting, literal `enum`, literal numeric/length bounds, the `allow_empty:` floor,
+  `model:` id typing — agrees with the runtime in BOTH directions; a residue there is a bug (stated exceptions:
+  the `model:` id's narrower type, and the blank axis — a blank-tolerant position's skipped blank (PRO-3244) and
+  a String `presence:`'s whitespace (PRO-3551); and an alternate spelling of a call the schema already admits canonically — a String
+  `coerce:` (or a tool invoker's coercion) parses into the declared type, an explicit `nil` a `default:` fills, an
+  absent or `nil` value a `preprocess:` Proc rescues — since the field keeps its declared type, requiredness and
+  nullability; widening for these would loosen every coerced field of every tool while saving no caller, whose
+  canonical spelling always passes). JSON Schema cannot tell `1` from `1.0`, so `"integer"` admits a `1.0` a Ruby
+  `Integer` check rejects — stated, not named on every Integer field; any other numeric class short of `Numeric` or
+  the Integer-and-Float pair is named as a residue. One stated looseness has no residue: a non-blank literal `default:` that
+  fails the field's own checks (`type: String, default: 123`) makes the field omittable though the omitted call
+  fails — a self-contradictory declaration, documented rather than annotated on every defaulted field, since
+  checking it would mean running the field's validators, `validate:` callables included. Tier 2 — `format:`, exclusion sets, every `if:`/`unless:`-gated
+  entry, transformed values, merge corners, checks with no keyword for some admitted type — may say LESS than
+  the runtime, never more: emit it only where the keyword is exactly what the runtime checks, otherwise leave it
+  out and record a `Residue` (`record_residue`), which reaches the property's `description` and
+  `input_schema_residues`. A gated check is reflected with its gate CLOSED (`effective_validations`, both
+  directions). A looseness with no residue is a defect in either tier; `schema_wire_audit_spec` holds both
+  directions (never rejects what the runtime accepts; reports everything it accepts that the runtime rejects).
+  Never make a projection stricter to buy precision — a stricter schema silently rejects valid calls, a looser
+  one costs a round-trip to a named runtime error.
 - **A declaration-time refusal is earned by a reading the runtime can take — never by the schema alone.**
   Refuse a declaration only when it is broken on a call the runtime can actually make: it raises on every
   call, rejects every value, carries an option that is silently inert, or silently means something looser

@@ -1462,6 +1462,9 @@ RSpec.describe "recursive of:" do
       action = build_axn { expects :m, type: Array, of: { klass: Integer, if: -> { false } } }
 
       expect(action.call(m: ["x"])).to be_ok
+      # Reflected with the gate closed: the element contract is left out and named as conditional.
+      expect(action.input_schema.dig(:properties, :m)).not_to have_key(:items)
+      expect(action.input_schema_residues.map(&:kind)).to eq([:conditional])
     end
 
     it "are live at a nested element bag, which becomes the next level's validator entry" do

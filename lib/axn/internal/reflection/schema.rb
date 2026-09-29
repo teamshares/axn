@@ -2,6 +2,7 @@
 
 require "date"
 require "time"
+require "bigdecimal"
 # A residue renders the fragment it declined to conjoin verbatim, so the builder cannot load without an encoder.
 require "json"
 
@@ -73,9 +74,9 @@ module Axn
       # would actually pass; that duplicate-validation pass was expensive and fragile. The tradeoff is a
       # documented divergence, narrow: a non-blank but otherwise-invalid default (`type: String,
       # default: 123`; `type: :uuid, default: "nope"`) is reflected as optional though the omitted call
-      # fails at runtime. The safe direction (schema stricter than runtime) never causes failed calls; the
-      # unsafe case above only arises from a self-contradictory contract and surfaces as a normal,
-      # recoverable validation error. A required subfield at ANY depth forces its whole ancestor chain
+      # fails at runtime (as is a Proc default, which reflection cannot run). Requiredness is exact in both
+      # directions otherwise; this looser case only arises from a self-contradictory contract and surfaces as
+      # a normal, recoverable validation error. A required subfield at ANY depth forces its whole ancestor chain
       # required and non-nullable (a nil/omitted ancestor yields every descendant absent, PRO-2857).
       module Schema
         # Which JSON Schema keyword each ActiveModel comparison operator becomes. The exclusive pair is the
@@ -112,7 +113,14 @@ module Axn
         # applies ("must equal 5 after coercion to Integer"); `kind` separates a limit of JSON Schema
         # itself (`:inherent`) from one axn has simply not taught the emitter yet (`:unfixed`), so the
         # audit's exclusion list can shrink as the latter are closed and can never silently grow.
-        Residue = Data.define(:summary, :kind)
+        #
+        # `per_type` marks a report `report_unexpressed_checks` derived from the property's surviving JSON types.
+        # A collision recomputes those against the combined node (`project_collision_checks`), where the types
+        # may have narrowed, so a side's own copies are dropped rather than carried: a `length:` unstatable on
+        # an untyped side is fully stated once the conjunction narrows it to a String.
+        Residue = Data.define(:summary, :kind, :per_type) do
+          def initialize(summary:, kind:, per_type: false) = super
+        end
 
         # Residues ride on the property they belong to under this key while it is being built, and are
         # rendered into `description` and stripped by `finalize_residues!` before the schema is returned.
@@ -164,28 +172,13 @@ module Axn
         # already uses, for the same reason: nothing earlier in the build can promise it has seen the FINAL
         # `properties` map.
 
-        # Every blank a JSON document can carry. `false` is among them: ActiveSupport counts it blank, which
-        # is what an ungated `presence:` rejects — and so is `nil`, which is why it is listed here even
-        # though `reject_null!` independently strips a null branch on the nested-child path. The floor is
-        # only ever restored where some config's ungated `presence:` rejects blank, and such a config also
-        # answers `nil_allowed?` false, so naming nil here cannot narrow a nil-tolerant position; it closes
-        # the axis path, where that separate null pass does not reach.
-        #
-        # Deep-frozen on the same terms as `BLANK_BRANCH_WITNESS`, and for the same measured reason: these
-        # members ride INSIDE an emitted schema, schemas are rebuilt per call and caller-mutable, and a
-        # shared mutable `[]`/`{}` lets one consumer's mutation reach every schema emitted afterwards —
-        # appending to one action's floor changed a DIFFERENT action class's `enum` to `["", [:x], {}, false,
-        # nil]`. Freezing rather than copying is what the neighbours do, so a mutating consumer gets a
-        # FrozenError instead of silently corrupting every later schema.
-        BLANK_WIRE_VALUES = ["", [].freeze, {}.freeze, false, nil].freeze
-
         # Metadata is not a validator contribution. In particular, a default applies independently
         # of validator gates and must never be included in a conditional fragment.
         SIBLING_DEPENDENT_KEYWORDS = %i[additionalProperties].freeze
         RESIDUE_UNGATEABLE_KEYS = [:description, :default, RESIDUE_KEY, Vocabulary::MAP_VALUE_EXEMPT_KEY].freeze
 
-        GATED_RESIDUE = "a conditional validator at this position applies only on the calls " \
-                        "its condition opens"
+        PROC_DEFAULT_RESIDUE = "its `default:` is computed on the call when it is omitted, and the computed value must " \
+                               "still pass this contract"
 
         # Where a subschema can live in what this emitter emits — a map of name => subschema, a single
         # subschema, or a list of them. Kept to the keywords it actually writes (`build_property`,
@@ -212,14 +205,18 @@ module Axn
 
         # Attach a residue to the property it qualifies, returning the property. Deduplicated by summary —
         # a collision judged at two depths reports the same clause once.
-        def record_residue(prop, summary, kind: :inherent)
+        def record_residue(prop, summary, kind: :inherent, per_type: false)
           return prop if summary.nil?
 
           existing = prop[RESIDUE_KEY] || []
           return prop if existing.any? { |r| r.summary == summary }
 
-          prop.merge(RESIDUE_KEY => existing + [Residue.new(summary:, kind:)])
+          prop.merge(RESIDUE_KEY => existing + [Residue.new(summary:, kind:, per_type:)])
         end
+
+        # A side's residues as a collision carries them: its per-type reports are recomputed on the combined
+        # node instead (see `Residue`).
+        def carried_residues(prop) = residues_on(prop).reject(&:per_type)
 
         def residues_on(prop) = prop.is_a?(::Hash) ? (prop[RESIDUE_KEY] || []) : []
 
@@ -245,7 +242,7 @@ module Axn
             # Each part is rendered BEFORE the join. An author's `description:` is caller-supplied text and
             # may be valid in an encoding this generated prose cannot concatenate with (a UTF-16 String
             # raises outright); joining first and rendering after would raise from inside the composition.
-            schema[:description] = join_prose(schema[:description], clause)
+            schema[:description] = join_prose(as_sentence(schema[:description]), clause)
           end
 
           # PRO-3441. This node's own `properties` is now FINAL — every subfield, colliding member and
@@ -580,11 +577,12 @@ module Axn
             else
               prop = build_property(config)
               apply_nested_subfields!(prop, node, ann)
+              prop = emitted_input_property(prop, config)
 
               properties[config.field] = prop.compact
               unless field_optional?(config, node.children, ann)
-                clause = conditional_requiredness_clause(config, tree, node, klass)
-                clause ? conditionals << clause : required << required_key(config.field)
+                properties[config.field] = apply_field_requiredness!(properties[config.field], config, tree, node, ann, klass,
+                                                                     required:, conditionals:)
               end
             end
           end
@@ -771,7 +769,7 @@ module Axn
         # Post-order: a node's annotation only depends on its (already-annotated) children.
         def annotate_node!(node, ann, satisfiability: false)
           node.children.each_value { |child| annotate_node!(child, ann, satisfiability:) }
-          credit_sibling_id_defaults!(node, ann) if satisfiability
+          credit_sibling_id_defaults!(node, ann)
 
           # ANCESTOR-FORCING is derived from the RELAXABLE-filtered subset of the node's configs: a route
           # whose requiredness a conditional gate can relax at runtime can't oblige an omitted/nil
@@ -786,10 +784,9 @@ module Axn
           # prior two-step form (full-set node_optional? then relax only when EVERY config is gated)
           # over-forced exactly that shape, wrongly rejecting a runtime-valid contract in satisfiability mode.
           #
-          # This is ONLY the ancestor-propagation signal. Own-level emission stays static-maximal: the
-          # emission sites (apply_children!/field_optional?) call node_optional? with the full or
-          # per-route config set directly, so a gated route's own nested `required` obligation is
-          # unchanged. Edge cases preserved: an implicit node ignores the `configs` param inside
+          # This is the ancestor-propagation signal. Own-level emission reads the same relaxation where it
+          # lists a child (`apply_child_requiredness!`), naming a requirement only a gate imposes rather than
+          # listing it. Edge cases preserved: an implicit node ignores the `configs` param inside
           # node_optional? (a pure subtree test), so its ancestor-forcing is untouched; a fully-relaxable
           # node yields an empty subset, and `[].all?` is vacuously true → node_optional? true → not
           # required; an all-ungated node passes its full set (unchanged).
@@ -811,24 +808,24 @@ module Axn
             # read through the one owner of that rule (property_representative). A node with no non-model
             # config (a pure model: route) never nests, so its nullable is unused; false is an inert default.
             representative = property_representative(node.configs)
-            nullable = representative ? nil_allowed?(representative) && !required_child?(representative, node.children, ann) : false
+            # Read with gates closed, like every nullability the input schema emits: a gated nil-rejecting check
+            # is skipped on the calls its gate closes, so a nil reaches the node then.
+            nullable = representative ? nil_admitted_with_gates_closed?(representative) && !required_child?(representative, node.children, ann) : false
           end
 
           ann[node] = NodeAnnotation.new(required:, nullable:)
         end
 
-        # Satisfiability-only post-adjustment (runs before this node's own requiredness is computed, so the
+        # A post-adjustment in both modes (it runs before this node's own requiredness is computed, so the
         # credit propagates up every ancestor): a model-routed child that a sibling `<key>_id` subfield can
         # rescue is re-annotated non-required. The sibling's value-level default supplies the lookup token at
-        # read time (see ContractForSubfields.resolve_model_via_id), so omitting the record still
-        # resolves it and the record answers the subtree; the record's attributes are unknowable at
-        # declaration, so crediting the rescue is the satisfiability doctrine. STRICT (schema) mode is
-        # untouched — it keeps its documented stricter-than-runtime divergence for self-referential id/model
-        # subfield pairs (apply_model_id_requiredness!'s KNOWN LIMITATION).
+        # read time (see ContractForSubfields.resolve_model_via_id), so omitting the record still resolves it,
+        # and the schema requiring an ancestor the runtime lets be omitted would be stricter than the runtime.
+        # What the record then answers is read off it rather than off the wire, so no wire obligation is lost.
         def credit_sibling_id_defaults!(node, ann)
           node.children.each do |key, child|
             next if child.implicit? || !ann[child].required
-            next unless sibling_id_rescued?(node, key, child)
+            next unless sibling_id_rescued?(node.children, key, child)
 
             ann[child] = NodeAnnotation.new(required: false, nullable: ann[child].nullable)
           end
@@ -843,24 +840,26 @@ module Axn
         #     default or nil-accepting) — own-level only, because the model subtree is satisfied via the
         #     resolved record; it's the non-model route's OWN wire value the id can't supply (a pure-model
         #     node has no non-model route, so the empty set trivially satisfies this); AND
-        #   * a sibling `<key>_id` route that this model's lookup would read the token from
+        #   * for EVERY model route, a sibling `<key>_id` route that its lookup would read the token from
         #     (FieldConfig.id_token_routes) carries a default usable as one (usable_id_token_default?
         #     rejects a blank literal — the model resolver blank-guards the id).
-        # `parent` is the node whose children include both `node` (keyed by `key`) and the id sibling.
-        def sibling_id_rescued?(parent, key, node)
+        # `siblings` is the children map holding both `node` (keyed by `key`) and the id sibling.
+        def sibling_id_rescued?(siblings, key, node)
           return false unless node.configs.any? { |c| c.validations[:model] }
 
           non_model = node.configs.reject { |c| c.validations[:model] }
-          return false unless non_model.all? { |c| usable_default?(c, subfield: true, satisfiability: true) || nil_accepted?(c) }
+          return false unless non_model.all? { |c| usable_default?(c, subfield: true) || nil_accepted?(c) }
 
-          sibling = parent.children[Internal::FieldConfig.model_id_key(key)]
+          sibling = siblings[Internal::FieldConfig.model_id_key(key)]
           return false if sibling.nil?
 
           # Credited only through the route the LOOKUP will actually read the token from, asked per model
           # route on the node via the one precedence both layers share — otherwise this credits a rescue
           # that never happens, and a nil-tolerant model whose subtree needs it would be accepted at
-          # declaration and resolve nil at run time.
-          node.configs.select { |c| c.validations[:model] }.any? do |model_config|
+          # declaration and resolve nil at run time. EVERY model route must be rescued: the runtime enforces
+          # each, so one route the id does not reach (another `on:` spelling, an `as:` reader) still resolves
+          # nil and strands what reads through it.
+          node.configs.select { |c| c.validations[:model] }.all? do |model_config|
             Internal::FieldConfig.id_token_routes(model_config, sibling.configs).any? { |c| usable_id_token_default?(c) }
           end
         end
@@ -919,17 +918,71 @@ module Axn
           # against that resolved value — being optimistic that the default satisfies each sibling's
           # validator is the satisfiability doctrine (rejection is reserved for provably dead declarations).
           # Gated on satisfiability so strict schema mode stays byte-identical to the per-config rule below.
-          return true if satisfiability && node.configs.any? { |c| usable_default?(c, subfield: true, satisfiability: true) }
+          return true if satisfiability && node.configs.any? { |c| usable_default?(c, subfield: true) }
 
           configs.all? do |c|
-            usable_default?(c, subfield: true, satisfiability:) ||
+            usable_default?(c, subfield: true) ||
               (nil_tolerance_rescues_absence?(c, satisfiability:) && !subtree_requires_presence?(node, ann))
           end
         end
 
         # Whether the parent's shape (`do…end`) block declares a member that isn't schema-optional.
+        # A member whose every nil-rejecting check is gated is not required with its gates closed, the verdict the
+        # shape's own `required` list is emitted from (`build_member_properties`).
         def required_shape_member?(config)
-          named_members(config.validations.dig(:shape, :members)).any? { |m, _name| !optional_for_schema?(m) }
+          named_members(config.validations.dig(:shape, :members)).any? do |m, _name|
+            !optional_for_schema?(m) && !requiredness_conditionally_relaxable?(m)
+          end
+        end
+
+        # Where a field its own signals do not make omittable lands: the exact clause when its gate can be
+        # stated, otherwise `required` — unless only a gate imposes the requirement, which is then named on the
+        # property rather than listed. Returns the property, which the first and last of those annotate.
+        def apply_field_requiredness!(prop, config, tree, node, ann, klass, required:, conditionals:)
+          clause = conditional_requiredness_clause(config, tree, node, klass)
+          if clause
+            conditionals << clause
+            return state_gate_open_contract!(clause, prop, config)
+          end
+          return with_gated_requirement(prop, [config]) if gate_relaxes_requiredness?(config, node.children, ann)
+
+          required << required_key(config.field)
+          prop
+        end
+
+        # The exact clause names the calls the declaration gate opens, so what the field enforces on them can be
+        # stated there too, beside the requirement: the property built with the declaration gate removed (its
+        # own per-entry gates still close, and are still reported). The field's own property keeps only what
+        # holds on every call, and its residues narrow to what the clause still cannot say. Every one of those
+        # applies only on the calls the gate opens, so each is named as conditional; an `:unfixed` one keeps its
+        # kind, since axn could still close it.
+        def state_gate_open_contract!(clause, prop, config)
+          open_config = config.with(validations: config.validations.except(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS))
+          open = emitted_input_property(build_property(open_config), config)
+          branch = clause.key?(:then) ? :then : :else
+          stated = open.except(:description, :default, RESIDUE_KEY)
+          clause[branch] = clause[branch].merge(properties: { config.field => stated }) unless stated.empty?
+          kept = prop.except(RESIDUE_KEY)
+          residues_on(open).reduce(kept) do |acc, r|
+            next record_residue(acc, r.summary, kind: r.kind, per_type: r.per_type) if r.kind == :conditional
+
+            record_residue(acc, "#{GATED_RESIDUE}; #{r.summary}", kind: r.kind == :unfixed ? :unfixed : :conditional, per_type: r.per_type)
+          end
+        end
+
+        # Whether a nil reaches this config's position unrejected on SOME call: it tolerates nil outright, or
+        # every check that would reject one is gated, and so skipped on the calls the gate closes. The nullability
+        # a colliding route caps a merged node by, read with gates closed like everything else emitted.
+        def nil_admitted_with_gates_closed?(config)
+          nil_allowed?(config) || requiredness_conditionally_relaxable?(config)
+        end
+
+        # Whether a gate is the only thing that would make this config required: every check that rejects an
+        # omitted value is skipped on the calls its gate closes, and no required child forces the value to be
+        # sent anyway. The schema then leaves it out of `required` and names the conditional requirement
+        # instead — listing it would reject the calls whose gate is closed.
+        def gate_relaxes_requiredness?(config, children, ann)
+          requiredness_conditionally_relaxable?(config) && !required_child?(config, children, ann)
         end
 
         # A field is absent from `required` when a declared signal makes it omittable.
@@ -939,7 +992,7 @@ module Axn
           # A usable default on the PARENT materializes it (with its declared contents) before validation,
           # so it may always be omitted — its own default, not its subfields, decides. (A default whose
           # contents fail a child's validators is a separate, narrow divergence handled by usable_default?.)
-          return true if usable_default?(config, subfield: false, satisfiability:)
+          return true if usable_default?(config, subfield: false)
 
           # The parent's own nil-tolerance (optional:/allow_nil:) only makes it omittable when no required
           # child would be stranded — so it must be checked AFTER the required-child test, not ahead of it.
@@ -956,19 +1009,16 @@ module Axn
         # An exact JSON Schema conditional for a gated-but-otherwise-required top-level field whose
         # single Symbol condition references a declared sibling field. Ruby truthiness on a JSON value
         # is precisely "present, and neither false nor null", so the emitted clause matches the runtime
-        # gate exactly. Returns nil — fall back to unconditional `required`, the static-maximal safe
-        # direction — unless EVERY guard holds:
+        # gate exactly. Returns nil — the field is then left out of `required` and its conditional
+        # requirement named as a residue (`gate_relaxes_requiredness?`) — unless EVERY guard holds:
         #   * exactly one gate (if: XOR unless:), and its rule is a Symbol;
         #   * the Symbol resolves to a declared top-level inbound field's reader (condition_reference);
         #   * the referenced field carries no default: and no preprocess: (either can make the settled
         #     runtime value diverge from what the caller sent, flipping the gate relative to the wire)
         #     and is not model:-routed (lookup success isn't wire-expressible) nor schema-excluded;
-        #   * for an unless: gate, the referenced field's type can't admit boolean coercion of a
-        #     schema-admissible wire value coerce_boolean maps to false — a falsy STRING or the integer 0
-        #     (boolean_coercion_can_flip_truthiness?). Coercion only flips a truthy wire value to falsey:
-        #     for an if: gate that direction keeps the emitted `then`
-        #     stricter than runtime (safe — still emitted), but for an unless: gate it opens the runtime
-        #     `else` gate the emitted clause left closed (looser than runtime — fall back);
+        #   * the referenced field's type can't admit boolean coercion of a schema-admissible wire value
+        #     coerce_boolean maps to false — a falsy STRING or the integer 0
+        #     (boolean_coercion_can_flip_truthiness?). The flip makes the clause inexact for either gate;
         #   * (a subfield default BENEATH the referenced field needs no guard: value-level defaults
         #     resolve the child's value on the read path and never synthesize the parent — PRO-2903 —
         #     so a wire-omitted referenced field settles nil/falsey exactly as the clause reads it;
@@ -997,9 +1047,9 @@ module Axn
           # entry breaks that (AM's measured per-key merge, fields.rb#validator_gate_open?): a BLANK
           # same-key nested override un-gates the entry, making it unconditionally required (clause looser
           # than runtime), while a NON-blank nested gate ties the entry to a DIFFERENT condition than the
-          # clause emits (also inexact). Either way fall back to unconditional required (the static-maximal
-          # safe direction). Nil-TOLERANT entries never reject an omitted value, so a nested gate on them
-          # can't affect requiredness — don't fall back on those.
+          # clause emits (also inexact). Either way fall back (see `build_input`). Nil-TOLERANT entries never
+          # reject an omitted value, so a nested gate on them can't affect requiredness — don't fall back on
+          # those.
           entries = Axn::Validation::Base.validator_entries(config.validations)
           shared = shared_validation_options(config.validations)
           return nil if entries.any? { |key, opt| !nil_tolerant_validation?(key, opt, shared) && entry_mentions_gate_key?(opt) }
@@ -1013,15 +1063,12 @@ module Axn
           return nil if EXCLUDED_FROM_INPUT_SCHEMA.include?(ref.field)
           return nil unless framework_generated_reader?(klass, rule)
 
-          # An unless: gate treated static-maximally emits `else: required`, firing only when the
-          # referenced wire value is FALSEY. But inbound boolean coercion can flip a schema-admissible
-          # truthy wire value ("false"/"f"/"0" as a String, or the JSON number 0) to a falsey settled
-          # value, opening the runtime gate while the emitted `if` still reads the wire value as truthy —
-          # so the schema would NOT require the gated field though the runtime does (looser than
-          # runtime). For an if: gate the same flip makes the schema stricter (the emitted `then` keeps
-          # requiring while the runtime gate closes), so only unless: must fall back to unconditional
-          # required.
-          return nil if gates.key?(:unless) && boolean_coercion_can_flip_truthiness?(ref)
+          # Inbound boolean coercion can flip a schema-admissible truthy wire value ("false"/"f"/"0" as a
+          # String, or the JSON number 0) to a falsey settled value, so the runtime gate and the emitted
+          # `if` read that value differently. For an unless: gate the clause would then not require a
+          # field the runtime does; for an if: gate it would keep requiring one the runtime has let go —
+          # stricter, which a requirement may no more be than a bound. Either way the clause is inexact.
+          return nil if boolean_coercion_can_flip_truthiness?(ref)
 
           condition = {
             required: [required_key(ref.field)],
@@ -1116,7 +1163,7 @@ module Axn
         # them). This method reaches a `for_output` config only for a nested shape member, which is
         # serialized from the actual value and so honors its own `optional:`/`allow_nil:`/`default:`.
         def optional_for_schema?(config, subfield: false, satisfiability: false)
-          return true if usable_default?(config, subfield:, satisfiability:)
+          return true if usable_default?(config, subfield:)
 
           nil_tolerance_rescues_absence?(config, satisfiability:)
         end
@@ -1138,11 +1185,8 @@ module Axn
 
         # A default lets the client omit the field (Axn applies it before validation). We judge usability
         # by declared SHAPE only — never by running the field's validators. A Proc default is unknowable at
-        # declaration, so the two modes diverge on it (the ONLY semantic delta): strict (schema) mode
-        # resolves toward required — the safe direction — while satisfiability mode (the declaration-rejection
-        # detector) resolves toward satisfiable, since the Proc DOES apply at runtime and rejection is
-        # reserved for provably dead declarations. For a subfield, only a truthy default is applied at runtime
-        # (`next unless config.default`), so a falsey subfield default never counts.
+        # declaration and counts as usable: it runs on the omitted call. For a subfield, only a truthy default
+        # is applied at runtime (`next unless config.default`), so a falsey subfield default never counts.
         #
         # An empty literal default (`{}`/`""`/`[]`) makes the field omittable only when nothing here would
         # reject the synthesized blank — asked of every check that governs blankness/emptiness
@@ -1154,17 +1198,17 @@ module Axn
         # The emptiness check is limited to literal containers (Hash/Array/String): reflection must stay
         # side-effect-free, and calling `empty?` on an arbitrary default (e.g. an ActiveRecord::Relation or
         # other lazy collection) could issue a query or run user code. A non-literal default is present.
-        def usable_default?(config, subfield:, satisfiability: false)
+        def usable_default?(config, subfield:)
           # `#default` is beyond the documented member contract, so absent and nil are one answer here — both
           # mean "no default to relax the field with", which is what the original respond_to? guard did.
           value = declared_attribute(config, :default)
           return false if value.nil?
-          # The governing split (PRO-2889): a Proc default is unknowable at declaration. Strict (schema)
-          # mode resolves toward required — the safe direction — while satisfiability mode (the
-          # declaration-rejection detector) resolves toward satisfiable: the Proc DOES apply at runtime,
-          # and rejection is reserved for provably dead declarations.
-          return satisfiability if value.is_a?(Proc)
-          return false if blank_default_rejected?(config)
+          # A Proc default is unknowable at declaration, but it DOES apply at runtime, so an omitted call
+          # reaches validation with a value — requiredness is tier 1, and listing the field in `required`
+          # would reject that call. Both modes resolve toward omittable. A Proc whose value then fails the
+          # field's own checks is the same accepted divergence as a non-blank invalid literal default.
+          return true if computed_default?(value)
+          return false if broken_default?(value) || blank_default_rejected?(config)
 
           subfield ? config.applied_default? : true
         end
@@ -1182,16 +1226,20 @@ module Axn
         #     value set: a whitespace-only String default is blank but not empty, and passes.
         #
         # A Proc default is unknowable at declaration (usable_default? settles it before reaching here) and a
-        # non-applied subfield default supplies nothing to reject. Gates are deliberately not consulted, as
-        # everywhere else on the input side: a gated check is counted as if it ran.
+        # non-applied subfield default supplies nothing to reject. Both checks are read with their gates closed,
+        # as everything emitted is: a gated one rejects the default only on the calls its gate opens, which its
+        # own gating residue names, so it does not keep the field required. A declaration guard asking this
+        # only stands down more often for it, the direction a guard may always err in.
         def blank_default_rejected?(config)
           return false unless config.respond_to?(:default)
 
           value = config.default
-          return false if value.nil? || value.is_a?(Proc)
-          return true if presence_blank?(value) && presence_rejects_blank?(config.validations)
+          return false if value.nil? || default_invocation(value) != :literal
 
-          empty_default?(value) && config.validations.key?(Axn::Internal::FieldConfig::NON_EMPTINESS_KEY)
+          validations = gate_closed_validations(config, config.validations)
+          return true if presence_blank?(value) && presence_rejects_blank?(validations)
+
+          empty_default?(value) && validations.key?(Axn::Internal::FieldConfig::NON_EMPTINESS_KEY)
         end
 
         # Whether an active `presence:` check here rejects every blank value: one is declared and it is not
@@ -1262,9 +1310,32 @@ module Axn
           # required shape member only when the parent's OWN default materializes it). Read from the
           # precomputed annotation (derive_annotations already applied this same rule to `node`), NOT
           # `prop[:required]`, which also carries shape members that a bare nil parent never triggers.
-          prop[:type] = ann[node].nullable ? %w[object null] : "object"
+          #
+          # The node is typed `object` only where the runtime rejects every other value too: a type check that
+          # runs on every call, or a required child, which a non-object value leaves absent. Otherwise — an
+          # untyped parent, or one whose type check is gated — a String or Array reaches the children as nothing
+          # and passes, and `properties` (which JSON Schema applies to objects alone) says all there is to say.
+          if nested_node_object_only?(node, node_configs, ann)
+            prop[:type] = ann[node].nullable ? %w[object null] : "object"
+          elsif !preprocessed?(node_configs) &&
+                node_configs.any? { |c| presence_rejects_blank?(gate_closed_validations(c, c.validations)) }
+            # Untyped, a presence check still rejects every blank — nil among them — as a value set.
+            prop[:not] = { enum: BLANK_WIRE_VALUES }
+          elsif !ann[node].nullable
+            reject_null!(prop)
+          end
           prop[:required] = nil if prop[:required].empty?
         end
+
+        # Never for a node that preprocesses its value: its children read the Proc's output, so the wire value
+        # may be anything that becomes an object (a JSON String the Proc parses).
+        def nested_node_object_only?(node, node_configs, ann)
+          return false if preprocessed?(node_configs)
+
+          node_configs.any? { |c| gate_closed_validations(c, c.validations).key?(:type) } || children_require_presence?(node.children, ann)
+        end
+
+        def preprocessed?(configs) = configs.any? { |c| c.respond_to?(:preprocess) && c.preprocess }
 
         # Emits one level of children into `prop` (which must already have :properties/:required arrays),
         # recursing into each child's own subtree. `parent_configs` are the configs whose subfields these
@@ -1326,7 +1397,7 @@ module Axn
             members = ancestor_shapes ? shape_members_at(ancestor_configs, key) : NO_SHAPE_MEMBERS
             emitted_members = ancestor_shapes ? shape_members_at(emitted_ancestor_configs, key) : NO_SHAPE_MEMBERS
             apply_explicit_child!(prop, key, node, representative, non_model_configs, members, emitted_members, ann)
-            prop[:required] << required_key(key) unless node_optional?(node, ann, non_model_configs)
+            apply_child_requiredness!(prop, key, node, non_model_configs, ann)
           end
           # The sibling's OWN entry (a plain child of this same loop) always wins the property outright
           # regardless of visitation order, so `prop[:properties][id_field]` is only guaranteed to hold
@@ -1347,9 +1418,25 @@ module Axn
           model_id_siblings.each do |id_field, model_configs, explicit_id|
             merge_model_id_type_into_sibling!(prop[:properties][id_field], model_configs, explicit_id, id_field) if prop[:properties][id_field]
           end
+          name_model_lookups!(prop, children)
           # A required nested model id can't be null (a null token resolves the model to nil at runtime).
           # Done after the loop so it survives an explicit id subfield declared after the model: subfield.
           required_model_ids.each { |id_field| reject_null!(prop[:properties][id_field]) if prop[:properties][id_field] }
+        end
+
+        # A child is required when its routes require it with every gate closed — the routes a gate can relax
+        # are left out, exactly as the ancestor-propagation annotation leaves them out — and a requirement
+        # only a gate imposes is named on the child's property instead.
+        def apply_child_requiredness!(prop, key, node, configs, ann)
+          return if node_optional?(node, ann, configs)
+          # Already required unconditionally by something else at this position (an ancestor's shape member).
+          return if prop[:required].include?(required_key(key))
+
+          if node_optional?(node, ann, configs.reject { |c| requiredness_conditionally_relaxable?(c) })
+            prop[:properties][key] = with_gated_requirement(prop[:properties][key], configs)
+          else
+            prop[:required] << required_key(key)
+          end
         end
 
         # Builds and writes the property for one EXPLICIT child. Extracted from `apply_children!`'s loop for the
@@ -1399,8 +1486,8 @@ module Axn
         # property: an untyped nil-tolerant member emits no `type`, leaving no null branch to find.
         def apply_explicit_child!(prop, key, node, representative, non_model_configs, members, emitted_members, ann)
           merged_members = merged_explicit_members(node, members)
-          child_prop = build_property(representative, subfield: true)
           member_prop = prop[:properties][key]
+          child_prop = build_property(representative, subfield: true)
           # Descendants of a transformed value belong to its post-transform contract. Finish that
           # subtree before the collision can stand it down; otherwise descent rewrites the retained
           # wire type and attaches post-transform children to it.
@@ -1411,21 +1498,17 @@ module Axn
           else
             child_prop = conjoin_shape_member_property(member_prop, child_prop, member_configs: emitted_members, own_configs: [representative]) if member_prop
             apply_nested_subfields!(child_prop, node, ann, carried: merged_members)
+            child_prop = emitted_input_property(child_prop, representative) unless member_prop
           end
           # A route carrying `preprocess:` is NOT exempted from its own `nil_allowed?` here, though the Proc
-          # does run before presence is judged and so might turn a wire `nil` into something non-nil
-          # (`preprocess: ->(_) { "x" }` on an otherwise-required node does exactly that). The exemption
-          # cannot be scoped safely: reflection has no way to tell that CONSTANT-preprocess case apart from
-          # an ordinary IDENTITY (or any other nil-preserving) `preprocess: ->(v) { v }`, where the Proc does
-          # NOT rescue nil and the required check correctly rejects it at runtime — `preprocess:` is an
-          # opaque Proc, and reflection must not execute it to find out which. Of the two directions that
-          # ambiguity forces a choice between — an unsatisfiable node for the constant-preprocess case, or a
-          # schema that ACCEPTS a wire `nil` the far more common pass-through case REJECTS — the latter is
-          # the one direction reflection may never take (`schema_wire_audit_spec`'s own hard invariant). So
-          # the constant-preprocess case is left as a known, unfixable residual: the same "cannot execute
-          # user code" limit already accepted for a transforming side's constraints generally.
-          null_ok = non_model_configs.all? { |c| nil_allowed?(c) } &&
-                    members.all? { |m| nil_allowed?(m) } &&
+          # runs on a `nil` (and an absent) value too, and a constant `preprocess: ->(_) { "x" }` rescues it. That
+          # is the one stated exception to a transformed value saying less than the runtime: its requiredness and
+          # nullability stay as declared, since reflection cannot tell a nil-rescuing Proc from the far more
+          # common nil-preserving one (`->(v) { v.strip }`) without running it, and dropping both from every
+          # preprocessed field would stop the schema saying a field must be sent at all. A value supplied for a
+          # missing one is `default:`'s job, and that the schema reflects.
+          null_ok = non_model_configs.all? { |c| nil_admitted_with_gates_closed?(c) } &&
+                    members.all? { |m| nil_admitted_with_gates_closed?(m) } &&
                     !subtree_requires_presence?(node, ann)
           reject_null!(child_prop) unless null_ok
           prop[:properties][key] = child_prop.compact
@@ -1492,6 +1575,14 @@ module Axn
             prop[:properties][id_field] ||= subprop
           end
           return if node_optional?(node, ann, model_configs)
+          # A sibling id whose default supplies the lookup token on the omitted call rescues it, by the one
+          # predicate the annotation credit and the declaration guard share.
+          return if sibling_id_rescued?(children, key, node)
+
+          if node_optional?(node, ann, model_configs.reject { |c| requiredness_conditionally_relaxable?(c) })
+            prop[:properties][id_field] = with_gated_requirement(prop[:properties][id_field], model_configs)
+            return
+          end
 
           prop[:required] << id_field.to_s
           required_model_ids << id_field
@@ -1571,7 +1662,7 @@ module Axn
           # Data placeholder property with no shape member) falls back to non-nullable (stricter than
           # runtime), while a genuinely fresh node (no property, no member) follows its subtree.
           nullable = ann[node].nullable &&
-                     (members.any? ? members.all? { |m| nil_allowed?(m) } : existing.nil?)
+                     (members.any? ? members.all? { |m| nil_admitted_with_gates_closed?(m) } : existing.nil?)
           target[:type] = nullable ? %w[object null] : "object"
           target[:required] = nil if target[:required].empty?
           prop[:properties][key] = target.compact
@@ -1676,17 +1767,11 @@ module Axn
           # `deep` values axis requiring `< 10` emitted only the `< 10` constraint, so `deep: { x: -1 }`
           # passed the schema though the ancestor's own (unconditional) validator rejects it. Conjoined via
           # the SAME `conjoin_shape_member_property` recursion used everywhere else two schemas at one
-          # position both apply — with the AXIS's own klass token(s) threaded through (not the outer
-          # field's), because an approximate axis (`values: Object`) needs the SAME
-          # `unknown_class_approximate?` stripping an approximate FIELD gets: an ancestor axis with `klass:
-          # Object` beside a colliding node's axis with `klass: Hash` initially called this conjunction
-          # with no axis configs at all, so the emitted `{type: "string"}` HINT (`single_type_for`'s
-          # permissive Object fallback) was treated as an EXACT, competing type assertion rather than the
-          # approximation it is — conjoined via `allOf` with the real `{type: "object"}` schema into a node
-          # nothing satisfies (a value can never be both a string and an object), though `{ x: {} }` passes
-          # both runtime axis validators. An axis never carries `coerce:`/`preprocess:` at all (refused at
-          # declaration — "of: does not support coerce:"/"preprocess:"), so `axis_config_view` only ever
-          # needs to expose the axis's declared klass token, never a transform.
+          # position both apply — with the AXIS's own configs threaded through (not the outer field's), so a
+          # gated axis entry is projected by what always runs exactly as a gated field is. An axis never
+          # carries `coerce:`/`preprocess:` at all (refused at declaration — "of: does not support
+          # coerce:"/"preprocess:"), so `axis_config_view` only ever needs to expose the axis's declared
+          # validations, never a transform.
           if member_prop[:additionalProperties] || own_prop[:additionalProperties]
             merged[:additionalProperties] = merge_emitted_nested_schema(
               member_prop[:additionalProperties], own_prop[:additionalProperties],
@@ -1726,9 +1811,8 @@ module Axn
           conjoin_shape_member_property(member_schema, own_schema, member_configs: member_axis_configs, own_configs: own_axis_configs)
         end
 
-        # A minimal stand-in for a field config, exposing only what `unknown_class_approximate?` reads
-        # (`.validations`) — enough to reuse that function UNCHANGED for an axis bag, which is never
-        # itself an `Internal::FieldConfig`. Deliberately has NO `preprocess` method at all, so
+        # A minimal stand-in for a field config, exposing only `.validations` — enough to reuse the collision
+        # machinery UNCHANGED for an axis bag, which is never itself an `Internal::FieldConfig`. Deliberately has NO `preprocess` method at all, so
         # `respond_to?(:preprocess)` reads false exactly as a shape member's does — `transforms_wire_
         # value?`'s own doc explains why that must be the answer here: an axis bag can NEVER declare
         # `coerce:`/`preprocess:` (both refused at declaration — "of: does not support coerce:"/
@@ -1848,18 +1932,8 @@ module Axn
         # contract that never runs — and translating it back means inverting an arbitrary Proc, which
         # reflection cannot do and must not try. So the side stands down whole: the other one is emitted
         # alone and what this one still enforces is reported as a residue, in the property's `description`
-        # and to the once-per-class warning. That is looser than the runtime here — the direction reflection
-        # otherwise may not take — and it is the deliberate trade: a named, reported, bounded gap in place of
-        # an unbounded approximation no guard could trust anyway.
-        #
-        # UNKNOWN CLASS (`unknown_class_approximate?`: an `Object`/`Enumerable`-style token, for which
-        # `single_type_for` emits a permissive `{type: "string"}` hint rather than a claim). Nothing here
-        # transforms anything, so every OTHER keyword still describes the same raw value — only the
-        # fabricated type is untrustworthy, and only against a side making a real competing claim. So this
-        # re-emits the value constraints without the fabricated type, rather than deleting a union
-        # that may also carry real bounds.
-        # Two sides that are both unknown-class hints fall back to the same permissive shape and cannot
-        # contradict each other, so neither is stripped.
+        # and `input_schema_residues`. That is looser than the runtime here, and reported: a named, bounded
+        # gap in place of an unbounded approximation no guard could trust anyway.
         def conjoin_shape_member_property(member_prop, own_prop, member_configs: [], own_configs: [], &complete_own)
           sides, gated = gate_resolved_sides([[member_prop, member_configs], [own_prop, own_configs, complete_own]])
           combined, origins = sides.reduce { |left, right| combine_two(left, right) }
@@ -1874,7 +1948,7 @@ module Axn
         #
         # A conditional side expands to one side PER config rather than being collapsed here, which is the
         # whole point of the shape: the combination then runs through `combine_two` exactly as any other
-        # pair does, so a fabricated type is reconciled, an empty side is merged rather than branched, and a
+        # pair does, so an empty side is merged rather than branched, and a
         # transform stands down — none of it reimplemented. Combining projections with bespoke logic beside
         # the real conjunction is what diverged from it three times.
         def gate_resolved_sides(sides)
@@ -1885,8 +1959,8 @@ module Axn
                           else
                             gated.concat(configs)
                             configs.map do |config|
-                              full = build_property(config, subfield: true)
-                              [carry_metadata(projected_property(config, full), prop), [config]]
+                              full = build_property(gates_stripped(config), subfield: true)
+                              [carry_metadata(projected_property(config, full), without_gating_residues(prop)), [config]]
                             end
                           end
             # Gating and transformation are independent axes. Complete a post-transform subtree
@@ -1911,15 +1985,10 @@ module Axn
             return [stand_down_from(kept, dropped, TRANSFORM_RESIDUE), left_transforms ? right_configs : left_configs]
           end
 
-          left_unknown = unknown_class_approximate?(left_configs)
-          right_unknown = unknown_class_approximate?(right_configs)
-          left_prop = drop_fabricated_type(left_prop, left_configs) if left_unknown && !right_unknown && !asserts_nothing?(right_prop)
-          right_prop = drop_fabricated_type(right_prop, right_configs) if right_unknown && !left_unknown && !asserts_nothing?(left_prop)
-
           # Residues belong to the POSITION, not to whichever branch happened to raise them: a reader looks
           # at the property, and a sentence buried in one `allOf` entry reads as a note about that entry.
           # So they come off both sides here and are re-recorded on the finished node.
-          carried = residues_on(left_prop) + residues_on(right_prop)
+          carried = carried_residues(left_prop) + carried_residues(right_prop)
           left_prop = left_prop.except(RESIDUE_KEY)
           right_prop = right_prop.except(RESIDUE_KEY)
 
@@ -1989,7 +2058,11 @@ module Axn
             build_property(config.with(validations: validations.merge(type:)), subfield: true)
           end
           metadata = branches.first.slice(:description, :default)
-          metadata.merge(anyOf: branches.map { |branch| branch.except(:description, :default) })
+          # A branch's per-type reports describe one assumed type; the projection's own are recomputed on the node
+          # it lands in. Anything else a branch had to say belongs to the position, not to one branch of it.
+          lifted = branches.flat_map { |branch| carried_residues(branch) }
+          metadata = lifted.reduce(metadata) { |acc, r| record_residue(acc, r.summary, kind: r.kind) }
+          metadata.merge(anyOf: branches.map { |branch| branch.except(:description, :default, RESIDUE_KEY) })
         end
 
         # Only type assertions are needed here, not a satisfiability prover. Ignoring enum, not,
@@ -2021,8 +2094,10 @@ module Axn
         # numeric strings; enum/const constraints apply to all JSON types.
         # Absence is exact on non-strings through project_collision_checks; strings and gated
         # absence still need a report rather than a different interpretation of blankness.
+        PER_TYPE_REPORTED_KEYS = (%i[length format absence] + NUMERIC_BOUND_ENTRIES.keys).freeze
+
         def report_unexpressed_checks(prop, configs)
-          keys = %i[length format absence] + NUMERIC_BOUND_ENTRIES.keys
+          keys = PER_TYPE_REPORTED_KEYS
           sources = configs.select { |config| keys.any? { |key| config.validations[key] } }
           return prop if sources.empty?
 
@@ -2041,12 +2116,12 @@ module Axn
               next reported if missing.empty?
 
               prefix = conditional ? "#{GATED_RESIDUE}; " : ""
-              prefix += "after transformation, " if transforms_wire_value?([config])
+              prefix += "after transformation, " if definitely_transforms_wire_value?([config])
               subject = key == :absence ? "blankness" : "the runtime value or its string form"
               record_residue(reported, "#{prefix}#{key} checks #{subject} for #{missing.join(', ')} values; " \
                                        "JSON Schema cannot fully express this check " \
-                                       "(#{render_constraint({ key => ungated_options(options) })})",
-                             kind: conditional ? :conditional : :inherent)
+                                       "(#{render_constraint({ key => reported_options(options) })})",
+                             kind: conditional ? :conditional : :inherent, per_type: true)
             end
           end
         end
@@ -2059,8 +2134,38 @@ module Axn
           options.except(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
         end
 
+        # An entry's options as a residue renders them: the check, not the exemptions around it. A tolerance is
+        # pushed into every entry from the declaration (`optional:` → `allow_nil`/`allow_blank`), and the node's own
+        # nullability already says what it admits, so repeating it in each sentence only buries the constraint. An
+        # entry left with no option of its own reads as the bare switch it is.
+        def reported_options(options)
+          options = ungated_options(options)
+          return options unless Axn::Internal::Identity.kind?(options, ::Hash)
+
+          options = options.except(:allow_nil, :allow_blank)
+          options.empty? ? true : options
+        end
+
+        # Whether the value these configs check is certainly not the wire value — a `preprocess:`, or a type that
+        # opts into coercion itself. A coercible type that says nothing is checked as sent unless the action turns
+        # `coerce_input_types` on, which is also the reading its emitted `type` rests on, so residue prose does not
+        # qualify every Integer's check with a transformation that by default never happens.
+        def definitely_transforms_wire_value?(configs)
+          configs.any? do |config|
+            next false unless config.respond_to?(:preprocess)
+            next true if config.preprocess
+
+            type_opt = config.validations[:type]
+            Axn::Internal::Identity.kind?(type_opt, ::Hash) && type_opt[:coerce] == true &&
+              !Axn::Internal::Coercion.coercible_klasses(type_opt).empty?
+          end
+        end
+
+        # Asks whether this TYPE can carry the check's keyword at all, so a tolerance is left out: whether a blank
+        # stands the check aside is the property's question (`declared_size_minimum`), not the keyword's.
         def value_check_emitted?(type, key, options)
           prop = { type: }
+          options = options.except(:allow_blank, :allow_nil) if Axn::Internal::Identity.kind?(options, ::Hash)
           validations = { key => options }
           case key
           when :length then apply_size_constraints!(prop, validations)
@@ -2070,10 +2175,34 @@ module Axn
           prop.keys != [:type]
         end
 
+        # The config as though no gate were written anywhere in it — declaration-level or per entry — which is
+        # the reading a residue renders and a projection compares its type against. `build_property` reflects a
+        # gated check with its gate closed, so anything that must see what the open gate enforces builds from this.
+        def gates_stripped(config)
+          validations = config.validations.except(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
+                              .transform_values { |opt| ungated_options(opt) }
+          config.with(validations:)
+        end
+
+        # A side's residues minus the conditional ones its own build recorded: the collision re-derives those
+        # against the combined node (`gating_residues(gated, enforced:)`), which is the only place that knows
+        # what the node already enforces on every call.
+        def without_gating_residues(prop)
+          kept = carried_residues(prop).reject { |r| r.kind == :conditional }
+          kept.empty? ? prop.except(RESIDUE_KEY) : prop.merge(RESIDUE_KEY => kept)
+        end
+
+        # Every entry that runs on every call, and no gate key: an entry a declaration gate reaches is dropped,
+        # so what is left is ungated whether or not the gate keys ride along — and leaving them would have
+        # `build_property` read the survivors as gated all over again. The declaration's other shared options
+        # (`allow_nil:`/`allow_blank:`/`strict:`) are not entries and are never judged as one: they govern how
+        # every surviving entry runs, and dropping them turned an `optional:` field non-nullable.
         def ungated_validations(config)
           gates = declaration_gates(config)
+          shared = Axn::Validation::Base.shared_validation_option_keys
           config.validations.reject do |key, opt|
-            next false if Internal::FieldConfig::CONDITIONAL_GATE_KEYS.include?(key)
+            next true if Internal::FieldConfig::CONDITIONAL_GATE_KEYS.include?(key)
+            next false if shared.include?(key)
 
             Axn::Validation::Base.entry_effectively_gated?(opt, gates)
           end
@@ -2096,16 +2225,25 @@ module Axn
             Axn::Validation::Base.validator_entries(config.validations).filter_map do |key, opt|
               next unless Axn::Validation::Base.entry_effectively_gated?(opt, gates)
 
-              context = shared.merge(config.validations.slice(:type))
+              context = shared.except(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
+                              .merge(config.validations.slice(:type).transform_values { |type| ungated_options(type) })
               context = context.except(:type) if key == :type
               baseline = build_property(config.with(validations: context), subfield: true)
-              fragment = build_property(config.with(validations: context.merge(key => opt)), subfield: true)
-              fragment = fragment.except(*RESIDUE_UNGATEABLE_KEYS).reject do |name, value|
-                same_schema_value?(baseline[name], value) || unconditionally_enforced?(stated, name, value)
+              fragment = build_property(config.with(validations: context.merge(key => ungated_options(opt))), subfield: true)
+              fragment = fragment.except(*RESIDUE_UNGATEABLE_KEYS).reject { |name, value| same_schema_value?(baseline[name], value) }
+              # A check no keyword states even with its gate open is still left out, so it is named — unless it is
+              # one `report_unexpressed_checks` already names per surviving type, which runs over the same declared
+              # entries wherever this does. It is named in `report_unstated_checks`' own words, so where both passes
+              # run (a field's own property) `record_residue` keeps one, and a callable is never rendered.
+              if fragment.empty?
+                next if PER_TYPE_REPORTED_KEYS.include?(key)
+
+                next Residue.new(summary: gated_unstated_summary(config, key, opt), kind: :conditional)
               end
+              fragment = fragment.reject { |name, value| unconditionally_enforced?(stated, name, value) }
               next if fragment.empty?
 
-              phase = transforms ? "after transformation, " : ""
+              phase = definitely_transforms_wire_value?([config]) ? "after transformation, " : ""
               Residue.new(summary: "#{phase}#{GATED_RESIDUE} (#{render_constraint(fragment)})", kind: :conditional)
             end
           end
@@ -2191,15 +2329,6 @@ module Axn
         # node carries without narrowing it (`description`, and the residues waiting to be rendered into it).
         def asserts_nothing?(prop) = prop.except(:description, RESIDUE_KEY).empty?
 
-        # Re-emit from the declarations while their origins are still available. A fabricated and a
-        # genuine branch may both say "string", so the emitted shape cannot identify either one.
-        # Keep this separate from transforms: these validators still judge the same wire value.
-        def drop_fabricated_type(prop, configs)
-          projected = configs.map { |config| type_agnostic_property(config, ungated_validations(config)) }
-                             .reduce { |left, right| combine_two([left, []], [right, []]).first }
-          carry_metadata(projected, prop)
-        end
-
         # Emit the trustworthy side alone, carrying over anything the dropped side already had to report and
         # naming what it still enforces. The dropped fragment IS the constraint, so it is rendered verbatim
         # rather than described: a reader (or an LLM choosing an argument) can act on `{"type":"integer",
@@ -2259,6 +2388,8 @@ module Axn
           return Axn::Internal::Text.renderable(value.name) if exactly?(value, ::Symbol)
           return MENTIONABLE_MAP.bind_call(value) { |element| json_mentionable(element) } if exactly?(value, ::Array)
           return mentionable_pairs(value) if exactly?(value, ::Hash)
+          # A declared class, named through `Module#to_s` bound rather than its own `to_s`.
+          return Axn::Internal::Rendering.module_name(value) if Axn::Internal::Identity.kind?(value, ::Module)
 
           mentionable_rendering(value)
         end
@@ -2275,8 +2406,43 @@ module Axn
           end
         end
 
+        # A callable is named by what it is, never rendered: its only rendering is an object address, which would
+        # change the document on every boot.
+        PER_CALL_RENDERING = "(resolved per call)"
+
+        # The literal classes whose rendering says what the value is, each read through its OWN class's `to_s`
+        # bound to the value — the exact class only, so the text is the built-in one and no override can run.
+        # Anything else, a callable object included, is named by its class: its own `to_s` is caller code, which
+        # reflection may never run, and Ruby's default one is an address that would change on every boot.
+        LITERAL_RENDERINGS = {
+          ::Float => ::Float.instance_method(:to_s), ::Regexp => ::Regexp.instance_method(:to_s),
+          ::Rational => ::Rational.instance_method(:to_s), ::Complex => ::Complex.instance_method(:to_s),
+          ::BigDecimal => ::BigDecimal.instance_method(:to_s), ::Date => ::Date.instance_method(:to_s),
+          ::DateTime => ::DateTime.instance_method(:to_s), ::Time => ::Time.instance_method(:to_s)
+        }.freeze
+        RANGE_EXCLUDE_END = ::Range.instance_method(:exclude_end?)
+        RANGE_BEGIN = ::Range.instance_method(:begin)
+        RANGE_END = ::Range.instance_method(:end)
+        private_constant :LITERAL_RENDERINGS, :RANGE_EXCLUDE_END, :RANGE_BEGIN, :RANGE_END
+
         def mentionable_rendering(value)
-          Axn::Internal::Rendering.value_rendering(value) || Axn::Internal::Rendering.class_name(value)
+          # A String (a subclass included) is read through `Text.renderable`, whose reads are bound.
+          return Axn::Internal::Text.renderable(value) if Axn::Internal::Identity.kind?(value, ::String)
+          return PER_CALL_RENDERING if Axn::Internal::Identity.kind?(value, ::Proc) || Axn::Internal::Identity.kind?(value, ::Method)
+          return range_rendering(value) if exactly?(value, ::Range)
+
+          to_s = LITERAL_RENDERINGS[Axn::Internal::Identity.class_of(value)]
+          return Axn::Internal::Text.renderable(to_s.bind_call(value)) if to_s
+
+          Axn::Internal::Rendering.class_name(value)
+        end
+
+        # A Range's endpoints are reduced like any other value, so an endpoint of a caller's class runs nothing.
+        def range_rendering(range)
+          ends = [RANGE_BEGIN.bind_call(range), RANGE_END.bind_call(range)].map do |endpoint|
+            Axn::Internal::Identity.nil_value?(endpoint) ? "" : JSON.generate(json_mentionable(endpoint))
+          end
+          ends.join(RANGE_EXCLUDE_END.bind_call(range) ? "..." : "..")
         end
 
         # An authored `description:` survives a stand-down even though the declaration's constraints do not:
@@ -2308,6 +2474,17 @@ module Axn
         # Reduced through `mentionable_rendering`, never `to_s`: a String SUBCLASS description can override
         # `to_s`, and one that raises took `input_schema` down from inside the append. The seam reads a
         # String's bytes through bound methods and guards everything else.
+        # An author's description, rendered, and closed as a sentence where it is not already, so the residue
+        # sentence appended after it reads as its own ("ID of the User record. Additional constraints…").
+        SENTENCE_END = /[.!?:;]["')\]]*\s*\z/
+
+        def as_sentence(prose)
+          return prose if Axn::Internal::Identity.nil_value?(prose)
+
+          rendered = mentionable_rendering(prose)
+          rendered.empty? || rendered.match?(SENTENCE_END) ? rendered : "#{rendered}."
+        end
+
         def join_prose(*parts)
           rendered = parts.reject { |part| Axn::Internal::Identity.nil_value?(part) }.map { |part| mentionable_rendering(part) }
           rendered.empty? ? nil : rendered.join(" ")
@@ -2364,27 +2541,6 @@ module Axn
         # Ask the emitter whether this token reached its fallback; a parallel classifier missed
         # :boolean and mistook a real boolean constraint for another unknown-class hint.
         def unknown_class_token?(token) = known_type_for(token, for_output: false).nil?
-
-        # Whether ANY branch of a config's declared type is an unknown-class hint. `.any?`, not `.all?`: a
-        # mixed union like `type: [Object, String]` has one exact branch, but `Object` alone already admits
-        # everything the union could ever narrow to, so the union as a whole asserts nothing more precise
-        # than the approximate branch does (a `.all?` reading let a union with an approximate branch
-        # through as "exact"). Untyped (no declared type at all) is NOT approximate: it emits no `:type`
-        # key at all rather than a misleading one, which is the `own_prop.empty?` case
-        # `conjoin_shape_member_property` already handles on its own terms. And `.all?` across MULTIPLE
-        # configs (a merged node's routes) — the opposite quantifier from the per-config `.any?`, because
-        # the two lists mean opposite things: a config's own tokens are a UNION (an OR — any branch is
-        # enough to widen toward "everything"), while multiple ROUTES at one key are each independently
-        # enforced (an AND — one exact route already narrows the combined constraint regardless of an
-        # approximate route beside it), so the side counts as approximate only when NONE of its routes
-        # assert anything real. An empty list is NOT approximate — the conservative, pre-existing answer
-        # for a side this walk cannot judge.
-        def unknown_class_approximate?(configs)
-          !configs.empty? && configs.all? do |config|
-            tokens = declared_type_tokens(config.validations)
-            !tokens.empty? && tokens.any? { |t| unknown_class_token?(t) }
-          end
-        end
 
         # Duped when only one side has them: `apply_nested_subfields!` mutates the map it is handed as it adds
         # children, and the member's own emission must not be written through. A name BOTH sides declare is
@@ -2515,8 +2671,8 @@ module Axn
         # exactly one numeric class — which is what keeps `type: Integer, inclusion: { in: [200, 404] }`
         # reflecting. Anything else — a Time, a Date, an arbitrary object — stands the set down.
         #
-        # INPUT needs no gate: there the emitted set is the values a client may SEND, and a set narrower than the
-        # runtime's equality is stricter, which is the licensed direction.
+        # INPUT needs no gate: a value a client sends is a JSON primitive, whose Ruby equality with a member is
+        # JSON Schema's own (`1 == 1.0` both ways), so the set is exact for everything the wire can carry.
         def output_enum_exact?(members, validations, declared_klass)
           members.all? do |member|
             case member
@@ -2575,35 +2731,31 @@ module Axn
           description = declared_attribute(config, :description)
           prop[:description] = description if description
 
-          # OUTPUT safety runs the other direction from input: the property must admit a SUPERSET of
-          # what the serializer can emit. A closed outbound gate skips EVERY validator (not just
-          # presence), so the exposed value can be anything the action assigned — no type/format/enum/
-          # default is assertable. Leave the property untyped (description only): untyped is the only
-          # superset of an unconstrained value. Mirrors the module's output doctrine of leaving a value
-          # untyped rather than asserting a type the serialized value could contradict.
+          # A gated check is reflected by what it enforces with its gate CLOSED, in both directions: the schema
+          # never promises what the runtime skips on some calls. Outbound, a declaration-level gate leaves the
+          # property untyped outright (the action may expose whatever it assigned). Inbound, each entry is judged
+          # by its EFFECTIVE gate (`ungated_validations`), so a declaration gate drops every entry it reaches while
+          # one whose blank nested gate overrides it — `type: { klass: Integer, if: nil }, if: :enabled?` runs on
+          # every call — is still stated. What the open gate would enforce is named as a residue, and a
+          # `default:` still applies (a gate governs validation, not the pipeline).
           return prop if for_output && conditionally_gated?(config)
 
-          # OUTPUT-EFFECTIVE validations (see effective_validations, the one derivation of them): everything
-          # below reads the config through that subset, so a per-validator gate drops the same entry here as
-          # in the plan every property-name rule is charged against. Rebuild the config only when an entry
-          # actually drops, judged against the SAME read of `validations` the reduction was given — a
-          # caller-supplied member's reader may mint a fresh Hash per read, so comparing against a second read
-          # would rebuild every config (and a duck-typed member answers no `with` at all).
+          # GATE-CLOSED validations (see effective_validations, the one derivation of them): everything below
+          # reads the config through that subset, so a per-validator gate drops the same entry here as in the
+          # plan every property-name rule is charged against. Rebuild the config only when an entry actually
+          # drops, judged against the SAME read of `validations` the reduction was given — a caller-supplied
+          # member's reader may mint a fresh Hash per read, so comparing against a second read would rebuild
+          # every config (and a duck-typed member answers no `with` at all).
+          declared_config = config
           declared = config.validations
-          effective = effective_validations(declared, for_output:)
+          effective = for_output ? effective_validations(declared) : gate_closed_validations(config, declared)
           config = config.with(validations: effective) unless effective.equal?(declared)
 
           type_info = json_type_for(config.validations, for_output:)
           nullable = nil_allowed?(config)
           apply_type_info!(prop, type_info, config, nullable:)
 
-          declared_default = declared_attribute(config, :default)
-          if !declared_default.nil? && !declared_default.is_a?(Proc)
-            # Only a truthy subfield default is applied at runtime, so a falsey `default: false` subfield
-            # must not advertise a default the runtime never applies. Top-level defaults apply by key-presence.
-            emit_default = subfield ? config.applied_default? : true
-            prop[:default] = normalize_schema_literal(declared_default) if emit_default
-          end
+          prop = with_input_default(prop, config, subfield:, for_output:)
 
           apply_structured_schema!(prop, config, for_output:, ancestry:)
 
@@ -2612,9 +2764,302 @@ module Axn
           # holds the permissive fallback until `apply_structured_schema!` rewrites it to `object`. Deriving
           # the key any earlier reads an intermediate type and lands the floor under a key that cannot express
           # it. Nothing above depends on the constraint already being there.
-          apply_value_constraints!(prop, config.validations, nullable:, for_output:)
+          if !for_output && type_info.empty? && declared_config.validations[:type] && !structured?(config)
+            apply_untyped_value_constraints!(prop, config.validations, nullable:)
+          else
+            apply_value_constraints!(prop, config.validations, nullable:, for_output:)
+          end
 
+          return prop if for_output
+
+          prop = report_unstated_checks(prop, config, declared_config)
+          effective.equal?(declared) ? prop : with_gating_residues(prop, declared_config)
+        end
+
+        # A `preprocess:` runs before any check, so every keyword `build_property` writes describes the Proc's
+        # output, not what the wire carries — and the wire form is unknowable (a Proc may parse, map or replace
+        # it). The property keeps only its description and default and names what applies after the transform,
+        # exactly as a transforming side stands down at a collision (`stand_down_from`). Applied where a property
+        # is emitted on its own, and only once its subtree is complete: its children read the Proc's output too,
+        # so their `properties` and `required` stand down with it. A colliding one reaches that stand-down
+        # through the collision instead. Requiredness and nullability are decided elsewhere and stay as declared
+        # (the stated exception at `apply_explicit_child!`). A `coerce:` does not stand down: coercion accepts a
+        # wire String as a courtesy the declared type still describes, which is how the `coerce:` DSL has always
+        # reflected.
+        def emitted_input_property(prop, config)
+          return prop unless config.respond_to?(:preprocess) && config.preprocess
+
+          stand_down_from(prop.slice(:description, :default), prop.except(:description, :default), TRANSFORM_RESIDUE)
+        end
+
+        # Every ungated check this property does not state, named as a residue — the other half of the promise
+        # the schema makes beyond its exact core: it may say less than the runtime, never silently. Reuses the
+        # collision path's own reporting (`project_collision_checks`), which asks each keyword's emitter, per
+        # surviving JSON type, whether it wrote anything; the rest are checks that never have a keyword here.
+        #
+        # The per-type report reads the DECLARED config, gated entries included: a gated bound with no keyword
+        # for a surviving type (`comparison:` on a String) is exactly what a gating residue's fragment cannot
+        # show, since the fragment only differs from its baseline by whatever the entry happens to emit.
+        def report_unstated_checks(prop, config, declared_config)
+          validations = config.validations
+          # A size ceiling of 0 states an `absence:` exactly on a declaration whose every type is a container;
+          # anywhere else — a scalar, or a union a scalar branch of which the ceiling never reaches — the blank
+          # axis is spelled as a value set, which is exact for every JSON type but a String.
+          if absence_bounds_blankness?(validations) && !(only_blank_is_empty_types?(validations) && size_zero_stated?(prop))
+            prop = prop.merge(allOf: Array(prop[:allOf]) + [{ anyOf: [{ type: "string" }, { enum: BLANK_WIRE_VALUES }] }])
+          end
+          prop = report_unexpressed_checks(prop, [declared_config])
+          prop = report_numeric_wire_form(prop, validations)
+          gates = declaration_gates(declared_config)
+          unstated_entry_fragments(declared_config.validations, prop).reduce(prop) do |acc, (key, options)|
+            if Axn::Validation::Base.entry_effectively_gated?(options, gates)
+              record_residue(acc, gated_unstated_summary(declared_config, key, options), kind: :conditional)
+            else
+              record_residue(acc, unstated_check_sentence(key, options), kind: :inherent)
+            end
+          end
+        end
+
+        # A gated check no keyword states, in the one wording both passes that reach it use, so `record_residue`
+        # keeps a single copy where both run.
+        def gated_unstated_summary(config, key, options)
+          phase = definitely_transforms_wire_value?([config]) ? "after transformation, " : ""
+          "#{phase}#{GATED_RESIDUE}; #{unstated_check_sentence(key, options)}"
+        end
+
+        # A JSON number reaches the runtime as an Integer (`1`) or a Float (`1.5`, `1.0`), and JSON Schema's `number`
+        # cannot tell the two apart. A declared numeric class is therefore exact on the wire only as `Numeric` or as
+        # the Integer-and-Float pair; any other set (`Float` alone rejects `1`, and `BigDecimal` or `Rational` reject
+        # every JSON number) is named. `Integer` alone is the stated exception: `"integer"` also admits `1.0`, and
+        # naming that on every Integer field would say nothing a caller acts on.
+        def report_numeric_wire_form(prop, validations)
+          tokens = declared_type_tokens(validations)
+          numeric = tokens.select do |token|
+            class_token?(token) && (Internal::Identity.same?(token, ::Numeric) || strict_descendant?(token, ::Numeric))
+          end
+          return prop if numeric.empty?
+          # Only where a JSON number still reaches a numeric branch: one a narrowing dropped admits none.
+          return prop unless projected_types(prop).intersect?(%w[number integer])
+
+          # Asked of the WHOLE union: a JSON number passes through any branch admitting its Ruby class, `Object` or
+          # `Numeric` included.
+          admits = ->(klass) { tokens.any? { |token| Internal::Identity.kind?(token, ::Module) && Internal::NativeMethods.includes_module?(klass, token) } }
+          integer = admits.call(::Integer)
+          return prop if integer && admits.call(::Float)
+          return prop if integer && numeric.all? { |token| Internal::Identity.same?(token, ::Integer) }
+
+          names = numeric.map { |token| Axn::Internal::Rendering.module_name(token) }.join(", ")
+          record_residue(prop, "the runtime checks for a Ruby #{names}, and a JSON number arrives as an Integer (1) or a " \
+                               "Float (1.5)")
+        end
+
+        # Each nested model id's lookup, named once the id's property is final, whichever declaration wrote it.
+        def name_model_lookups!(prop, children)
+          children.each do |key, node|
+            next if node.implicit?
+
+            model_configs = node.configs.select { |c| c.validations[:model] }
+            next if model_configs.empty?
+
+            id_field = Internal::FieldConfig.model_id_key(key)
+            prop[:properties][id_field] = with_model_lookup_residue(prop[:properties][id_field], model_configs)
+          end
+        end
+
+        # How the runtime treats a `default:` (`FieldConfig.resolve_default`): anything answering `call` is
+        # `instance_exec`ed through its `to_proc`, so it is COMPUTED when it answers both (a Proc, a Method, a
+        # service class with `.to_proc`), BROKEN when it answers `call` alone (the omitted call raises converting
+        # it), and LITERAL otherwise. Asked of the value's class through bound reads, so the value runs nothing —
+        # for a class or module, of its singleton class, which is where its own methods live.
+        def default_invocation(value)
+          lookup = if Internal::Identity.kind?(value, ::Module)
+                     Internal::NativeMethods.module_singleton_class(value)
+                   else
+                     Internal::Identity.class_of(value)
+                   end
+          return :literal unless Internal::NativeMethods.public_instance_method?(lookup, :call)
+
+          Internal::NativeMethods.public_instance_method?(lookup, :to_proc) ? :computed : :broken
+        end
+
+        def computed_default?(value) = default_invocation(value) == :computed
+
+        # A default the runtime cannot apply (it raises on the omitted call) supplies nothing to the schema.
+        def broken_default?(value) = default_invocation(value) == :broken
+
+        # A requirement a gate relaxes is named as conditional only when the gate ALONE relaxes it: where an ungated
+        # check whose nil verdict is unknowable (a `validate:`) is also why the position is optional, that check's own
+        # residue says so, and calling the requirement conditional would claim the check goes away with the gate.
+        def with_gated_requirement(prop, configs)
+          return prop if prop.nil?
+
+          relaxed = configs.select { |config| requiredness_conditionally_relaxable?(config) }
+          return prop unless relaxed.all? { |config| requiredness_conditionally_relaxable?(config, unknowable_relaxes: false) }
+
+          record_residue(prop, GATED_REQUIRED_RESIDUE, kind: :conditional)
+        end
+
+        # A null-only id never reaches the lookup, so it has nothing to name. The lookup is conditional when every
+        # model route's lookup is gated; one ungated route looks up on every call.
+        def with_model_lookup_residue(prop, model_configs)
+          return prop if prop.nil? || projected_types(prop) == ["null"]
+          return record_residue(prop, MODEL_LOOKUP_RESIDUE) unless model_configs.all? { |config| model_lookup_gated?(config) }
+
+          record_residue(prop, "#{GATED_RESIDUE}; #{MODEL_LOOKUP_RESIDUE}", kind: :conditional)
+        end
+
+        # Measured: the lookup is skipped only by a DECLARATION gate key the `model:` entry does not itself mention.
+        # A key the entry mentions — blank or not — replaces the declaration's for that key, and an entry's own gate
+        # never skips the lookup (`model: { …, if: nil }, if: -> { false }` looks up on every call).
+        def model_lookup_gated?(config)
+          entry = config.validations[:model]
+          config.validations.slice(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS).each_key.any? do |key|
+            !Axn::Validation::Base.entry_carries_option?(entry, key)
+          end
+        end
+
+        # A callable is named rather than rendered: its only rendering is an object address, and asking it for
+        # one would run a caller's `to_s`.
+        def unstated_check_sentence(key, options)
+          return "a custom `validate:` check applies, which JSON Schema cannot express" if key == :validate
+
+          "JSON Schema cannot express this check (#{render_constraint({ key => reported_options(options) })})"
+        end
+
+        # The `numericality:`/`comparison:` options the emitter states: the bounds (`NUMERIC_BOUND_KEYS`, and a
+        # ranged `in:`), the integer/numeric narrowings, and the tolerances. Anything else — `other_than:`,
+        # `odd:`, `even:` — has no keyword and is named.
+        STATED_NUMERIC_OPTIONS = (NUMERIC_BOUND_KEYS.keys + %i[in only_integer only_numeric allow_nil allow_blank message if unless]).freeze
+
+        # Whether the node itself already holds every container branch it has to size 0 — asked of what was
+        # emitted rather than of the derivation, since a bag position spells its type as `klass:` and reaches no
+        # ceiling through the field's.
+        def size_zero_stated?(prop)
+          branches = prop[:anyOf].is_a?(Array) ? prop[:anyOf] : [prop]
+          containers = branches.select { |branch| Array(branch[:type]).intersect?(%w[array object]) }
+          containers.any? && containers.all? { |branch| branch.values_at(:maxItems, :maxProperties).include?(0) }
+        end
+
+        def only_blank_is_empty_types?(validations)
+          tokens = declared_type_tokens(validations)
+          !tokens.empty? && tokens.all? { |token| blank_is_empty_class?(token) }
+        end
+
+        # The entries no keyword states at all: an exclusion set, an `inclusion:` whose members are not a literal
+        # list reflection can read, a bare `numericality:` on a node admitting non-numbers, a blank-tolerant
+        # `length:`, and a declared class JSON has no type for.
+        # Returned as `[key, options]` pairs, gate options intact, so the caller can tell a conditional one.
+        def unstated_entry_fragments(validations, prop)
+          entries = Axn::Validation::Base.validator_entries(validations)
+          fragments = []
+          fragments << [:exclusion, entries[:exclusion]] if entries[:exclusion]
+          fragments << [:inclusion, entries[:inclusion]] if entries[:inclusion] && !inclusion_enum_values(entries[:inclusion])
+          fragments << [:numericality, entries[:numericality]] if entries[:numericality] && numericality_unstated?(entries[:numericality], prop)
+          fragments << [:length, entries[:length]] if blank_tolerant_length_unstated?(validations)
+          # No keyword states these at all: an accepted-value set, equality with a companion field, a callable.
+          %i[acceptance confirmation validate].each { |key| fragments << [key, entries[key]] if entries[key] }
+          NUMERIC_BOUND_ENTRIES.each_key do |key|
+            unstated = unstated_numeric_options(entries[key])
+            fragments << [key, unstated] unless unstated.empty?
+          end
+          fragments << [:type, entries[:type]] if entries[:type] && unknown_type_constrains?(validations)
+          fragments
+        end
+
+        def numericality_settled_member?(value)
+          Axn::Internal::Identity.nil_value?(value) || Axn::Internal::Identity.same?(value, false) ||
+            (Axn::Internal::Identity.kind?(value, ::Numeric) && !Axn::Internal::Identity.kind?(value, ::Complex))
+        end
+
+        # A numeric entry's options no keyword states, gate options kept so the caller can tell a conditional one.
+        # A narrowing ActiveModel resolves per call (a Symbol or callable `only_integer:` or `in:`) is stated only
+        # when literal; resolved per call, the schema cannot narrow for it, so it is named like an unkeyworded one.
+        # (Per-call bounds reach their residue per type, and `only_numeric:` is read truthily, not resolved.)
+        PER_CALL_STATED_NUMERIC_OPTIONS = %i[only_integer in].freeze
+
+        def unstated_numeric_options(entry)
+          return {} unless Axn::Internal::Identity.kind?(entry, ::Hash)
+
+          per_call = entry.slice(*PER_CALL_STATED_NUMERIC_OPTIONS).select { |_key, value| Axn::Validation::Base.resolved_per_call?(value) }
+          unstated = entry.except(*STATED_NUMERIC_OPTIONS).merge(per_call)
+          unstated.empty? ? {} : unstated.merge(entry.slice(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS))
+        end
+
+        # The Ruby class of every value a JSON document can carry.
+        JSON_VALUE_CLASSES = [::String, ::Integer, ::Float, ::Hash, ::Array, ::TrueClass, ::FalseClass, ::NilClass].freeze
+
+        # Whether the declared type names a class with no JSON spelling that still rejects some JSON value — so
+        # its untyped node says less than the runtime. `Object`/`Kernel`/`BasicObject` admit every JSON value
+        # and so constrain nothing a type could have stated; `Comparable` rejects an Array, and a custom value
+        # class rejects everything a client can send it that a `preprocess:` does not turn into one.
+        # Asked of the WHOLE union, since a value passes a union through any branch: `[Object, Money]` admits every
+        # JSON value through `Object` and so constrains nothing, whatever `Money` alone would reject.
+        def unknown_type_constrains?(validations)
+          tokens = declared_type_tokens(validations)
+          return false unless tokens.any? { |token| unknown_class_token?(token) }
+
+          JSON_VALUE_CLASSES.any? do |klass|
+            tokens.none? { |token| Internal::Identity.kind?(token, ::Module) && Internal::NativeMethods.includes_module?(klass, token) }
+          end
+        end
+
+        # `numericality:` rejects every value that is not a number or a numeric String, and no keyword says
+        # "parses as a number" — so a node admitting any other JSON type says less than it does. The exception
+        # is the integer-literal pattern `only_integer:` writes onto a string branch. A bounded entry is already
+        # reported per type by `report_unexpressed_checks`.
+        def numericality_unstated?(entry, prop)
+          return false if Axn::Validation::Base.declared_numeric_bounds(entry, ranged: NUMERIC_BOUND_ENTRIES.fetch(:numericality)).any?
+          # A value set the narrowing already closed to numbers (or to nothing, or to the nil/blank the position
+          # skips) states the check exactly.
+          return false if prop[:enum].is_a?(Array) && prop[:enum].all? { |value| numericality_settled_member?(value) }
+
+          others = projected_types(prop) - NUMERIC_TYPES - ["null"]
+          return false if others.empty?
+          return true unless others == ["string"]
+
+          branches = prop[:anyOf].is_a?(Array) ? prop[:anyOf] : [prop]
+          branches.any? { |node| Array(node[:type]).include?("string") && node[:pattern].nil? }
+        end
+
+        # Whether `of:`/`shape:` establishes the property's JSON type (`apply_structured_schema!`), so an untyped
+        # declared class is not left untyped after all.
+        def structured?(config) = config.validations[:of] || config.validations[:shape]
+
+        # The validations an INPUT property is built from: every entry that runs on every call. The same Hash
+        # when nothing is gated, which is what lets `build_property` skip rebuilding a config — so it is handed
+        # the one read of `validations` the caller made, since a member's reader may mint a fresh Hash per read.
+        def gate_closed_validations(config, validations)
+          return validations unless gated_validations?(validations) || conditional_checks?(config)
+
+          ungated_validations(config)
+        end
+
+        # A non-Proc `default:`, written into `prop` (mutated and returned). Only a truthy subfield default is
+        # applied at runtime, so a falsey `default: false` subfield must not advertise a default the runtime
+        # never applies. Top-level defaults apply by key-presence.
+        #
+        # A Proc default is never emitted — reflection may not run it — but it counts toward the field being
+        # omittable, and whether its value then passes the field's own checks (or a shape it materializes) is
+        # unknowable here. That is named, so the omission the schema allows is never a silent looseness.
+        # Outbound a Proc default is simply not emitted: the output schema carries no residues (`build_output`
+        # never finalizes them, so one recorded there would leak as a raw key).
+        def with_input_default(prop, config, subfield:, for_output: false)
+          declared_default = declared_attribute(config, :default)
+          return prop if declared_default.nil?
+          return for_output ? prop : record_residue(prop, PROC_DEFAULT_RESIDUE) if computed_default?(declared_default)
+          return prop if broken_default?(declared_default)
+
+          emit_default = subfield ? config.applied_default? : true
+          prop[:default] = normalize_schema_literal(declared_default) if emit_default
           prop
+        end
+
+        # Name every gated check `prop` leaves out, each rendered as the fragment it would contribute with
+        # its gate open. Inbound only: the output schema carries no residues.
+        def with_gating_residues(prop, config)
+          # Sorted, so two spellings of one contract — entries declared in a different order — read the same.
+          gating_residues([config], enforced: prop).sort_by(&:summary)
+                                                   .reduce(prop) { |acc, r| record_residue(acc, r.summary, kind: r.kind) }
         end
 
         # Writes the resolved JSON type (and nullability/format/singleton-enum) from json_type_for into prop.
@@ -2634,6 +3079,15 @@ module Axn
             end
           elsif type_info[:type]
             apply_single_type!(prop, type_info, config, nullable:)
+          elsif type_info.empty? && config.validations[:type] && !structured?(config)
+            # A declared type with no JSON spelling (an unknown class) asserts no type, but a required position
+            # still rejects a blank — nil among them — on every call. Spelled as a value set, the only form left
+            # without a type to hang a size or a null branch on.
+            if presence_rejects_blank?(config.validations)
+              prop[:not] = { enum: BLANK_WIRE_VALUES }
+            elsif !nullable
+              reject_null!(prop)
+            end
           elsif type_info[:enum]
             # A type_info carrying only an enum names no type and still constrains the value — which is how a
             # contract nothing satisfies reaches the node, as `enum: []`. Nullability joins it exactly as it
@@ -2717,6 +3171,41 @@ module Axn
           apply_size_constraints!(node, validations, for_output:, property_names:, declared_klass:)
           apply_numeric_bounds!(node, validations, nullable:, for_output:, declared_klass:)
           apply_pattern!(node, validations, for_output:, property_names:, declared_klass:)
+        end
+
+        # The value constraints of a declared type with no JSON spelling (an unknown class): the node asserts no
+        # type, so each keyword is written for every JSON type it can mean something for, and JSON Schema applies
+        # it only to values of that type — `minLength` to a string, `minItems` to an array, a numeric bound to a
+        # number. What no keyword states for some type (a `length:` on a number's rendering) is reported by
+        # `report_unstated_checks` like anywhere else.
+        def apply_untyped_value_constraints!(prop, validations, nullable:)
+          apply_inclusion_enum!(prop, validations, nullable:, for_output: false, property_names: false)
+          Sizing::SIZE_CONSTRAINT_KEYS.each_key do |type|
+            token = TypeTokens::TYPE_MAP.find { |_token, json_type| json_type == type }.first
+            prop.merge!(typed_keywords(type, validations.merge(type: token)) { |node, typed| apply_size_constraints!(node, typed) })
+          end
+          bounds = typed_keywords("number", validations.merge(type: Float)) do |node, typed|
+            apply_numeric_bounds!(node, typed, nullable:, for_output: false)
+          end
+          # An `equal_to:` lands as a value set (`const`/`enum`), which — unlike a bound — judges every JSON type.
+          # Where the runtime also rejects every non-number that is exact; under `numericality:`, which takes the
+          # numeric String `"10"`, it is scoped to numbers instead.
+          if numeric_strings_admitted?(Axn::Validation::Base.validator_entries(validations))
+            value_set = bounds.slice(:const, :enum)
+            unless value_set.empty?
+              prop[:allOf] = Array(prop[:allOf]) + [{ anyOf: [{ not: { type: "number" } }, value_set] }]
+              bounds = bounds.except(:const, :enum)
+            end
+          end
+          prop.merge!(bounds)
+          prop.merge!(typed_keywords("string", validations) { |node, typed| apply_pattern!(node, typed, for_output: false) })
+        end
+
+        # The keywords an emitter writes onto a node of one JSON type, without the type itself.
+        def typed_keywords(type, validations)
+          node = { type: }
+          yield node, validations
+          node.except(:type)
         end
 
         # `enum` is INTERSECTED with whatever the node already carries, never assigned over it: a singleton type
@@ -2869,7 +3358,7 @@ module Axn
           # to. A KEY is exempt: `canonical_wire_key` dispatches `to_s`, the same subject the validator used.
           return if for_output && !property_names && !own_wire_form?(declared_type_tokens(validations, declared_klass))
 
-          pattern = Pattern.ecma_source(Axn::Validation::Base.validator_entry_options(entry)[:with], for_output:)
+          pattern = Pattern.ecma_source(Axn::Validation::Base.validator_entry_options(entry)[:with])
           write_pattern_to_string_nodes!(prop, pattern) if pattern
         end
 
@@ -2905,9 +3394,8 @@ module Axn
         # as the JSON Schema keyword that means the same thing. Read through `Base.declared_numeric_bounds`, the
         # same reader the runtime bound comes from, so the two cannot disagree about one declaration.
         #
-        # Emitting only ever shrinks the schema-valid set, so it preserves the documented direction (stricter
-        # than the runtime, never looser) by construction — and every case a bound cannot be carried exactly
-        # stands down to emitting nothing, which is where this started.
+        # A bound is written only onto a branch it constrains exactly, and every case a bound cannot be carried
+        # exactly stands down to emitting nothing and is reported (`report_unexpressed_checks`).
         # An `enum` is INTERSECTED with whatever the node already carries rather than assigned over it, the same
         # rule `apply_inclusion_enum!` follows and for the same reason: both sets are enforced.
         def merge_enum!(prop, values)
@@ -2962,7 +3450,10 @@ module Axn
             # really does admit nil: `type: Integer, comparison: { equal_to: 1 }, optional: true` exposes nil
             # successfully while `const: 1` rejected it, even beside a `"null"` in the node's own `type:`. The
             # enum spelling says both, and intersects with any set the node already carries.
-            if operator == :equal_to && nullable
+            # A union carries its null branch separately, so the bound goes onto its numeric branches as a
+            # `const`, like any other bound — a node-level set would also judge its String branch and reject the
+            # numeric String `numericality:` accepts.
+            if operator == :equal_to && nullable && !prop[:anyOf].is_a?(Array)
               merge_enum!(prop, [bound, nil])
               wrote_bound = true
               next
@@ -2975,16 +3466,21 @@ module Axn
           # Only where a bound was actually written: a union merely CONTAINING a numeric branch is what
           # `numeric_node?` answers, and narrowing on that would drop the string branch of a plain
           # `type: [String, Integer]` that declares no bound at all.
-          restrict_union_to_bounded_branches!(prop) if wrote_bound && !for_output
+          restrict_union_to_bounded_branches!(prop) if wrote_bound && !for_output && !numeric_strings_admitted?(entries)
         end
 
+        # Whether a numeric STRING can pass these entries: `numericality:` parses one (`"5"` passes a
+        # `greater_than: 0`), while `comparison:` compares the String itself against a number and rejects it.
+        # Only when both run does the String branch lose every value.
+        def numeric_strings_admitted?(entries) = entries[:numericality] && !entries[:comparison]
+
         # A bound can only be written onto a branch that carries a numeric type, which leaves a union's other
-        # branches advertising values the validator rejects: `type: [String, Integer], numericality: { greater_than: 0 }`
-        # accepted `"abc"` through the string branch while ActiveModel rejected it on every call. Input reflection
-        # may be STRICTER than the runtime but never looser (`docs/reference/class.md`), and a narrowing is the
-        # licensed direction — so the branches that cannot carry the bound are dropped rather than left lying.
-        # ActiveModel does accept a numeric STRING here (`"5"` passes), so this says less than the runtime allows;
-        # it cannot say more, since no `minimum` applies to a JSON string and a pattern cannot carry the bound.
+        # branches advertising values the validator rejects: `type: [String, Integer], comparison: { greater_than: 0 }`
+        # accepts `"abc"` through the string branch while ActiveModel rejects every String. Where the runtime
+        # rejects every value of a branch, dropping it is exact. Under `numericality:` it does not — a numeric
+        # String passes — so the branch stays and says more than the runtime allows (`numeric_strings_admitted?`):
+        # no `minimum` applies to a JSON string, and dropping the branch would reject `"5"`, which the runtime
+        # takes.
         #
         # Output is not narrowed: there the schema describes what the action produces, and dropping a branch
         # would reject a value axn serialized. It has no bound to drop anyway — `numericality_type_provable?`
@@ -3138,7 +3634,7 @@ module Axn
           # happens HERE, on the way in, so no caller can hand this a config the emitter would not have used.
           # `build_property` applies the same derivation before it emits, which makes the one here idempotent
           # (nothing left to drop) rather than a second opinion.
-          validations = effective_validations(config.validations, for_output:)
+          validations = effective_validations(config.validations)
           of = validations[:of]
           shape = validations[:shape]
           in_items = Array(json_type_for(validations, for_output:)[:type]).include?("array")
@@ -3148,10 +3644,9 @@ module Axn
           # The same two gates `apply_structured_schema!` opens with, in the same order. A declaration with
           # neither `of:` nor `shape:` contributes no object properties AT ALL — not even its type's own members —
           # so a `Data` used purely as a `type:` names nothing, and a rule keyed on these names must not fire on
-          # it. Likewise a wholly gated outbound config, which `build_property` leaves untyped before reaching
-          # emission.
+          # it. Likewise a wholly gated config, which `build_property` leaves untyped before reaching emission.
           return nothing unless of || shape
-          return nothing if for_output && gated_validations?(validations)
+          return nothing if gated_validations?(validations)
           # An INPUT model route emits `<field>_id` in place of the field, so `apply_structured_schema!` is never
           # reached for one — stated here rather than only in the emitter's branch, so a consumer deriving from this
           # plan (the projection size cap; collision attribution) cannot charge or attribute a property the schema
@@ -3207,13 +3702,12 @@ module Axn
         #
         # What survives with EVERY gate closed: entries carrying a gate of their own (entry_self_gated?) drop, ungated
         # entries stay (a gated `inclusion:` alongside an ungated `type:` still emits the type), and
-        # declaration-level gate keys stay too (inert to this reduction — a wholly gated outbound config is
-        # already left untyped by its own earlier return, in both `build_property` and `shape_property_plan`).
-        # INPUT is untouched and returns the SAME Hash: static-maximal is the safe direction there (a gate can
-        # only relax enforcement at runtime), and identity is what lets `build_property` skip rebuilding a config.
-        def effective_validations(validations, for_output:)
-          return validations unless for_output
-
+        # declaration-level gate keys stay too (inert to this reduction — a wholly gated config is already left
+        # untyped by its own earlier return, in both `build_property` and `shape_property_plan`). The same in both
+        # directions: inbound, a gated bound emitted as if open rejects the calls whose gate is closed, which is
+        # the one thing the schema may never do. Returns the SAME Hash when nothing drops, which is what lets
+        # `build_property` skip rebuilding a config.
+        def effective_validations(validations)
           effective = validations.reject { |_key, opt| entry_self_gated?(opt) }
           effective.size == validations.size ? validations : effective
         end
@@ -3271,8 +3765,11 @@ module Axn
           if validations[:type]
             tokens = declared_type_tokens(validations)
             type_hashes = tokens.map { |k| single_type_for(k, for_output:) }.uniq
+            # A branch asserting nothing admits every value, so the union does too: it is untyped, and the
+            # floor/nullability an untyped node carries apply to it whole rather than to one branch of it.
+            type_hashes = [{}] if type_hashes.any?(&:empty?)
             node = type_hashes.size == 1 ? type_hashes.first : { anyOf: type_hashes }
-            return narrow_node_under_numericality(node, validations, tokens, for_output:)
+            return narrow_node_under_numericality(node, validations, tokens)
           end
 
           # Outbound, the SET names a type only where it passes the same equality-safety test the `enum` itself
@@ -3282,8 +3779,8 @@ module Axn
           # which an inferred `"integer"` then rejects. A String/Symbol/boolean/nil member settles it alone —
           # their `==` never matches a foreign class — while a numeric member asks the position to pin its class,
           # which nothing reaching here has declared (a `type:` returns above, and a bag with a `klass:` takes the
-          # other branch), so a numeric set always stands down outbound. Input needs no gate: a set narrower than
-          # the runtime's equality is the licensed direction there.
+          # other branch), so a numeric set always stands down outbound. Input needs no gate: a wire value is a
+          # JSON primitive, which no foreign `==` can reach.
           if validations[:inclusion]
             enum_values = inclusion_enum_values(validations[:inclusion])
             if enum_values&.any? && (!for_output || output_enum_exact?(enum_values, validations, nil))
@@ -3296,12 +3793,24 @@ module Axn
           end
 
           if (numericality = validations[:numericality]) && numericality_type_provable?(numericality, for_output:)
+            return numericality_input_node(validations, numericality) unless for_output
             return { type: "integer" } if Axn::Validation::Base.declared_only_integer?(numericality)
 
             return { type: "number" }
           end
 
           {}
+        end
+
+        # Inbound, `numericality:` alone admits a Number or a numeric String (a Number only under `only_numeric:`),
+        # so it types the node as that union and lets the union's own narrowing say which Strings and which
+        # Numbers pass. Typing it `"number"` rejected the `"5"` the validator parses.
+        def numericality_input_node(validations, numericality)
+          only_numeric = Axn::Validation::Base.validator_entry_options(numericality)[:only_numeric]
+          tokens = only_numeric ? [::Numeric] : [::Numeric, ::String]
+          type_hashes = tokens.map { |k| single_type_for(k, for_output: false) }.uniq
+          node = type_hashes.size == 1 ? type_hashes.first : { anyOf: type_hashes }
+          narrow_node_under_numericality(node, validations, tokens)
         end
 
         # A `numericality:` entry reaches a node's branches four different ways, and each is decided from the
@@ -3324,7 +3833,7 @@ module Axn
         # Narrowing both branches of `[Integer, Float]` converges them, so the node collapses; deduping is a
         # CONSEQUENCE of that convergence and never a tidy-up of its own, so a union that narrows nothing comes
         # back untouched, duplicate branches included.
-        def narrow_node_under_numericality(node, validations, tokens, for_output:)
+        def narrow_node_under_numericality(node, validations, tokens)
           entry = Axn::Validation::Base.validator_entries(validations)[:numericality]
           return node unless entry
 
@@ -3369,7 +3878,7 @@ module Axn
           # See `numeric_reachable_through_broad_token?` — the emitted type is not evidence on its own.
           drop = !numeric_reachable_through_broad_token?(tokens)
           mapped = branches.filter_map do |branch|
-            numericality_branch(branch, admits, numeric_only:, only_integer:, for_output:, drop:, blank_tolerated:,
+            numericality_branch(branch, admits, numeric_only:, only_integer:, drop:, blank_tolerated:,
                                                 empty_rejected:)
           end
           # Every branch dropping is the CONTRACT, not a case to fall back from: `type: Float, numericality:
@@ -3414,7 +3923,7 @@ module Axn
           end
         end
 
-        def numericality_branch(branch, admits_integer, numeric_only:, only_integer:, for_output:, drop: true, blank_tolerated: false,
+        def numericality_branch(branch, admits_integer, numeric_only:, only_integer:, drop: true, blank_tolerated: false,
                                 empty_rejected: false)
           # A branch `only_numeric:` may drop is one whose emitted type NAMES values that are not Numerics.
           # Everything else is left exactly as built — including the `"null"` branch nullability owns, a branch
@@ -3439,7 +3948,7 @@ module Axn
 
           case branch[:type]
           when "number" then only_integer ? number_branch_as_integer(branch, admits_integer) : branch
-          when "string" then string_branch_under_numericality(branch, numeric_only:, only_integer:, for_output:, drop:)
+          when "string" then string_branch_under_numericality(branch, numeric_only:, only_integer:, drop:)
           else branch
           end
         end
@@ -3495,15 +4004,15 @@ module Axn
         # unreachable rather than merely narrower.
         def number_branch_as_integer(branch, admits_integer) = admits_integer ? branch.merge(type: "integer") : nil
 
-        def string_branch_under_numericality(branch, numeric_only:, only_integer:, for_output:, drop: true)
+        def string_branch_under_numericality(branch, numeric_only:, only_integer:, drop: true)
           return nil if numeric_only && drop
           return branch unless only_integer
 
-          merge_integer_literal_pattern(branch, for_output:)
+          merge_integer_literal_pattern(branch)
         end
 
-        def merge_integer_literal_pattern(branch, for_output:)
-          source = Pattern.ecma_source(Axn::Validation::Base.integer_literal_regexp, for_output:)
+        def merge_integer_literal_pattern(branch)
+          source = Pattern.ecma_source(Axn::Validation::Base.integer_literal_regexp)
           return branch unless source
 
           composed = branch.dup
@@ -3550,9 +4059,9 @@ module Axn
         # `only_numeric:` needs no such test, being the one option here ActiveModel reads truthily instead of
         # resolving per call.
         #
-        # On INPUT none of this applies: an inferred numeric type is merely STRICTER there, which is licensed —
-        # a client is told to send `1` rather than `"1"`, and the runtime would have taken either. A declared
-        # `type:` is unaffected in both directions, being read before this and proving the class itself.
+        # On INPUT none of this applies: `numericality_input_node` types the node as the Number-or-numeric-String
+        # union the validator accepts. A declared `type:` is unaffected in both directions, being read before this
+        # and proving the class itself.
         def numericality_type_provable?(numericality, for_output:)
           return true unless for_output
           return false unless Axn::Validation::Base.validator_entry_options(numericality)[:only_numeric]

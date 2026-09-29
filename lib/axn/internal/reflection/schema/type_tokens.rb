@@ -74,10 +74,12 @@ module Axn
           # of the method table — for `<`/`<=`/`>=`; and `map_type_for`/`map_format_for` scan the emitter's own
           # maps by identity rather than looking a token up by its `hash`/`eql?`. The answers are identical for
           # every token that does not define one of those methods, which is every token a declaration means.
-          # Unknown Ruby classes retain the existing input string hint; output stays unconstrained
-          # because their serializer may produce any JSON type.
+          # An unknown Ruby class has no JSON type, so it asserts none, in either direction: output because its
+          # serializer may produce any JSON type, and input because a `"string"` guess rejected what a broad token
+          # admits (`type: Object` takes an Integer) and what a `preprocess:` turns into the declared class. What
+          # the runtime still demands is named as a residue (`unknown_type_fragment`).
           def single_type_for(klass, for_output:)
-            known_type_for(klass, for_output:) || (for_output ? {} : { type: "string" })
+            known_type_for(klass, for_output:) || {}
           end
 
           # nil identifies the fallback at its source. Collision projection consumes this verdict

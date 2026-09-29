@@ -293,11 +293,13 @@ RSpec.describe "confirmation:" do
       end
 
       # The cost of asking presence rather than truthiness: the requirement is a callable, which
-      # `conditional_requiredness_clause` cannot state as an `if`/`then` pair, so the schema demands the
-      # companion unconditionally — stricter than the runtime, the direction this layer already accepts.
-      it "advertises the companion as unconditionally required" do
-        expect(klass.input_schema[:required]).to include("password_confirmation")
+      # `conditional_requiredness_clause` cannot state as an `if`/`then` pair. Listing the companion as
+      # required would reject a call the runtime takes (a blank base closes the gate), so it is left optional
+      # and the conditional requirement is named on the property instead.
+      it "leaves the companion optional and names its conditional requirement" do
+        expect(Array(klass.input_schema[:required])).not_to include("password_confirmation")
         expect(klass.input_schema[:allOf]).to be_nil
+        expect(klass.input_schema_residues.map(&:path)).to include([:password_confirmation])
       end
 
       # An `allow_nil:` excuses only a nil base, which the requirement's own rule already closes on in
@@ -432,48 +434,47 @@ RSpec.describe "confirmation:" do
         expect(schema[:allOf]).to eq(
           [{
             if: { required: ["password"], properties: { password: { not: { enum: [false, nil] } } } },
-            then: { required: ["password_confirmation"] },
+            then: { required: ["password_confirmation"], properties: { password_confirmation: { type: "string", minLength: 1 } } },
           }],
         )
       end
 
       # Neither a composed gate nor a presence-asking callable is a single Symbol, so
-      # `conditional_requiredness_clause` falls back — and the fallback must be the STRICTER direction (an
-      # unconditional requirement the runtime may waive), never a dropped one the runtime would enforce.
-      it "falls back to an unconditional requirement for a gated base" do
-        schema = build_axn do
+      # `conditional_requiredness_clause` falls back — to an optional companion whose conditional requirement
+      # is named, never to an unconditional requirement the runtime waives on some calls.
+      it "falls back to a named conditional requirement for a gated base" do
+        klass = build_axn do
           expects :admin, type: [TrueClass, FalseClass], optional: true
           expects :password, type: String, confirmation: true, if: :admin
-        end.input_schema
+        end
+        schema = klass.input_schema
 
-        expect(schema[:required]).to include("password_confirmation")
-        expect(schema[:allOf].flat_map { |clause| clause.dig(:then, :required).to_a })
+        expect(Array(schema[:required])).not_to include("password_confirmation")
+        expect(Array(schema[:allOf]).flat_map { |clause| clause.dig(:then, :required).to_a })
           .not_to include("password_confirmation")
+        expect(klass.input_schema_residues.map(&:path)).to include([:password_confirmation])
       end
 
       it "falls back the same way for a base that admits a blank value" do
-        schema = build_axn { expects :password, type: String, optional: true, confirmation: true }.input_schema
+        klass = build_axn { expects :password, type: String, optional: true, confirmation: true }
 
-        expect(schema[:required]).to include("password_confirmation")
-        expect(schema[:allOf]).to be_nil
+        expect(Array(klass.input_schema[:required])).not_to include("password_confirmation")
+        expect(klass.input_schema[:allOf]).to be_nil
+        expect(klass.input_schema_residues.map(&:path)).to include([:password_confirmation])
       end
 
-      # The companion's own `presence: true` carries no tolerance of its own (it is not relaxed to mirror
-      # the base's `optional:`/`allow_empty:`), so the emitted size floor (minLength/minItems) stands on
-      # the companion property even where the base admits a blank value and the runtime gate never runs
-      # the presence check for a blank-matching pair (`password: "", password_confirmation: ""` calls
-      # cleanly — the gate closes because the base has nothing to confirm). This is the same direction,
-      # via the same mechanism, as an ordinary gated field's own floor (the `if:`-gated base above emits
-      # `minLength: 1` on `password` despite `if: :admin`): the reflection layer counts a gated check as
-      # though it always ran, which can only make the schema STRICTER than the runtime it's read from,
-      # never looser — so a schema-following caller is refused the blank-matching pair the runtime would
-      # accept, accepted here as the documented cost of staying on the strict side of that line.
-      it "keeps the companion's own size floor though a blank-admitting base never enforces it at runtime" do
+      # The companion's checks are gated on a base the runtime may find blank (`password: "",
+      # password_confirmation: ""` calls cleanly — the gate closes because the base has nothing to confirm), and
+      # the gate is a callable no clause can state, so its size floor is left out and named: emitted, it would
+      # refuse the blank-matching pair the runtime accepts.
+      it "leaves out the companion's own size floor where a blank-admitting base never enforces it, and names it" do
         password_schema = build_axn { expects :password, type: String, optional: true, confirmation: true }.input_schema
-        expect(password_schema[:properties][:password_confirmation]).to include(minLength: 1)
+        expect(password_schema[:properties][:password_confirmation]).not_to have_key(:minLength)
+        expect(password_schema[:properties][:password_confirmation][:description]).to include('"minLength":1')
 
         tags_schema = build_axn { expects :tags, type: Array, allow_empty: true, confirmation: true }.input_schema
-        expect(tags_schema[:properties][:tags_confirmation]).to include(minItems: 1)
+        expect(tags_schema[:properties][:tags_confirmation]).not_to have_key(:minItems)
+        expect(tags_schema[:properties][:tags_confirmation][:description]).to include('"minItems":1')
       end
     end
 
@@ -638,14 +639,16 @@ RSpec.describe "confirmation:" do
         end
 
         schema = klass.input_schema
-        expect(schema[:properties][:password_confirmation]).to eq({ type: "string", minLength: 1 })
+        # What the companion enforces is conditional, so it is stated in the clause, where its gate is exact.
+        expect(schema[:properties][:password_confirmation]).to eq({})
         expect(schema[:properties][:other]).to eq({ type: "object", minProperties: 1,
                                                     properties: { code: { type: "integer" } }, required: ["code"] })
         # Having no subfields of its own, the companion's requirement states its gate exactly rather than
-        # falling back to an unconditional one.
+        # falling back.
         expect(schema[:required]).to contain_exactly("other", "password")
         expect(schema[:allOf]).to eq([{ if: { required: ["password"], properties: { password: { not: { enum: [false, nil] } } } },
-                                        then: { required: ["password_confirmation"] } }])
+                                        then: { required: ["password_confirmation"],
+                                                properties: { password_confirmation: { type: "string", minLength: 1 } } } }])
         # And the schema a client generates from it is satisfiable: that pair validates.
         expect(klass.call(other: { code: 1 }, password: "s3cret", password_confirmation: "s3cret")).to be_ok
       end
@@ -658,7 +661,8 @@ RSpec.describe "confirmation:" do
         end
 
         schema = klass.input_schema
-        expect(schema[:properties][:password_confirmation]).to eq({ type: "string", minLength: 1 })
+        expect(schema[:properties][:password_confirmation]).to eq({})
+        expect(schema[:allOf].first.dig(:then, :properties, :password_confirmation)).to eq({ type: "string", minLength: 1 })
         expect(schema[:properties][:other][:properties]).to eq({ code: { type: "integer" } })
       end
 
@@ -682,7 +686,7 @@ RSpec.describe "confirmation:" do
 
           expect(klass.input_schema[:allOf]).to include(
             { if: { required: ["other"], properties: { other: { not: { enum: [false, nil] } } } },
-              then: { required: ["thing"] } },
+              then: { required: ["thing"], properties: { thing: { type: "string", minLength: 1 } } } },
           )
           # The runtime the clause mirrors: the gate reads `other`, so a supplied pair alone leaves it shut.
           expect(klass.call(password: "s3cret", password_confirmation: "s3cret")).to be_ok
@@ -920,7 +924,7 @@ RSpec.describe "confirmation:" do
         expect(schema[:required]).to contain_exactly("password")
         expect(schema[:allOf]).to eq(
           [{ if: { required: ["password"], properties: { password: { not: { enum: [false, nil] } } } },
-             then: { required: ["password_confirmation"] } }],
+             then: { required: ["password_confirmation"], properties: { password_confirmation: { type: "string", minLength: 1 } } } }],
         )
       end
 

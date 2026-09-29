@@ -54,6 +54,34 @@ RSpec.describe "Axn include does not shadow a pre-existing base-class class meth
     expect(tool_class.raw_output_schema).to eq({ type: "object" })
   end
 
+  # The adapter owning `input_schema` is exactly the case that most needs to know what axn's projection
+  # leaves out, so the residue reader is guarded on its own name rather than riding with `input_schema`.
+  it "still provides input_schema_residues when the base owns input_schema" do
+    tool_class.class_eval do
+      expects :payload, type: Hash, of: { values: { klass: Array, of: Integer } }
+      expects :inner, on: :payload
+    end
+    expect(tool_class.input_schema_residues.map(&:path)).to eq([%i[payload inner]])
+  end
+
+  # A deep subfield under a `model:` parent is left out of the document with no node to carry its residue, and
+  # `input_schema` (the reader that warned about it) is the base's here.
+  it "reports and warns about a deep subfield the schema leaves out, through input_schema_residues alone" do
+    stub_const("DeepCo", Struct.new(:id) { def self.find_by(id:) = new(id) })
+    tool_class.class_eval do
+      expects :company, model: DeepCo
+      expects :name, on: "company.profile", type: String
+    end
+    allow(Axn.config.logger).to receive(:warn)
+
+    residues = tool_class.input_schema_residues
+
+    root = residues.select { |r| r.path.empty? }
+    expect(root.map(&:kind)).to eq([:inherent])
+    expect(root.sole.summary).to include("name (on: company.profile)")
+    expect(Axn.config.logger).to have_received(:warn).with(a_string_including("omits deep subfield(s)")).once
+  end
+
   it "still provides axn's other Naming DSL (axn_name/resolved_axn_name)" do
     tool_class.axn_name "custom"
     expect(tool_class.resolved_axn_name).to eq("custom")

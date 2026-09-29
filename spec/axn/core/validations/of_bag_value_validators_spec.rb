@@ -85,22 +85,26 @@ RSpec.describe "value validators in an of: bag" do
       expect(action.input_schema.dig(:properties, :f, :items)).to include(exclusiveMinimum: 0)
     end
 
-    it "constrains each element with absence:, and emits no keyword for it" do
+    it "constrains each element with absence:, and names what no keyword states for a String" do
       action = build_axn { expects :f, type: Array, of: { klass: String, absence: true } }
 
       expect(action.call(f: [""])).to be_ok
       expect(action.call(f: ["a"])).not_to be_ok
-      # `maxLength: 0` / `const: null` would depend on the position's type and collides with the emptiness
-      # axis, which is PRO-3220's subject — so this stays unemitted, as at a field.
-      expect(action.input_schema.dig(:properties, :f, :items)).to eq(type: "string")
+      # A String's blank is any run of whitespace, which no keyword states, so the blank axis is spelled as a
+      # value set that admits every String (exact for every other JSON type) and the rest is named — as at a
+      # field.
+      items = action.input_schema.dig(:properties, :f, :items)
+      expect(items).to include(type: "string", allOf: [{ anyOf: [{ type: "string" }, { enum: ["", [], {}, false, nil] }] }])
+      expect(items[:description]).to include('"absence":true')
     end
 
-    it "constrains each element with acceptance:, and emits no keyword for it" do
+    it "constrains each element with acceptance:, emits no keyword for it, and names it" do
       action = build_axn { expects :f, type: Array, of: { klass: String, acceptance: { accept: %w[yes] } } }
 
       expect(action.call(f: %w[yes])).to be_ok
       expect(action.call(f: %w[no])).not_to be_ok
-      expect(action.input_schema.dig(:properties, :f, :items)).to eq(type: "string")
+      expect(action.input_schema.dig(:properties, :f, :items).except(:description)).to eq(type: "string")
+      expect(action.input_schema.dig(:properties, :f, :items, :description)).to include("acceptance")
     end
 
     it "constrains a klass-less bag, leaving the element's class open" do
@@ -506,15 +510,17 @@ RSpec.describe "value validators in an of: bag" do
       expect(keyed.call(flag: true)).not_to be_ok
     end
 
-    # Reflection is static-maximal on INPUT: a gate removes the check at runtime but the document advertises it
-    # regardless, which is the existing rule for a self-gated `of:` edge (PRO-3166) and for a field's own.
-    it "still advertises it on input, where reflection is static-maximal" do
+    # INPUT reduces it the same way — a gated check is reflected with its gate closed in both directions, the
+    # rule a self-gated `of:` edge and a field's own entry follow — and names it on the element node instead.
+    it "leaves it out on input too, and names it there" do
       inbound = build_axn do
         expects :flag, type: :boolean
         expects :codes, type: Array, of: { klass: String, inclusion: { in: ["a"], if: :flag } }
       end
 
-      expect(inbound.input_schema.dig(:properties, :codes, :items)).to include(enum: ["a"])
+      items = inbound.input_schema.dig(:properties, :codes, :items)
+      expect(items).not_to have_key(:enum)
+      expect(items[:description]).to include("applies only on the calls its condition opens", '"in":["a"]')
     end
   end
 
