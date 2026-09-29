@@ -1261,6 +1261,15 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
         expect(klass.input_schema_residues).to be_empty
       end
 
+      it "refuses a container: other than Array, which would leave every other element unchecked" do
+        sku = member
+        expect { build_axn { expects :rows, type: Array, shape: { container: Hash, members: [sku] } } }
+          .to raise_error(ArgumentError, /`shape:` on :rows names `container: Hash` beside `type: Array`/)
+        expect do
+          build_axn { expects(:o, type: Hash) { field :rows, type: Array, shape: { container: Hash, members: [sku] } } }
+        end.to raise_error(ArgumentError, /`shape:` on shape member `rows` names `container: Hash` beside `type: Array`/)
+      end
+
       it "refuses it beside a block, which would replace it" do
         sku = member
         expect do

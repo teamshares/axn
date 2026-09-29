@@ -1092,7 +1092,25 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
   # `model:` routes use a finder that resolves any token, so the id's own type is never what rejects a call
   # here, and the one `id_type:` row that states a type keeps its payloads inside it (the model id's narrower
   # type is a stated exception to the exact core).
-  def relaxed_declarations = relaxed_model_id_declarations.merge(relaxed_value_declarations)
+  def relaxed_declarations = relaxed_model_id_declarations.merge(relaxed_value_declarations, raw_array_shape_grid)
+
+  # Every raw `shape:` spelling a distributing `type: Array` (or a bag's `klass: Array`) can carry, at each position
+  # it can be written: {field, raw member, `of:` bag} x {explicit `container:` Array / Hash / none}. A spelling a
+  # guard refuses is skipped by the walk below; each that declares is held to both directions. Payloads cover a
+  # member-bearing element, a wrong-typed member, a scalar element, a nested Array element and the empty Array.
+  def raw_array_shape_grid
+    sku = Axn::Core::Contract::ShapeConfig.new(field: :sku, validations: { type: { klass: String } })
+    values = [[{ sku: "a" }], [{ sku: 1 }], ["abc"], [[{ sku: 1 }]], []]
+    { "container: Array" => Array, "container: Hash" => Hash, "no container:" => nil }.each_with_object({}) do |(cname, container), rows|
+      shape = container ? { container:, members: [sku] } : { members: [sku] }
+      member = Axn::Core::Contract::ShapeConfig.new(field: :x, validations: { type: { klass: Array }, shape: })
+      rows["raw shape on a type: Array field, #{cname}"] = [proc { expects :x, type: Array, shape: }, values.map { |v| { x: v } }]
+      rows["raw shape on a type: Array raw member, #{cname}"] =
+        [proc { expects :o, type: Hash, shape: { members: [member] } }, values.map { |v| { o: { x: v } } }]
+      rows["raw shape in a klass: Array bag, #{cname}"] =
+        [proc { expects :x, type: Array, of: { klass: Array, shape: } }, values.map { |v| { x: [v] } }]
+    end
+  end
 
   def relaxed_model_id_declarations
     record = audit_record
@@ -1225,10 +1243,14 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
     checked = 0
 
     relaxed_declarations.each do |name, (declaration, payloads)|
-      klass = Class.new do
-        include Axn
-        class_eval(&declaration)
-        def call = nil
+      klass = begin
+        Class.new do
+          include Axn
+          class_eval(&declaration)
+          def call = nil
+        end
+      rescue ArgumentError
+        next # a spelling a guard refuses has no document to hold to either direction
       end
       document = schemer(klass.input_schema)
       reported = residues_for(klass).any?

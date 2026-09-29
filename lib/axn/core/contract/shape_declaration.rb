@@ -212,26 +212,44 @@ module Axn
           _reject_unknown_bag_keys!(Internal::ShapeGraph.copy_entries(shape), ClassMethods::SHAPE_OPTION_KEYS, option: "shape:")
         end
 
-        # A raw `shape:` that hand-writes `container: Array` beside a type that is not `Array`. `ShapeValidator`
-        # reads that container as "over the elements" rather than as a gate, so on a `type: Hash` value the
-        # members distribute to nothing and go unchecked on every call while the declaration names them — the
-        # members are an option that does nothing. Beside `type: Array` the same container only restates what
-        # is derived (a raw `type: Array, shape:` distributes over the elements, exactly as a `do ... end` block
-        # does), so it stands. Checked at every position a raw kwarg can occupy, so `carrier` is passed rather
-        # than assumed to be a field's `validations`.
+        # A raw `shape:` whose hand-written `container:` leaves its members checked by nothing on some value the
+        # declaration admits. `ShapeValidator` checks members only on a value that is the container, and reads
+        # `container: Array` as "over the elements" rather than as a gate. So:
         #
-        # Reads the shape's own `container:`, which only means something once the shape IS a Hash — a non-Hash
-        # `shape:` has nothing here to read, and is `_reject_unshaped_shape!`'s defect to report, so this stands
-        # down rather than raising a less specific error first. Identity with the receiver, as every other read
-        # of this key is: a raw shape may put any object in that slot.
+        #   * beside a type that is not `Array`, `container: Array` distributes a Hash (or object) value to nothing,
+        #     and its members go unchecked on every call;
+        #   * beside `type: Array`, whose shape distributes over the elements, any container but `Array` narrows
+        #     which ELEMENTS are checked — `container: Hash` skips every element that is not a Hash, while the
+        #     element class stays open, so `["abc"]` passes with its members never read. The element class belongs
+        #     in the bag (`of: { klass: Hash, shape: ... }`), where it is checked; `container: Array` there only
+        #     restates what is derived, so it stands.
+        #
+        # Checked at every position a raw kwarg can occupy, so `carrier` is passed rather than assumed to be a
+        # field's `validations`. Reads the shape's own `container:`, which only means something once the shape IS a
+        # Hash — a non-Hash `shape:` has nothing here to read, and is `_reject_unshaped_shape!`'s defect to report,
+        # so this stands down rather than raising a less specific error first. Identity with the receiver, as every
+        # other read of this key is: a raw shape may put any object in that slot.
         def _reject_distributing_shape!(carrier, where)
           return unless Internal::ShapeGraph.carries_key?(carrier, :shape)
-          return if _distributing_shape?(carrier)
 
           shape = Internal::ShapeGraph.hash_or_nil(carrier[:shape])
           return if nil.equal?(shape)
 
-          raise ArgumentError, _distributing_container_message(where) if ::Array.equal?(shape[:container])
+          container = shape[:container]
+          return if nil.equal?(container)
+
+          if _distributing_shape?(carrier)
+            raise ArgumentError, _distributing_element_container_message(where, container) unless ::Array.equal?(container)
+          elsif ::Array.equal?(container)
+            raise ArgumentError, _distributing_container_message(where)
+          end
+        end
+
+        def _distributing_element_container_message(where, container)
+          "#{where} names `container: #{_declared_type_label(container)}` beside `type: Array`, whose shape distributes " \
+            "over the elements — `ShapeValidator` skips an element that is not the container, so any other element " \
+            "has its members checked by nothing. Name the element class where it is checked (`of: { klass: " \
+            "#{_declared_type_label(container)}, shape: { members: [...] } }`), or drop `container:`."
         end
 
         # A raw distributing `shape:` (beside `type: Array`) together with a `do ... end` block: the block builds
@@ -1007,7 +1025,7 @@ module Axn
                 :_snapshot_declared_shape!, :_validate_and_snapshot_shape!, :_walk_shape_graph!,
                 :_distributing_shape_depth,
                 :_reject_unshaped_shape!, :_reject_unknown_shape_keys!, :_reject_distributing_shape!,
-                :_reject_raw_shape_beside_block!, :_distributing_container_message,
+                :_reject_raw_shape_beside_block!, :_distributing_container_message, :_distributing_element_container_message,
                 :_inner_shape_position_label,
                 :_walk_inner_contracts!, :_walk_declared_inner_contracts!, :_new_path_allowance,
                 :_snapshot_inner_shape!, :_snapshot_member_shape!, :_combine_inner_contracts,
