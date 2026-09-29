@@ -168,8 +168,9 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
   #
   # Each sized type also gets a value on either side of the `length is:3` cell's bounds, so a dropped floor OR a
   # dropped ceiling is a value the document and the runtime disagree on.
+  # An ordinary email sits beside the boundary probes: punctuation is what a `format:` cell most often meets.
   def probe_values
-    [nil, true, false, 0, 1, 2, 1.5, 123, "", "a", "abc", "abcd", "1", "123", "a\nb", [], [1], [1, 2, 3], [1, 2, 3, 4],
+    [nil, true, false, 0, 1, 2, 1.5, 123, "", "a", "abc", "abcd", "1", "123", "a\nb", "user@example.com", [], [1], [1, 2, 3], [1, 2, 3, 4],
      {}, { "a" => 1 }, { "a" => 1, "b" => 2, "c" => 3 }, { "a" => 1, "b" => 2, "c" => 3, "d" => 4 }]
   end
 
