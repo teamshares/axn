@@ -794,18 +794,26 @@ RSpec.describe "value validators in an of: bag" do
       # position, so the presence check could never fail. Dead machinery, refused where it is written.
       it "refuses a tolerance beside an explicit presence: at an element position" do
         expect { build_axn { expects :f, type: Array, of: { klass: String, presence: true, allow_blank: true } } }
-          .to raise_error(ArgumentError, /cannot be combined with an explicit `presence:`/)
+          .to raise_error(ArgumentError, /`presence:` on .* skips blank values/)
       end
 
       it "refuses it under the optional: spelling too" do
         expect { build_axn { expects :f, type: Array, of: { klass: String, presence: true, optional: true } } }
-          .to raise_error(ArgumentError, /cannot be combined with an explicit `presence:`/)
+          .to raise_error(ArgumentError, /`presence:` on .* skips blank values/)
       end
 
       it "refuses it at a map axis" do
         expect do
-          build_axn { expects :f, type: Hash, of: { values: { klass: String, presence: true, allow_nil: true } } }
-        end.to raise_error(ArgumentError, /cannot be combined with an explicit `presence:`/)
+          build_axn { expects :f, type: Hash, of: { values: { klass: String, presence: true, allow_blank: true } } }
+        end.to raise_error(ArgumentError, /`presence:` on .* skips blank values/)
+      end
+
+      # A nil tolerance leaves presence live: nil is admitted and a blank still rejected.
+      it "accepts presence: beside allow_nil: at an element position" do
+        action = build_axn { expects :f, type: Array, of: { klass: String, presence: true, allow_nil: true } }
+
+        expect(action.call(f: [nil])).to be_ok
+        expect(action.call(f: [""])).not_to be_ok
       end
 
       it "still accepts a presence: with no tolerance beside it" do
@@ -814,7 +822,7 @@ RSpec.describe "value validators in an of: bag" do
 
       it "still refuses the same contradiction at a field" do
         expect { build_axn { expects :f, type: String, presence: true, optional: true } }
-          .to raise_error(ArgumentError, /cannot be combined with an explicit `presence:`/)
+          .to raise_error(ArgumentError, /`presence:` on .* skips blank values/)
       end
     end
   end

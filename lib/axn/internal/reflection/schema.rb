@@ -144,6 +144,9 @@ module Axn
 
         TRANSFORM_RESIDUE = "the value is transformed before these are checked, so they cannot be stated on the wire form"
 
+        METHOD_READ_RESIDUE = "a value that is not an object is read with `method_call:`, and what the method returns " \
+                              "must pass the checks beneath it"
+
         # PRO-3441. A map's `of: { values: }` axis governs every key `properties` does NOT itself name
         # (`additionalProperties`'s own JSON Schema meaning) — except the keys the axis's OWN `shape:`
         # names, which `_derive_shaped_keys!` exempts because the runtime does (`of_validator.rb`'s
@@ -570,7 +573,7 @@ module Axn
               # matching property.
               id_field = Axn::Internal::FieldConfig.model_id_key(config.field)
               unless field_configs.any? { |c| c.field == id_field && !c.validations[:model] }
-                id_type = reconciled_model_id_type_token([config], id_field)
+                id_type = reconciled_model_id_type_token([config])
                 _, id_prop = model_id_property(config, id_type)
                 properties[id_field] ||= id_prop
               end
@@ -675,16 +678,13 @@ module Axn
         # is the same all-or-nothing answer stated defensively), and an EXPLICIT child carries whatever
         # merged_explicit_members says it merges — the one predicate apply_children! asks too, so the drop pass
         # and the schema cannot disagree about which members a descent represents.
-        # `configs` is which of the node's routes may contribute a member, and the two callers want different
-        # answers. The drop pass passes them ALL (the default), because every route is ENFORCED and a
-        # non-nestable member on any of them must block whether or not it is emitted. `emitted_shape_sources`
-        # passes the representative alone, because it asks what the document CONTAINS and only the
-        # representative route's shape is ever emitted.
-        def merged_shape_members(node, key, carried, configs = node.configs)
+        # Every route contributes, because every route is ENFORCED and a non-nestable member on any of them must
+        # block whether or not it is emitted.
+        def merged_shape_members(node, key, carried)
           child = node.children[key]
           return NO_SHAPE_MEMBERS unless child
 
-          members = shape_members_at(carried.empty? ? configs : configs + carried, key)
+          members = shape_members_at(carried.empty? ? node.configs : node.configs + carried, key)
           return members.select { |m| nestable_as_object?(m) } if child.implicit?
 
           merged_explicit_members(child, members)
@@ -724,34 +724,6 @@ module Axn
 
         private_class_method :compute_dropped, :blocking_ancestor?, :merged_shape_members, :colliding_shape_members,
                              :merged_explicit_members
-
-        # The configs whose `shape:` members reflection EMITS at the node a subfield's parent occupies: the
-        # representative of that node's own routes (the only one `apply_structured_schema!` builds a property
-        # from), plus every ancestor member the descent merged on the way down, carried hop by hop exactly as
-        # `apply_children!` carries it.
-        #
-        # Public, and the reason the carry has one owner rather than a copy per caller: `Core::Contract`'s
-        # declaration guards judge a claim by what the emitter WRITES, so they have to read this walk instead
-        # of predicting it — and a copy that fell behind (this one reset the carry at an explicit hop, as
-        # emission itself once did) silently stopped seeing claims that were in the document.
-        #
-        # EMITTED is the whole of it, so the walk carries only what the representative route declares at each
-        # hop: `apply_structured_schema!` builds a node's property from that route alone, and the ancestor
-        # merge conjoins a member only where the ancestor emitted one to conjoin with. Carrying every route's
-        # members instead made this find a claim the document does not contain, and the guard then refused a
-        # declaration `main` accepts — the exact inverse of the defect the carry was added to fix, and the
-        # reason "which route declared it" cannot be dropped in favour of "is it enforced".
-        #
-        # Asked of a SUBFIELD path, the only kind with a parent node to describe: a depth-0 config has no
-        # ancestors, and the caller answers that case before reaching here (a top-level field's own shape is
-        # read straight off the config).
-        def emitted_shape_sources(path)
-          carried = NO_SHAPE_MEMBERS
-          path.ancestors.first(path.parent_index).each do |(node, segment)|
-            carried = merged_shape_members(node, segment, carried, Array(property_representative(node.configs)))
-          end
-          Array(property_representative(path.parent_node.configs)) + carried
-        end
 
         # One bottom-up pass over the whole subfield tree, computed once from build_input and threaded
         # through every emission site below (apply_nested_subfields!/apply_children!/apply_implicit_node!/
@@ -894,6 +866,12 @@ module Axn
         # extension of the one-level required-child test.
         def subtree_requires_presence?(node, ann)
           children_require_presence?(node.children, ann)
+        end
+
+        # Whether a declaration beneath `node` resolves its path with `method_call:`, and so reads a method off
+        # this node's value where that value is not a Hash rather than settling absent.
+        def subtree_reads_methods?(node)
+          node.children.each_value.any? { |child| child.configs.any?(&:method_call) || subtree_reads_methods?(child) }
         end
 
         # Whether a node may be absent from its parent object. An implicit node (a dotted-path
@@ -1416,7 +1394,7 @@ module Axn
           # `apply_model_id_requiredness!` never had this bug — its merge already ran before its own
           # `reject_null!`, being a single sequential method rather than two loops here).
           model_id_siblings.each do |id_field, model_configs, explicit_id|
-            merge_model_id_type_into_sibling!(prop[:properties][id_field], model_configs, explicit_id, id_field) if prop[:properties][id_field]
+            merge_model_id_type_into_sibling!(prop[:properties][id_field], model_configs, explicit_id) if prop[:properties][id_field]
           end
           name_model_lookups!(prop, children)
           # A required nested model id can't be null (a null token resolves the model to nil at runtime).
@@ -1541,8 +1519,8 @@ module Axn
           # method ever runs (called from `build_property`, ahead of `apply_nested_subfields!`), entirely
           # outside the subfield tree `children` searches: `field :company_id, type: String` inside a
           # `do...end` block beside `expects :company, on: ..., model: { id_type: Integer }` left
-          # `explicit_id` nil (no SUBFIELD sibling exists), so the conflict check never ran, and the shape
-          # member's `||=`-preserved string property silently discarded the declared integer id_type.
+          # `explicit_id` nil (no SUBFIELD sibling exists), so the model's own property was built and then lost to
+          # the shape member's, with nothing deciding between them.
           #
           # Restricted to the REPRESENTATIVE config's OWN shape, not every route at a merged parent node: at
           # a merged node `apply_structured_schema!` (building the parent's OWN property, via
@@ -1559,10 +1537,6 @@ module Axn
           # out would discard the declared `id_type:` one level up.
           representative = property_representative(parent_configs)
           explicit_id ||= emitted_shape_member_at(prop, representative, carried, id_field)
-          # `model_configs`, every route at THIS merged node — not just `.first`: two `model:`
-          # routes reaching the same wire node may each carry their own `id_type:`/`klass:`, and
-          # reading only one silently dropped the other's claim.
-          reject_model_id_type_conflict!(model_configs, explicit_id, id_field)
           if explicit_id
             # Deferred rather than merged here directly (see the post-loop pass in `apply_children!`):
             # this sibling's OWN entry in `children` hasn't necessarily been visited yet, so
@@ -1570,7 +1544,7 @@ module Axn
             # in this loop has run.
             model_id_siblings << [id_field, model_configs, explicit_id]
           elsif !prop[:properties].key?(id_field)
-            id_type = reconciled_model_id_type_token(model_configs, id_field)
+            id_type = reconciled_model_id_type_token(model_configs)
             _, subprop = model_id_property(model_configs.first, id_type)
             prop[:properties][id_field] ||= subprop
           end
@@ -1651,19 +1625,26 @@ module Axn
           target[:required] ||= []
           apply_children!(target, node.children, members, ann)
           target[:required] = target[:required].uniq
-          # A fresh implicit intermediate is nullable exactly when nothing beneath requires presence (a nil
-          # parent digs every descendant to nil, PRO-2857) — the precomputed annotation's bare nullable (an
-          # implicit node has no config of its own to collide against). A shape-member collision additionally
-          # caps it by the members' OWN nil-tolerance — nullable only when EVERY colliding member tolerates
-          # nil (runtime enforces all routes), read from each config via nil_allowed? (the same predicate the
-          # parent nesting uses) never sniffed off the emitted property: an untyped nil-tolerant member emits
-          # no `type`, so a null branch is invisible there and property-sniffing would force it non-nullable
-          # though runtime accepts a nil member. With no colliding member, an existing merge target (e.g. a
-          # Data placeholder property with no shape member) falls back to non-nullable (stricter than
-          # runtime), while a genuinely fresh node (no property, no member) follows its subtree.
-          nullable = ann[node].nullable &&
-                     (members.any? ? members.all? { |m| nil_admitted_with_gates_closed?(m) } : existing.nil?)
-          target[:type] = nullable ? %w[object null] : "object"
+          # An implicit intermediate's annotation is nullable exactly when nothing beneath requires presence (a
+          # nil parent digs every descendant to nil, PRO-2857). With no colliding member, that same condition
+          # means nothing at this key rejects a value that is not an object either: a descendant read off a
+          # String or a number settles absent too (PRO-2886). So such a node adds only its `properties`, which
+          # JSON Schema applies to an object alone, and states no `type` of its own — whatever the key already
+          # carries (a `model:` route's generated id, a declared type's member placeholder) keeps its own. A
+          # `method_call:` descendant is the exception to "settles absent": it reads a method off whatever is
+          # there, and what that method returns is checked, so that is named.
+          #
+          # A shape-member collision is typed by the members, and caps nullability by their OWN nil-tolerance —
+          # nullable only when EVERY colliding member tolerates nil (runtime enforces all routes), read from each
+          # config via nil_allowed? (the same predicate the parent nesting uses) never sniffed off the emitted
+          # property: an untyped nil-tolerant member emits no `type`, so a null branch is invisible there and
+          # property-sniffing would force it non-nullable though runtime accepts a nil member.
+          if members.empty? && ann[node].nullable
+            target = record_residue(target, METHOD_READ_RESIDUE) if subtree_reads_methods?(node)
+          else
+            nullable = ann[node].nullable && members.all? { |m| nil_admitted_with_gates_closed?(m) }
+            target[:type] = nullable ? %w[object null] : "object"
+          end
           target[:required] = nil if target[:required].empty?
           prop[:properties][key] = target.compact
           prop[:required] << required_key(key) if ann[node].required
@@ -3231,10 +3212,40 @@ module Axn
             return if for_output && !output_enum_exact?(values, validations, declared_klass)
 
             values = enum_for_inclusion(values, nullable:)
+            return node.merge!(record_residue(node, UNREACHABLE_ENUM_RESIDUE)) if !for_output && enum_unreachable?(node, values)
           end
 
           existing = node[:enum]
           node[:enum] = existing ? existing & values : values
+        end
+
+        # A declared set none of whose members the node's own type admits. The declaration guards refuse such a
+        # set wherever it rejects every value; what reaches here is the set a tolerated BLANK rescues — `type:
+        # Array, presence: false, inclusion: { in: ["a"], allow_blank: true }` accepts `[]` and nothing else — and
+        # emitting it would leave a node no value satisfies, `[]` included. So the set is left out and named.
+        # Asked only where the node states a single `type`, and a member whose JSON type this cannot classify
+        # counts as admitted, so the answer errs toward keeping the set.
+        UNREACHABLE_ENUM_RESIDUE = "only the blank value its tolerance skips can pass: no member of its `inclusion:` " \
+                                   "set is of the declared type"
+
+        def enum_unreachable?(node, values)
+          types = node[:type] && Array(node[:type])
+          return false unless types
+
+          values.none? do |value|
+            json_type = literal_json_type(value)
+            json_type.nil? || types.include?(json_type) || (json_type == "integer" && types.include?("number"))
+          end
+        end
+
+        def literal_json_type(value)
+          case value
+          when ::NilClass then "null"
+          when ::TrueClass, ::FalseClass then "boolean"
+          when ::Array then "array"
+          when ::Hash then "object"
+          else enum_scalar_type(value)
+          end
         end
 
         # Whether a JSON key — always a String — could satisfy this axis's declared class. An axis naming none
@@ -3637,7 +3648,10 @@ module Axn
           validations = effective_validations(config.validations)
           of = validations[:of]
           shape = validations[:shape]
-          in_items = Array(json_type_for(validations, for_output:)[:type]).include?("array")
+          # An `array` branch of a union counts: `items` constrains an array alone, so it is exact at the union's
+          # own node beside a scalar branch it says nothing about.
+          json_type = json_type_for(validations, for_output:)
+          in_items = (Array(json_type[:type]) + Array(json_type[:anyOf]).flat_map { |branch| Array(branch[:type]) }).include?("array")
           container = of_container(validations)
           nothing = ShapePropertyPlan.new(emitted: false, in_items:, type_schema: {}, shape:, container:)
 

@@ -32,13 +32,14 @@ RSpec.describe "conditional validation declarations (if:/unless:)" do
     it "rejects optional: + presence: true with a clear declaration error" do
       expect do
         build_axn { expects :note, optional: true, presence: true }
-      end.to raise_error(ArgumentError, /cannot be combined with an explicit `presence:`/)
+      end.to raise_error(ArgumentError, /`presence:` on .* skips blank values/)
     end
 
-    it "rejects allow_nil: + a per-validator conditional presence (the tolerance would neuter it)" do
-      expect do
-        build_axn { expects :note, allow_nil: true, presence: { if: :cond } }
-      end.to raise_error(ArgumentError, /cannot be combined with an explicit `presence:`/)
+    it "accepts allow_nil: + presence:, which admits nil and still rejects a blank" do
+      action = build_axn { expects :note, type: String, allow_nil: true, presence: true }
+
+      expect(action.call(note: nil)).to be_ok
+      expect(action.call(note: "")).not_to be_ok
     end
 
     it "still allows presence: false alongside a tolerance flag (explicit suppression, coherent)" do

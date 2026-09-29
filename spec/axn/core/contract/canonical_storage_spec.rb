@@ -67,16 +67,17 @@ RSpec.describe "canonical storage of a container's contents" do
     expect(v[:of]).to include(values: Integer, container: Hash)
   end
 
-  it "refuses the flat form at a nested position too" do
+  it "distributes the flat form at a nested position too" do
     sku = Axn::Core::Contract::ShapeConfig.new(field: :sku, validations: { type: { klass: String } })
-
-    expect do
-      build_axn do
-        expects :outer, type: Hash do
-          field :rows, type: Array, of: Hash, shape: { members: [sku] }
-        end
+    action = build_axn do
+      expects :outer, type: Hash do
+        field :rows, type: Array, of: Hash, shape: { members: [sku] }
       end
-    end.to raise_error(ArgumentError, /`shape:` on shape member `rows` distributes over an Array's elements/)
+    end
+
+    expect(action.call(outer: { rows: [{ sku: "a" }] })).to be_ok
+    expect(action.call(outer: { rows: [{ sku: 1 }] }).exception.message).to include("sku is not a String")
+    expect(action.input_schema.dig(:properties, :outer, :properties, :rows, :items, :properties)).to have_key(:sku)
   end
 
   it "keeps a map's shape: beside its of: at the field" do
@@ -112,7 +113,7 @@ RSpec.describe "canonical storage of a container's contents" do
     expect(v.dig(:of, :klass)).to eq(String)
     expect(v.dig(:of, :shape, :container)).to eq(Axn::Internal::ShapeGraph::ANY_CONTAINER)
     expect(action.call(codes: %w[abc])).to be_ok
-    expect(action.input_schema.dig(:properties, :codes, :items)).to eq({ type: "string" })
+    expect(action.input_schema.dig(:properties, :codes, :items, :type)).to eq("string")
   end
 
   # `container: Array` on a shape is not a gate — `ShapeValidator` reads it as "distribute over the elements"
@@ -134,7 +135,8 @@ RSpec.describe "canonical storage of a container's contents" do
     expect(action.call(rows: [[1, 2]]).exception.message).to include("element at index 0: first is not a String")
     # Emission is settled by the bag's `klass:`, never by the shape's container, so it is untouched: an Array
     # element is not an object, so the members are validated and never emitted as properties.
-    expect(action.input_schema.dig(:properties, :rows, :items)).to eq({ type: "array" })
+    expect(action.input_schema.dig(:properties, :rows, :items, :type)).to eq("array")
+    expect(action.input_schema_residues.map(&:summary)).to include(a_string_including("its `shape:` members are checked"))
   end
 
   it "unions a distributing shape with the bag's own shape" do
@@ -241,9 +243,7 @@ RSpec.describe "the block form and the bag it canonicalizes into share every bou
 
   def leaf = { members: [member(:leaf, { type: { klass: String } })] }
 
-  # `type: Array` + a distributing block, chained — a raw `shape:` kwarg naming the same distributing
-  # structure is refused outright (PRO-3191), so a block is the only remaining spelling to compare the bag
-  # against.
+  # `type: Array` + a distributing block, chained.
   def block_chain(depth)
     return proc { field :leaf, type: String } if depth.zero?
 
@@ -291,11 +291,16 @@ RSpec.describe "the block form and the bag it canonicalizes into share every bou
     (1..Axn::Internal::ShapeGraph::MAX_NESTING).find { |d| !declarable?(builder.call(d)) } - 1
   end
 
-  it "refuses the flat spelling this bag canonicalizes, at any nesting depth" do
-    flat = { members: [member(:m3, { type: { klass: Array }, shape: { members: [member(:m2, { type: { klass: Array }, shape: leaf })] } })] }
+  # The raw spelling of the same chain: a member's `type: Array` beside its own `shape:` distributes exactly as
+  # the block does, so it is charged the element rung too.
+  def flat(depth)
+    return leaf if depth.zero?
 
-    expect { build_axn { expects :payload, type: Hash, shape: flat } }
-      .to raise_error(ArgumentError, /`shape:` on shape member `m3` distributes over an Array's elements/)
+    { members: [member(:"m#{depth}", { type: { klass: Array }, shape: flat(depth - 1) })] }
+  end
+
+  it "declares the raw distributing spelling to exactly the depth of the block chain" do
+    expect(deepest_declarable(method(:flat))).to eq(deepest_declarable_block)
   end
 
   it "declares to exactly the same depth via a block chain as via the bag it canonicalizes into" do

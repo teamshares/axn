@@ -1409,13 +1409,21 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(payload[:properties][:company_id]).to include(type: "integer")
     end
 
-    it "rejects an id_type: outside the closed vocabulary at declaration time" do
-      expect do
-        Class.new do
-          include Axn
-          expects :company, model: { klass: Struct.new(:id), id_type: Hash }
-        end
-      end.to raise_error(ArgumentError, /id_type:.*must be one of/)
+    it "states a class id_type: that has a scalar JSON type, and names one that has none" do
+      mapped = Class.new do
+        include Axn
+        expects :company, model: { klass: Struct.new(:id), id_type: Float }
+      end
+      unmapped = Class.new do
+        include Axn
+        expects :company, model: { klass: Struct.new(:id), finder: :new, id_type: Hash }
+        def call = nil
+      end
+
+      expect(mapped.input_schema[:properties][:company_id]).to include(type: "number")
+      expect(unmapped.call(company_id: 1)).to be_ok
+      expect(unmapped.input_schema[:properties][:company_id]).not_to have_key(:type)
+      expect(unmapped.input_schema_residues.map(&:summary)).to include(a_string_including("`id_type:` (Hash) has no JSON type"))
     end
 
     it "rejects a union id_type: (a lookup token is a scalar, never a list of them)" do
@@ -1424,7 +1432,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           include Axn
           expects :company, model: { klass: Struct.new(:id), id_type: [Integer, String] }
         end
-      end.to raise_error(ArgumentError, /id_type:.*must be one of/)
+      end.to raise_error(ArgumentError, /id_type: must be a class or :uuid/)
     end
 
     it "keeps the declared and inferable vocabularies from drifting apart" do
@@ -1434,178 +1442,41 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(inferable.uniq).to match_array(declarable)
     end
 
-    # an explicit `<field>_id` sibling ALWAYS wins the emitted property over the model-generated one
-    # (declaration-order independent — tested above), so a declared `id_type:` that disagrees with the
-    # sibling's own `type:` was being silently discarded rather than flagged as the authored
-    # contradiction it is.
-    describe "conflicting with an explicit <field>_id sibling's own type:" do
-      it "rejects id_type: Integer beside an explicit type: String sibling" do
+    # An explicit `<field>_id` sibling and a declared `id_type:` both describe the generated id's wire key. The
+    # sibling's own checks run on every call and `id_type:` checks nothing, so the sibling's type is what the
+    # document states, whichever is declared first and at either depth.
+    describe "beside an explicit <field>_id sibling with a type: of its own" do
+      it "follows the sibling, which is what the runtime enforces" do
         klass = Class.new do
           include Axn
+          expects :company, model: { klass: Struct.new(:id), finder: :new, id_type: Integer }
           expects :company_id, type: String
-          expects :company, model: { klass: Struct.new(:id), id_type: Integer }
+          def call = nil
         end
 
-        expect do
-          described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
-        end.to raise_error(ArgumentError, /id_type:.*disagrees with the explicitly declared company_id/)
-      end
-
-      it "rejects it regardless of declaration order (explicit sibling declared first)" do
-        klass = Class.new do
-          include Axn
-          expects :company, model: { klass: Struct.new(:id), id_type: Integer }
-          expects :company_id, type: String
-        end
-
-        expect do
-          described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
-        end.to raise_error(ArgumentError, /id_type:.*disagrees/)
-      end
-
-      it "rejects it for a nested on: model subfield too" do
-        klass = Class.new do
-          include Axn
-          expects :payload, type: Hash
-          expects :company_id, on: :payload, type: String
-          expects :company, on: :payload, model: { klass: Struct.new(:id), id_type: Integer }
-        end
-
-        expect do
-          described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
-        end.to raise_error(ArgumentError, /id_type:.*disagrees/)
+        expect(klass.call(company_id: "a")).to be_ok
+        expect(klass.call(company_id: 1)).not_to be_ok
+        expect(klass.input_schema[:properties][:company_id]).to include(type: "string")
       end
 
       it "does not raise when the two agree" do
         klass = Class.new do
           include Axn
-          expects :company_id, type: Integer
           expects :company, model: { klass: Struct.new(:id), id_type: Integer }
+          expects :company_id, type: Integer
         end
 
         expect(klass.input_schema[:properties][:company_id]).to include(type: "integer")
       end
 
-      it "does not raise for a merely COMPATIBLE pairing (id_type: String beside an explicit :uuid " \
-         "sibling — both project to the JSON type \"string\")" do
+      it "merges the declared id_type: into a sibling with no type: of its own" do
         klass = Class.new do
           include Axn
-          expects :company_id, type: :uuid
-          expects :company, model: { klass: Struct.new(:id), id_type: String }
-        end
-
-        expect(klass.input_schema[:properties][:company_id]).to include(type: "string", format: "uuid")
-      end
-
-      it "does not raise when the explicit sibling has no type: of its own to disagree with, and " \
-         "merges the declared id_type: into the sibling's own property rather than losing it" do
-        klass = Class.new do
-          include Axn
-          expects :company_id, default: 1
           expects :company, model: { klass: Struct.new(:id), id_type: Integer }
+          expects :company_id, default: 5
         end
 
-        expect(klass.input_schema[:properties][:company_id].except(:description)).to eq(default: 1, type: "integer")
-      end
-
-      it "does the same merge for a NESTED untyped sibling, regardless of which is declared first " \
-         "(the sibling's OWN entry always wins the emitted property outright, so the merge has to run " \
-         "after every child in the loop has been visited, not at the model's own visit)" do
-        declared_model_first = Class.new do
-          include Axn
-          expects :payload, type: Hash, shape: { members: {} }
-          expects :company, on: :payload, model: { klass: Struct.new(:id), id_type: Integer }
-          expects :company_id, on: :payload, default: 1, as: :company_id_field
-        end
-        declared_sibling_first = Class.new do
-          include Axn
-          expects :payload, type: Hash, shape: { members: {} }
-          expects :company_id, on: :payload, default: 1, as: :company_id_field
-          expects :company, on: :payload, model: { klass: Struct.new(:id), id_type: Integer }
-        end
-
-        [declared_model_first, declared_sibling_first].each do |klass|
-          company_id = klass.input_schema.dig(:properties, :payload, :properties, :company_id)
-          expect(company_id.except(:description)).to eq(default: 1, type: "integer")
-        end
-      end
-
-      it "drops the sibling's own now-redundant not: { type: \"null\" } once a real type: is merged in " \
-         "(reject_null! already ran on the untyped sibling before this merge and, finding no type: to " \
-         "narrow, fell back to that marker)" do
-        klass = Class.new do
-          include Axn
-          expects :payload, type: Hash, shape: { members: {} }
-          expects :company, on: :payload, model: { klass: Struct.new(:id), id_type: Integer }
-          expects :company_id, on: :payload, default: 1, as: :company_id_field
-        end
-
-        company_id = klass.input_schema.dig(:properties, :payload, :properties, :company_id)
-        expect(company_id).not_to have_key(:not)
-        expect(company_id[:type]).to eq("integer")
-      end
-
-      # comparing base :type alone missed the REVERSE asymmetry — id_type: :uuid asserts a format the
-      # plain explicit type: String sibling does not carry, so the uuid-shape requirement silently
-      # vanished with no error, the same swallowed-contradiction class the round-1 fix existed to
-      # close.
-      it "rejects id_type: :uuid beside an explicit type: String sibling (the sibling admits any " \
-         "string, silently dropping the uuid-format requirement)" do
-        klass = Class.new do
-          include Axn
-          expects :company_id, type: String
-          expects :company, model: { klass: Struct.new(:id), id_type: :uuid }
-        end
-
-        expect { klass.input_schema }.to raise_error(ArgumentError, /id_type:.*disagrees/)
-      end
-
-      # the rule above is right for a BARE type: String sibling — but a sibling narrowed by its OWN
-      # inclusion: to uuid-shaped literals is not the same "admits any string" case, and the plain
-      # type-pair comparison alone can't see that (it reads only :type/:anyOf, never :enum). An explicit
-      # type: String sitting beside the SAME inclusion: made the check treat the pairing as STRICTER
-      # than a bare inclusion: sibling with no type: at all — which already tolerates this (see the
-      # enum-only branch's documented known limitation, just above) — so this raised for a
-      # value-level-compatible declaration purely because a type: was also present.
-      it "does not reject id_type: :uuid beside an explicit type: String, inclusion: [uuid-shaped " \
-         "literal] sibling — an inclusion: set is checked on its own terms, the same tolerance the " \
-         "enum-only case already gets, whether or not an explicit type: also sits beside it" do
-        klass = Class.new do
-          include Axn
-          expects :company_id, type: String, inclusion: { in: ["0f8fad5b-d9cb-469f-a165-70867728950e"] }
-          expects :company, model: { klass: Struct.new(:id), id_type: :uuid }
-        end
-
-        expect { klass.input_schema }.not_to raise_error
-      end
-
-      # the "any branch satisfies" check let a widening UNION sibling through, since the branch that
-      # happened to match id_type: was enough to accept the whole thing — but the WINNING property
-      # is the entire union, including the branch that doesn't satisfy it.
-      it "rejects id_type: Integer beside an explicit union type: [Integer, String] sibling (one " \
-         "branch matches, but the whole union — including the string branch — is what wins, silently " \
-         "widening past what id_type: promised)" do
-        klass = Class.new do
-          include Axn
-          expects :company_id, type: [Integer, String]
-          expects :company, model: { klass: Struct.new(:id), id_type: Integer }
-        end
-
-        expect { klass.input_schema }.to raise_error(ArgumentError, /id_type:.*disagrees/)
-      end
-
-      it "does not raise for a union sibling where EVERY branch still satisfies id_type: (both " \
-         "project to \"string\")" do
-        klass = Class.new do
-          include Axn
-          expects :company_id, type: [String, :uuid]
-          expects :company, model: { klass: Struct.new(:id), id_type: String }
-        end
-
-        expect(klass.input_schema[:properties][:company_id][:anyOf]).to contain_exactly(
-          { type: "string", minLength: 1 },
-          { type: "string", format: "uuid", minLength: 1 },
-        )
+        expect(klass.input_schema[:properties][:company_id]).to include(type: "integer")
       end
     end
 
@@ -1615,7 +1486,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     # each carry their own `id_type:`, but only `model_configs.first` was ever consulted — silently
     # dropping whichever route was declared second, and changing the answer with declaration order.
     describe "reconciling id_type: across multiple model: routes at one merged node" do
-      it "rejects two model: routes at the same node declaring disagreeing id_type: values" do
+      it "leaves the id untyped when two routes declare different id_type: values" do
         klass = Class.new do
           include Axn
           expects :payload, type: Hash
@@ -1624,7 +1495,8 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           expects :user, on: :account, model: { klass: Struct.new(:id), id_type: String }
         end
 
-        expect { klass.input_schema }.to raise_error(ArgumentError, /disagree.*user_id/)
+        account = klass.input_schema.dig(:properties, :payload, :properties, :account)
+        expect(account[:properties][:user_id]).not_to have_key(:type)
       end
 
       it "does not raise, and reconciles to the single value, when only one route declares id_type:" do
@@ -1652,25 +1524,6 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         account = klass.input_schema[:properties][:payload][:properties][:account]
         expect(account[:properties][:user_id]).to include(type: "integer")
       end
-    end
-
-    # a `shape:` member on the PARENT — declared via a `do...end` block, not a subfield — can ALSO claim
-    # the generated `<field>_id` key by name. It's merged into `prop[:properties]` by
-    # `apply_structured_schema!`, entirely BEFORE `apply_children!` (and so this conflict check) ever
-    # runs, and outside the subfield tree `children` searches at all — so the explicit-sibling lookup
-    # found nothing, the check never ran, and the shape member's `||=`-preserved property silently
-    # discarded a declared `id_type:`.
-    it "rejects a PARENT shape: member sharing the generated id's name, which the subfield-tree " \
-       "lookup alone would miss entirely" do
-      klass = Class.new do
-        include Axn
-        expects :payload, type: Hash do
-          field :company_id, type: String
-        end
-        expects :company, on: :payload, model: { klass: Struct.new(:id), id_type: Integer }
-      end
-
-      expect { klass.input_schema }.to raise_error(ArgumentError, /id_type:.*disagrees/)
     end
 
     it "does not raise when a parent shape: member sharing the id's name agrees with the declared id_type:" do
@@ -1713,37 +1566,6 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(payload[:required]).to include("company_id")
     end
 
-    # an `inclusion:` set's members are the AUTHOR'S OWN literals, and one whose `inspect` raises would
-    # replace this ArgumentError with its own exception while the message describing the conflict was
-    # still being built.
-    it "renders a hostile enum literal (raising #inspect) safely rather than crashing the message itself" do
-      hostile = Object.new
-      def hostile.inspect = raise "hostile inspect ran"
-
-      expect do
-        Class.new do
-          include Axn
-          expects :company_id, inclusion: { in: [1, hostile] }
-          expects :company, model: { klass: Struct.new(:id), id_type: Integer }
-        end.input_schema
-      end.to raise_error(ArgumentError, /disagrees.*enum/)
-    end
-
-    # `json_type_pairs` strips the `null` branch before comparing (see
-    # `reject_model_id_type_conflict!`), so a sibling whose type is NilClass-only reduced to an empty
-    # set — and a bare `.all?` on that empty set is vacuously true, letting a null-only sibling silently
-    # win over a declared `id_type:` with no error at all.
-    it "rejects a null-only explicit sibling (type: NilClass) beside a declared id_type: — a lookup " \
-       "token can never be null, so nothing about the sibling actually satisfies the claim" do
-      klass = Class.new do
-        include Axn
-        expects :company_id, type: NilClass, optional: true
-        expects :company, model: { klass: Struct.new(:id), id_type: Integer }
-      end
-
-      expect { klass.input_schema }.to raise_error(ArgumentError, /id_type:.*disagrees/)
-    end
-
     # the rule above is right when the model itself REQUIRES a real id (verified: `.call` with no args
     # raises there, so the id genuinely can never be supplied) — but the same null-only sibling is not a
     # conflict at all when the model ALSO tolerates nil throughout (`allow_nil: true`): verified `.call`
@@ -1782,24 +1604,6 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(schema[:required]).to include("company_id")
     end
 
-    # comparing against `json_type_for` alone missed a RUNTIME relaxation `build_property` applies
-    # afterward — a blank-tolerant explicit `type: :uuid` sibling still projects `format: "uuid"`
-    # through `json_type_for` alone, so the check saw "satisfies" and passed, but the ACTUAL winning
-    # property (built through `apply_single_type!`, which drops the uuid format for a blank-tolerant
-    # field per its own documented reasoning) silently lost the format — exactly the class of swallowed
-    # contradiction every earlier round's fix here already closed for other shapes.
-    it "rejects a blank-tolerant explicit type: :uuid sibling beside a required id_type: :uuid (the " \
-       "sibling's OWN blank-tolerance drops its uuid format at emission, so the winning property " \
-       "silently admits \"\" though the required model resolution never would)" do
-      klass = Class.new do
-        include Axn
-        expects :company_id, type: :uuid, allow_blank: true
-        expects :company, model: { klass: Struct.new(:id), id_type: :uuid }
-      end
-
-      expect { klass.input_schema }.to raise_error(ArgumentError, /id_type:.*disagrees/)
-    end
-
     it "does not raise for a blank-tolerant explicit type: :uuid sibling beside an id_type: String " \
        "(String never asserted a format to lose)" do
       klass = Class.new do
@@ -1813,53 +1617,6 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(schema[:properties][:company_id]).not_to have_key(:format)
     end
 
-    # the generated `<field>_id` Symbol was interpolated raw into this message's own UTF-8 text — a
-    # legal, ASCII-compatible but non-UTF-8 field name (a Latin-1 Symbol) raised
-    # Encoding::CompatibilityError from the MESSAGE ITSELF, replacing the intended, actionable
-    # ArgumentError with an unrelated crash.
-    it "renders a non-UTF-8 (but ASCII-compatible) field name safely rather than crashing the message itself" do
-      name = "caf\xE9".dup.force_encoding("ISO-8859-1").to_sym
-
-      expect do
-        Class.new do
-          include Axn
-          expects name, model: { klass: Struct.new(:id), id_type: Integer }
-          expects :"#{name}_id", type: String
-        end.input_schema
-      end.to raise_error(ArgumentError, /disagrees/)
-    end
-
-    # gating the comparison on `explicit_id.validations.key?(:type)` skipped a sibling that carries no
-    # `type:` at all but still gets one INFERRED by `inclusion:`/ `numericality:` (the same
-    # `json_type_for` branches `build_property` itself reads) — so the winning property (a plain string,
-    # `inclusion:`-derived) silently discarded a declared `id_type: Integer` with no error, the very
-    # thing the round-1 fix exists to catch.
-    it "rejects an explicit sibling with no type: of its own whose OTHER validator (inclusion:) still " \
-       "makes build_property infer a conflicting type" do
-      klass = Class.new do
-        include Axn
-        expects :company_id, inclusion: { in: ["abc"] }
-        expects :company, model: { klass: Struct.new(:id), id_type: Integer }
-      end
-
-      expect { klass.input_schema }.to raise_error(ArgumentError, /id_type:.*disagrees/)
-    end
-
-    # a HETEROGENEOUS `inclusion:` set (mixed value types) can't reduce to one base type at all, so
-    # `json_type_for` emits `enum:` alone — neither `:type` nor `:anyOf` — which the round-8 fix's
-    # gate didn't check, letting a declared `id_type: Integer` silently lose to a sibling whose enum
-    # admits a String literal too.
-    it "rejects an explicit sibling whose HETEROGENEOUS inclusion: set emits only enum: (no derivable " \
-       "type at all), when a literal violates the declared id_type:" do
-      klass = Class.new do
-        include Axn
-        expects :company_id, inclusion: { in: [1, "abc"] }
-        expects :company, model: { klass: Struct.new(:id), id_type: Integer }
-      end
-
-      expect { klass.input_schema }.to raise_error(ArgumentError, /id_type:.*disagrees.*enum/)
-    end
-
     it "does not raise for an enum-only sibling whose every literal matches the declared id_type:" do
       klass = Class.new do
         include Axn
@@ -1868,18 +1625,6 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       end
 
       expect(klass.input_schema[:properties][:company_id][:enum]).to eq(%w[a b])
-    end
-
-    it "names the base :type, not :enum, in the message when a sibling carries BOTH (a homogeneous " \
-       "single-value inclusion: still derives a :type; the verdict came from comparing IT, not the " \
-       "coincidental enum)" do
-      klass = Class.new do
-        include Axn
-        expects :company_id, inclusion: { in: ["abc"] }
-        expects :company, model: { klass: Struct.new(:id), id_type: Integer }
-      end
-
-      expect { klass.input_schema }.to raise_error(ArgumentError, /\(string\)/)
     end
 
     # (The companion "no type at all" case — a bare `default:` sibling that infers nothing — is already
@@ -2230,7 +1975,8 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
     it "keeps scalar array item types when a shape reads members off the scalar element (of: String + field :length)" do
       # Runtime accepts string elements (OfValidator checks the class; ShapeValidator reads String#length),
-      # so forcing object items would reject a valid string array. The scalar item type is preserved.
+      # so forcing object items would reject a valid string array. The scalar item type is preserved, and the
+      # members it cannot carry are named rather than dropped in silence.
       klass = Class.new do
         include Axn
         expects(:items, type: Array, of: String) { field :length, type: Integer }
@@ -2238,7 +1984,8 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       end
       items = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)[:properties][:items][:items]
 
-      expect(items).to eq(type: "string")
+      expect(items[:type]).to eq("string")
+      expect(klass.input_schema_residues.map(&:summary)).to include(a_string_including("its `shape:` members are checked"))
     end
 
     it "does not advertise object array-items OUTPUT for `of:` a custom-as_json Data (but keeps them on input)" do
@@ -3381,9 +3128,10 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(shallow.call).to be_ok
       expect(dotted.call(address: {})).to be_ok
 
-      # The dotted parent nests through an implicit :billing intermediate carrying the :zip leaf.
+      # The dotted parent nests through an implicit :billing intermediate carrying the :zip leaf. Nothing beneath
+      # it rejects a value that is not an object, so it states no type of its own.
       billing = dotted_schema[:properties][:address][:properties][:billing]
-      expect(billing[:type]).to eq(%w[object null])
+      expect(billing).not_to have_key(:type)
       expect(billing[:properties]).to have_key(:zip)
       expect(billing).not_to have_key(:required)
     end
@@ -4516,7 +4264,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
       payload = schema[:properties][:payload]
       expect(payload[:type]).to eq(%w[object null])
-      expect(payload[:properties][:address][:type]).to eq(%w[object null])
+      expect(payload[:properties][:address]).not_to have_key(:type)
       expect(payload).not_to have_key(:required)
       expect(schema[:required]).to be_nil
     end
@@ -7333,7 +7081,6 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             minProperties: 1,
             properties: {
               address: {
-                type: %w[object null],
                 properties: {
                   zip: { default: "x", not: { type: "null" } },
                 },
@@ -7432,7 +7179,6 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             properties: {
               status: { type: "string", minLength: 1 },
               address: {
-                type: %w[object null],
                 properties: {
                   zip: { default: "x", not: { type: "null" } },
                 },

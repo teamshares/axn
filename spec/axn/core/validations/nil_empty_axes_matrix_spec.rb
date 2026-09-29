@@ -535,9 +535,16 @@ RSpec.describe "nil and empty axes" do
       expect(action.call(v: [1, 2])).to be_ok
     end
 
-    it "points a dead presence:/tolerance combination at the working spelling" do
-      expect { build(type: Array, presence: true, allow_nil: true) }
-        .to raise_error(ArgumentError, /allow_empty: false/)
+    it "points a dead presence:/blank-tolerance combination at the working spelling" do
+      expect { build(type: Array, presence: true, allow_blank: true) }
+        .to raise_error(ArgumentError, /`allow_nil: true` with `presence: true`/)
+    end
+
+    it "accepts presence: beside allow_nil:, which admits nil and rejects an empty value" do
+      action = build(type: Array, presence: true, allow_nil: true)
+      expect(action.call(v: nil)).to be_ok
+      expect(action.call(v: [])).not_to be_ok
+      expect(action.call(v: [1])).to be_ok
     end
 
     it "reaches the mirror cell through allow_nil: true, not just optional:" do
@@ -765,9 +772,13 @@ RSpec.describe "nil and empty axes" do
         expect(action.call(v: [1])).not_to be_ok # the author's own floor rejects every size
       end
 
-      it "rejects a per-call length: minimum alongside allow_empty: false, which it cannot verify" do
-        expect { build(type: Array, allow_nil: true, allow_empty: false, length: { minimum: :cap }) }
-          .to raise_error(ArgumentError, /allow_empty: false.*length:/m)
+      it "keeps its own check beside a per-call length: minimum, and names the floor it cannot state" do
+        action = build(type: Array, allow_nil: true, allow_empty: false, length: { minimum: ->(_record) { 2 } })
+        expect(action.call(v: nil)).to be_ok
+        expect(action.call(v: []).exception.message).to include("can't be empty")
+        expect(action.call(v: [1])).not_to be_ok
+        expect(action.call(v: [1, 2])).to be_ok
+        expect(action.input_schema_residues.map(&:summary)).to include(a_string_including("(resolved per call)"))
       end
 
       it "accepts a length: range that starts above 0 alongside allow_empty: false" do
@@ -898,9 +909,9 @@ RSpec.describe "nil and empty axes" do
       # declaration at both tiers — on the declaration and inside an entry — so no declaration reaches
       # this collapse carrying one, and the type error is always the whole account of the nil.
       expect { build(type: String, strict: true) }
-        .to raise_error(ArgumentError, /`strict:` inside the declaration on \["v"\]/)
+        .to raise_error(ArgumentError, /`strict:` inside the declaration on :v/)
       expect { build(type: String, presence: { strict: true }) }
-        .to raise_error(ArgumentError, /`strict:` inside presence: on \["v"\]/)
+        .to raise_error(ArgumentError, /`strict:` inside presence: on :v/)
     end
 
     it "collapses the duplicate messages for an entry carrying its own tolerance keys" do

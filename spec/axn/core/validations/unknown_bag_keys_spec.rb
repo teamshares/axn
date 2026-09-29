@@ -384,11 +384,10 @@ RSpec.describe "an unknown key in an axn-owned validator bag" do
           .to raise_error(ArgumentError, /answers a missing key from a Hash default/)
       end
 
-      # The distributing case PRO-3191 already covers stays covered — this doesn't relocate that check,
-      # only joins it.
-      it "leaves the distributing-shape refusal in place" do
+      # A distributing raw shape beside a block would be discarded by it, so the pairing is refused.
+      it "refuses a distributing raw shape: beside a block" do
         expect { build_axn { expects(:rows, type: Array, shape: { members: [] }) { field :a, type: String } } }
-          .to raise_error(ArgumentError, /distributes over an Array's elements/)
+          .to raise_error(ArgumentError, /`shape:` on :rows is declared twice/)
       end
 
       it "still declares a well-formed raw shape: beside a block" do
@@ -427,7 +426,7 @@ RSpec.describe "an unknown key in an axn-owned validator bag" do
 
       it "does not disturb the ordinary (block-free) on: inside shape: message" do
         expect { build_axn { expects :h, type: Hash, shape: { members: [], on: :create } } }
-          .to raise_error(ArgumentError, /`on:` inside shape: on \["h"\]/)
+          .to raise_error(ArgumentError, /`on:` inside shape: on :h/)
       end
 
       # A raw shape's own on:/except_on:/strict: check is scoped to just the `:shape` entry, never the whole

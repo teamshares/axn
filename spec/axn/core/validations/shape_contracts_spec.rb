@@ -874,13 +874,6 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
         expect(nested(raw)[:members].map(&:to_h)).to eq(nested(via_block)[:members].map(&:to_h))
       end
 
-      # A raw `shape:` kwarg naming an Array-typed member's distributing reading is refused outright
-      # (PRO-3191) — the same rule the field level is held to, applied to a duck-typed member position.
-      it "refuses a distributing shape: kwarg at a member position" do
-        expect { declared_with({ type: Array, shape: { members: [leaf] } }) }
-          .to raise_error(ArgumentError, /`shape:` on shape member `m` distributes over an Array's elements/)
-      end
-
       # The BLOCK form still distributes over an Array-typed member's ELEMENTS, and is still canonicalized
       # into the member's own `of:` bag (PRO-3166) rather than staying at the member. The bag names no
       # element class, so the shape it carries gates on nothing — the ANY_CONTAINER sentinel — and its
@@ -1252,69 +1245,35 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
     end
   end
 
-  # `shape:` had one exception to "names the members of this value": on `type: Array` it distributed over
-  # the elements instead, an accident of `of:` once being unable to name an element's own members. PRO-3166
-  # gave `of:` that word (recursively), which made the exception redundant; this retires the raw kwarg
-  # surface that relied on it. The block form is unaffected — an Array has no members of its own, so it has
-  # exactly one honest reading regardless (see the "method_call:" and "array element members" describes
-  # above, all still block-form and all still passing).
-  describe "retiring the distributing shape: (PRO-3191)" do
+  # A raw `shape:` on `type: Array` distributes over the elements, as the block form does: an Array has no
+  # members of its own, so it has exactly one reading.
+  describe "the distributing shape:" do
     def member = Axn::Core::Contract::ShapeConfig.new(field: :sku, validations: { type: String })
 
     describe "a raw shape: kwarg beside type: Array" do
-      it "refuses shape: beside type: Array, of: Hash" do
+      it "validates each element and states the members as the items' properties" do
         sku = member
-        expect { build_axn { expects :rows, type: Array, of: Hash, shape: { members: [sku] } } }
-          .to raise_error(ArgumentError, /`shape:` on :rows distributes over an Array's elements/)
+        klass = build_axn { expects :rows, type: Array, shape: { members: [sku] } }
+
+        expect(klass.call(rows: [{ sku: "x" }])).to be_ok
+        expect(klass.call(rows: [{ sku: 1 }]).exception.message).to include("element at index 0: sku is not a String")
+        expect(klass.input_schema.dig(:properties, :rows, :items)).to include(type: "object", required: ["sku"])
+        expect(klass.input_schema_residues).to be_empty
       end
 
-      it "refuses shape: beside type: Array with no of: at all" do
-        sku = member
-        expect { build_axn { expects :rows, type: Array, shape: { members: [sku] } } }
-          .to raise_error(ArgumentError, /`shape:` on :rows distributes over an Array's elements/)
-      end
-
-      it "refuses shape: beside a scalar of:" do
-        sku = member
-        expect { build_axn { expects :rows, type: Array, of: String, shape: { members: [sku] } } }
-          .to raise_error(ArgumentError, /`shape:` on :rows distributes over an Array's elements/)
-      end
-
-      it "refuses shape: beside an of: bag" do
-        sku = member
-        expect { build_axn { expects :rows, type: Array, of: { klass: Hash }, shape: { members: [sku] } } }
-          .to raise_error(ArgumentError, /`shape:` on :rows distributes over an Array's elements/)
-      end
-
-      it "refuses it on exposes too" do
-        sku = member
-        expect { build_axn { exposes :rows, type: Array, of: Hash, shape: { members: [sku] } } }
-          .to raise_error(ArgumentError, /`shape:` on :rows distributes over an Array's elements/)
-      end
-
-      it "refuses a block-declared member's own raw shape: kwarg" do
-        sku = member
-        expect do
-          build_axn do
-            expects(:row, type: Hash) { field :rows, type: Array, shape: { members: [sku] } }
-          end
-        end.to raise_error(ArgumentError, /`shape:` on shape member `rows` distributes over an Array's elements/)
-      end
-
-      it "no longer silently drops the raw kwarg when a block is also given" do
+      it "refuses it beside a block, which would replace it" do
         sku = member
         expect do
           build_axn do
             expects(:rows, type: Array, shape: { members: [sku] }) { field :sku, type: String }
           end
-        end.to raise_error(ArgumentError, /`shape:` on :rows distributes over an Array's elements/)
+        end.to raise_error(ArgumentError, /`shape:` on :rows is declared twice/)
       end
     end
 
-    # `container: Array` hand-written on a raw shape is never legitimate once the spelling above is refused
-    # — the block form is the only remaining producer of it, and a block never reaches this check. Before
-    # this rule it was a live divergence: the declared member's type was published in the schema and never
-    # enforced (`ShapeValidator`'s Array branch never reaches member validation for a non-Array container).
+    # `container: Array` hand-written on a raw shape beside a type that is not `Array` is a live divergence:
+    # the declared member's type is published in the schema and never enforced (`ShapeValidator`'s Array
+    # branch never reaches member validation for a non-Array container).
     describe "a hand-written container: Array on a raw shape" do
       it "refuses it beside type: Hash" do
         sku = member
@@ -1338,8 +1297,8 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
       end
     end
 
-    # The bag it canonicalizes into, and the block form, are unaffected — a positive control alongside the
-    # refusals above, so the guard is proven not to over-fire on the surviving spellings.
+    # The bag it canonicalizes into, and the block form — a positive control alongside the refusals above, so the
+    # guard is proven not to over-fire on the surviving spellings.
     describe "what still declares" do
       it "still accepts the bag spelling" do
         sku = member
@@ -1372,25 +1331,27 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
       build_axn { expects :f, type: Hash, shape: { members: [member] } }
     end
 
-    it "refuses presence: beside allow_nil:" do
-      expect { raw_member_axn(presence: true, allow_nil: true) }
-        .to raise_error(ArgumentError, /cannot be combined with an explicit `presence:`/)
-    end
-
     it "refuses presence: beside allow_blank:" do
       expect { raw_member_axn(presence: true, allow_blank: true) }
-        .to raise_error(ArgumentError, /cannot be combined with an explicit `presence:`/)
+        .to raise_error(ArgumentError, /`presence:` on .* skips blank values/)
     end
 
-    it "agrees with the block member, which already refused it" do
+    it "agrees with the block member, which refuses it too" do
       expect do
         build_axn do
           expects :f, type: Hash do
-            field :a, presence: true, allow_nil: true
+            field :a, presence: true, allow_blank: true
           end
         end
       end
-        .to raise_error(ArgumentError, /cannot be combined with an explicit `presence:`/)
+        .to raise_error(ArgumentError, /`presence:` on .* skips blank values/)
+    end
+
+    it "accepts presence: beside allow_nil:, which admits nil and still rejects a blank" do
+      klass = raw_member_axn(type: { klass: String }, presence: true, allow_nil: true)
+
+      expect(klass.call(f: { a: nil })).to be_ok
+      expect(klass.call(f: { a: "" })).not_to be_ok
     end
 
     it "still accepts each half on its own" do

@@ -1075,4 +1075,160 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
     end
     expect(unexpected).to be_empty, "these keywords collide without a reconciliation rule:\n  #{unexpected.join("\n  ")}"
   end
+
+  # A record class with a finder that takes any token, so a `model:` field is declarable outside Rails: what
+  # these rows measure is the wire key the model's id shares with another declaration, not the lookup.
+  audit_record = Class.new do
+    def self.fetch(id) = new(id)
+    def initialize(id) = @id = id
+  end
+  define_method(:audit_record) { audit_record }
+
+  # Declarations whose only refusal was that the emitted schema could not state them exactly. Each one is now
+  # legal, so each is held to both inbound directions on its own terms: never refuse a value the runtime accepts,
+  # and name everything accepted that the runtime refuses. Every row is a single declaration (or a `model:`
+  # field and the one declaration claiming its id's wire key), so none of the merge walks above reaches it.
+  #
+  # `model:` routes use a finder that resolves any token, so the id's own type is never what rejects a call
+  # here, and the one `id_type:` row that states a type keeps its payloads inside it (the model id's narrower
+  # type is a stated exception to the exact core).
+  def relaxed_declarations = relaxed_model_id_declarations.merge(relaxed_value_declarations)
+
+  def relaxed_model_id_declarations
+    record = audit_record
+    ids = [1, "s", nil, { detail: "x" }, { detail: 5 }, {}]
+    in_payload = ids.map { |id| { payload: { company_id: id } } } + [{ payload: {} }]
+    {
+      "model id + ungated dotted claim" => [proc {
+        expects :payload, type: Hash
+        expects :company, on: :payload, model: { klass: record, finder: :fetch }
+        expects :detail, on: "payload.company_id", type: String
+      }, in_payload],
+      "model id + gated dotted claim" => [proc {
+        expects :payload, type: Hash
+        expects :company, on: :payload, model: { klass: record, finder: :fetch }
+        expects :detail, on: "payload.company_id", type: String, if: -> { false }
+      }, in_payload],
+      "model id + optional dotted claim" => [proc {
+        expects :payload, type: Hash
+        expects :company, on: :payload, model: { klass: record, finder: :fetch }
+        expects :detail, on: "payload.company_id", type: String, optional: true
+      }, in_payload],
+      "model id + gated shape member with members" => [proc {
+        expects :payload, type: Hash do
+          field :company_id, type: Hash, if: -> { false } do
+            field :detail, type: String
+          end
+        end
+        expects :company, on: :payload, model: { klass: record, finder: :fetch }
+      }, in_payload],
+      "model id + gated Hash shape member" => [proc {
+        expects :payload, type: Hash do
+          field :company_id, type: Hash, if: -> { false }
+        end
+        expects :company, on: :payload, model: { klass: record, finder: :fetch }
+      }, in_payload],
+      "model id + ungated shape member with members" => [proc {
+        expects :payload, type: Hash do
+          field :company_id, type: Hash do
+            field :detail, type: String
+          end
+        end
+        expects :company, on: :payload, model: { klass: record, finder: :fetch }
+      }, in_payload],
+      "model id + top-level sibling a subfield nests under" => [proc {
+        expects :company, model: { klass: record, finder: :fetch }
+        expects :company_id, type: Hash
+        expects :detail, on: "company_id", type: String
+      }, ids.map { |id| { company_id: id } }],
+      # The same implicit key with no `model:` beside it: nothing beneath rejects a value that is not an object.
+      "optional dotted subfield" => [proc {
+        expects :payload, type: Hash
+        expects :detail, on: "payload.company_id", type: String, optional: true
+      }, in_payload],
+      "optional method_call dotted subfield" => [proc {
+        expects :payload, type: Hash
+        expects :size, on: "payload.company_id", type: String, optional: true, method_call: true
+      }, in_payload + [{ payload: { company_id: "abc" } }, { payload: { company_id: [1, 2] } }]],
+      "id_type beside a differently typed sibling" => [proc {
+        expects :company, model: { klass: record, finder: :fetch, id_type: Integer }
+        expects :company_id, type: String
+      }, [{ company_id: 1 }, { company_id: "a" }, { company_id: "" }]],
+      "id_type with no JSON token type" => [proc {
+        expects :company, model: { klass: record, finder: :fetch, id_type: Hash }
+      }, [{ company_id: 1 }, { company_id: "a" }, { company_id: { a: 1 } }]],
+      "id_type Float" => [proc {
+        expects :company, model: { klass: record, finder: :fetch, id_type: Float }
+      }, [{ company_id: 1 }, { company_id: 1.5 }]],
+    }
+  end
+
+  def relaxed_value_declarations
+    sku = Axn::Core::Contract::ShapeConfig.new(field: :sku, validations: { type: { klass: String } })
+    {
+      "inclusion only a tolerated blank can pass" => [proc {
+        expects :n, type: Array, presence: false, inclusion: { in: ["a"], allow_blank: true }
+      }, [[], [1], ["a"], nil].map { |n| { n: } }],
+      "of: klass Array with a shape" => [proc {
+        expects :rows, type: Array, of: { klass: Array, shape: { members: [sku] } }
+      }, [[[{ sku: "a" }]], [[{ sku: 1 }]], [[1]], [{ sku: "a" }], [[]]].map { |rows| { rows: } }],
+      "type Array with a raw shape" => [proc {
+        expects :rows, type: Array, shape: { members: [sku] }
+      }, [[{ sku: "a" }], [{ sku: 1 }], [1], []].map { |rows| { rows: } }],
+      "allow_empty false beside a per-call length floor" => [proc {
+        expects :n, type: String, allow_empty: false, allow_nil: true, length: { minimum: ->(_record) { 2 } }
+      }, ["", nil, "a", "ab"].map { |n| { n: } }],
+      "of: on a union whose one container is Array" => [proc {
+        expects :n, type: [Array, String], of: Integer
+      }, [[1], ["a"], "s", 1, []].map { |n| { n: } }],
+      "of: on a nilable Array union" => [proc {
+        expects :n, type: [Array, NilClass], of: Integer
+      }, [[1], ["a"], nil].map { |n| { n: } }],
+      "allow_nil beside presence" => [proc {
+        expects :n, type: String, allow_nil: true, presence: true
+      }, [nil, "", "a"].map { |n| { n: } } + [{}]],
+      "allow_blank beside presence that overrides it" => [proc {
+        expects :n, type: String, allow_blank: true, presence: { allow_blank: false }
+      }, [nil, "", "a"].map { |n| { n: } }],
+      "allow_nil beside presence in an of: bag" => [proc {
+        expects :n, type: Array, of: { klass: String, allow_nil: true, presence: true }
+      }, [[nil], [""], ["a"]].map { |n| { n: } }],
+      "allow_nil beside presence on a shape member" => [proc {
+        expects :n, type: Hash do
+          field :a, type: String, allow_nil: true, presence: true
+        end
+      }, [{ a: nil }, { a: "" }, { a: "x" }, {}].map { |n| { n: } }],
+    }
+  end
+
+  it "holds each declaration a precision-only refusal used to turn away to both inbound directions" do
+    stricter = []
+    unreported = []
+    checked = 0
+
+    relaxed_declarations.each do |name, (declaration, payloads)|
+      klass = Class.new do
+        include Axn
+        class_eval(&declaration)
+        def call = nil
+      end
+      document = schemer(klass.input_schema)
+      reported = residues_for(klass).any?
+
+      payloads.each do |payload|
+        runtime_ok = klass.call(**payload).ok?
+        document_ok = document.valid?(JSON.parse(JSON.generate(payload)))
+        checked += 1
+        stricter << "#{name}: runtime accepts #{payload.inspect}, document rejects it — #{klass.input_schema.inspect}" if runtime_ok && !document_ok
+        next unless document_ok && !runtime_ok && !reported
+
+        unreported << "#{name}: document accepts #{payload.inspect}, runtime rejects it, and nothing is reported — " \
+                      "#{klass.input_schema.inspect}"
+      end
+    end
+
+    expect(checked).to be > 90
+    expect(stricter).to be_empty, "these documents reject what the runtime accepts:\n  #{stricter.join("\n  ")}"
+    expect(unreported).to be_empty, "these documents accept what the runtime rejects without saying so:\n  #{unreported.join("\n  ")}"
+  end
 end
