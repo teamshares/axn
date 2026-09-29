@@ -40,18 +40,50 @@ require "json"
 # this file gone looking with the wrong tool.
 module SchemaWireAudit
   OMITTED = Object.new.freeze # "the key is not sent at all", distinct from every JSON value including nil
+
+  # One class per cell for the whole run, shared by every example that walks that cell. An axn class is kept alive
+  # once declared, so declaring the same cell once per example multiplied both the run time and the resident memory
+  # of a lane that runs beside others on one CI runner.
+  def self.cells = (@cells ||= {})
+
+  # The gate positions the defaulted walk varies: a default meeting a gated check is reached by the ungated
+  # reading, one entry gate and one declaration gate; the other spellings are the plain walk's to vary.
+  DEFAULTED_GATES = ["ungated", "entry if: false", "declaration if: false"].freeze
 end
 
 RSpec.describe "the emitted schema against runtime truth", :slow do
   # Deliberately not `build_axn`: this needs the class object itself for its schemas, and a fresh one per cell.
-  def declare(direction, decl, value)
+  # An outbound class exposes whatever probe `with_outbound_probe` hands it, so one class serves every value.
+  def declare(direction, decl)
     Class.new do
       include Axn
       direction == :in ? expects(:n, **decl) : exposes(:n, **decl)
-      define_method(:call) { direction == :in ? nil : expose(:n, value) }
+      define_method(:call) { direction == :in ? nil : expose(:n, Thread.current[:schema_wire_audit_probe]) }
     end
   rescue StandardError
     nil # a declaration a guard refuses has no schema to audit; the guards have their own product spec
+  end
+
+  # The inbound class for a cell, declared once per run and keyed by the cell's names. `nil` when a guard refuses
+  # the declaration, cached like any other answer.
+  def inbound_cell(*key)
+    return SchemaWireAudit.cells[key] if SchemaWireAudit.cells.key?(key)
+
+    SchemaWireAudit.cells[key] = declare(:in, yield)
+  end
+
+  def outbound_cell(*key)
+    key = [:out, *key]
+    return SchemaWireAudit.cells[key] if SchemaWireAudit.cells.key?(key)
+
+    SchemaWireAudit.cells[key] = declare(:out, yield)
+  end
+
+  def with_outbound_probe(value)
+    Thread.current[:schema_wire_audit_probe] = value
+    yield
+  ensure
+    Thread.current[:schema_wire_audit_probe] = nil
   end
 
   def types
@@ -181,11 +213,11 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
       probe_values.each do |value|
         next if known_blank_tolerance_divergence?(tolname, value)
 
-        klass = declare(:out, { type: tklass }.merge(vopts).merge(tol), value)
+        klass = outbound_cell(tname, vname, tolname) { { type: tklass }.merge(vopts).merge(tol) }
         next if klass.nil?
 
         result = begin
-          klass.call
+          with_outbound_probe(value) { klass.call }
         rescue StandardError
           next
         end
@@ -223,7 +255,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
     live = 0
 
     each_cell do |tname, tklass, vname, vopts, tolname, tol|
-      klass = declare(:in, { type: tklass }.merge(vopts).merge(tol), nil)
+      klass = inbound_cell(tname, vname, tolname, "ungated") { { type: tklass }.merge(vopts).merge(tol) }
       next if klass.nil?
 
       accepted = probe_values.select do |value|
@@ -291,7 +323,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
       closed_gates.each do |gname, gate|
         next if gname != "ungated" && vopts.empty?
 
-        klass = declare(:in, gate.call({ type: tklass }.merge(vopts)).merge(tol), nil)
+        klass = inbound_cell(tname, vname, tolname, gname) { gate.call({ type: tklass }.merge(vopts)).merge(tol) }
         next if klass.nil?
 
         document = schemer(klass.input_schema)
@@ -328,7 +360,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
       closed_gates.each do |gname, gate|
         next if gname != "ungated" && vopts.empty?
 
-        klass = declare(:in, gate.call({ type: tklass }.merge(vopts)).merge(tol), nil)
+        klass = inbound_cell(tname, vname, tolname, gname) { gate.call({ type: tklass }.merge(vopts)).merge(tol) }
         next if klass.nil?
 
         rendered << "#{tname} / #{vname} / #{tolname} / #{gname}" if JSON.generate(klass.input_schema).match?(/#<[^"]*0x\h+/)
@@ -358,15 +390,15 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
     accepted = 0
 
     each_cell do |tname, tklass, vname, vopts, tolname, tol|
-      closed_gates.each do |gname, gate|
+      closed_gates.slice(*SchemaWireAudit::DEFAULTED_GATES).each do |gname, gate|
         next if gname != "ungated" && vopts.empty?
 
         decl = gate.call({ type: tklass }.merge(vopts)).merge(tol)
-        plain = declare(:in, decl, nil)
+        plain = inbound_cell(tname, vname, tolname, gname) { decl }
         next if plain.nil?
 
         default_variants(tklass, plain).each do |dname, default|
-          klass = declare(:in, decl.merge(default:), nil)
+          klass = declare(:in, decl.merge(default:))
           next if klass.nil?
 
           document = schemer(klass.input_schema)
@@ -414,7 +446,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
 
     tier_one_cells.each do |tname, (tklass, vnames)|
       vnames.each do |vname|
-        klass = declare(:in, { type: tklass }.merge(validators.fetch(vname)), nil)
+        klass = declare(:in, { type: tklass }.merge(validators.fetch(vname)))
         next wrong << "#{tname} / #{vname}: refused at declaration" if klass.nil?
 
         residues = klass.input_schema_residues
@@ -470,7 +502,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
       all_gates.each do |gname, gate|
         next if gname != "ungated" && vopts.empty?
 
-        klass = declare(:in, gate.call({ type: tklass }.merge(vopts)).merge(tol), nil)
+        klass = inbound_cell(tname, vname, tolname, gname) { gate.call({ type: tklass }.merge(vopts)).merge(tol) }
         next if klass.nil?
 
         document = schemer(klass.input_schema)
@@ -519,7 +551,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
         next if no_distinct_wire_form.include?(tname)
 
         validators.each do |vname, vopts|
-          klass = declare(:in, wrap_decl.call({ klass: tklass }.merge(vopts)), nil)
+          klass = declare(:in, wrap_decl.call({ klass: tklass }.merge(vopts)))
           next if klass.nil?
 
           yield "#{pname} / #{tname} / #{vname}", klass, wrap_value
@@ -723,6 +755,14 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
   # `member`/`node` are each optional (PRO-3441): the collision walk below also needs the SIDE-ALONE
   # classes — the same node config or the same shape member, declared with nothing to collide against — so
   # a merged document can be compared to what either declaration means on its own.
+  # The nested walk's class for a member x node row, declared once per run like a flat cell.
+  def nested_cell(mname, nname, member, node)
+    key = [:nested, mname, nname]
+    return SchemaWireAudit.cells[key] if SchemaWireAudit.cells.key?(key)
+
+    SchemaWireAudit.cells[key] = declare_nested(member, node)
+  end
+
   def declare_nested(member, node, preprocess: nil)
     payload_opts = preprocess ? { type: Hash, preprocess: } : { type: Hash }
     Class.new do
@@ -770,7 +810,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
 
     nested_members.each do |mname, member|
       nested_nodes.each do |nname, node|
-        klass = declare_nested(member, node)
+        klass = nested_cell(mname, nname, member, node)
         next if klass.nil?
         next if unrepresentable_deep_drop?(klass)
 
@@ -812,7 +852,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
 
     nested_members.each do |mname, member|
       nested_nodes.each do |nname, node|
-        klass = declare_nested(member, node)
+        klass = nested_cell(mname, nname, member, node)
         next if klass.nil?
         next if unrepresentable_deep_drop?(klass)
 
@@ -848,7 +888,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
 
     nested_members.each do |mname, member|
       nested_nodes.each do |nname, node|
-        plain = declare_nested(member, node)
+        plain = nested_cell(mname, nname, member, node)
         next if plain.nil?
 
         repair = nested_payloads.find do |payload|
@@ -896,7 +936,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
 
     nested_members.each do |mname, member|
       nested_nodes.each do |nname, node|
-        klass = declare_nested(member, node)
+        klass = nested_cell(mname, nname, member, node)
         next if klass.nil?
         next if unrepresentable_deep_drop?(klass)
 
