@@ -121,9 +121,56 @@ RSpec.describe "Values.serialize_value with and without ActiveSupport's json cor
     puts JSON.generate(rendered)
   RUBY
 
-  def render_cases(core_ext:)
+  # The same comparison at a position whose `output_schema` was reflected from a declared Data/Struct, where the
+  # render guard (not only the routing) decides whether a runtime value renders or is refused: the two must agree
+  # on raise-versus-render, and on the output, in both environments.
+  def guarded_script = <<~'RUBY'
+    require "active_support" and require "active_support/core_ext/object/json" if ENV["CORE_EXT"] == "1"
+    require "bigdecimal"; require "json"; require "axn"
+    AMT = BigDecimal("1.5")
+    declared_makers = {
+      "Data" => -> { Data.define(:name) },
+      "Struct" => -> { Struct.new(:name) },
+      "Data+Enumerable declared" => -> { Data.define(:name) { include Enumerable; def each(&) = [name].each(&) } },
+    }
+    subclass_variants = {
+      "exact" => ->(k) { k },
+      "plain subclass" => ->(k) { Class.new(k) },
+      "subclass+Enumerable" => ->(k) { Class.new(k) { include Enumerable; def each(&) = [name].each(&) } },
+    }
+    to_h_vis = { "inherited" => ->(_) {}, "public" => ->(c) { c.send(:define_method, :to_h) { { name: name } } },
+                 "protected" => ->(c) { c.send(:define_method, :to_h) { { name: name } }; c.send(:protected, :to_h) },
+                 "private" => ->(c) { c.send(:define_method, :to_h) { { name: name } }; c.send(:private, :to_h) } }
+    as_json_v = { "no as_json" => ->(_) {}, "own as_json" => ->(c) { c.send(:define_method, :as_json) { |*| { name: name } } } }
+    out = {}
+    declared_makers.each do |dn, dmk|
+      declared = dmk.call
+      action = Class.new do
+        include Axn; auto_log false; expects :value
+        exposes(:w, type: declared) { field :name, type: BigDecimal }
+        def call = expose(w: value)
+      end
+      subclass_variants.each do |sn, sv|
+        to_h_vis.each do |tn, tv|
+          as_json_v.each do |an, av|
+            klass = sv.call(declared); (klass.equal?(declared) ? nil : (tv.call(klass); av.call(klass)))
+            next if klass.equal?(declared) && (tn != "inherited" || an != "no as_json")
+            value = klass.new(AMT)
+            out["declared #{dn} | #{sn} | to_h #{tn} | #{an}"] = begin
+              JSON.generate(Axn::Extensions::Serialization.render(action.call(value:)))
+            rescue => e
+              "raised #{e.class}"
+            end
+          end
+        end
+      end
+    end
+    puts JSON.generate(out)
+  RUBY
+
+  def render_cases(core_ext:, script: cases_script)
     stdout, stderr, process = Open3.capture3(
-      { "CORE_EXT" => core_ext ? "1" : "0" }, RbConfig.ruby, "-Ilib", "-e", cases_script, chdir: File.expand_path("../../../..", __dir__)
+      { "CORE_EXT" => core_ext ? "1" : "0" }, RbConfig.ruby, "-Ilib", "-e", script, chdir: File.expand_path("../../../..", __dir__)
     )
     raise "subprocess failed: #{stderr}" unless process.success?
 
@@ -138,6 +185,18 @@ RSpec.describe "Values.serialize_value with and without ActiveSupport's json cor
     expect(with.size).to be > 300 # the generated product plus the hand-written cases, not an empty comparison
     differing = without.keys.reject { |k| without[k] == with[k] }.to_h { |k| [k, { without: without[k], with: with[k] }] }
     expect(differing).to eq({})
+  end
+
+  it "raises or renders identically at a guarded position, in a process with the core_ext and one without" do
+    without = render_cases(core_ext: false, script: guarded_script)
+    with = render_cases(core_ext: true, script: guarded_script)
+
+    expect(without.keys).to eq(with.keys)
+    expect(with.size).to be > 40
+    differing = without.keys.reject { |k| without[k] == with[k] }.to_h { |k| [k, { without: without[k], with: with[k] }] }
+    expect(differing).to eq({})
+    expect(with.values).to include(a_string_matching(/UnserializableValue/)) # the guard refusals are exercised
+    expect(with.values).to include(a_string_matching(/\A\{/)) # and so are the clean renders
   end
 
   it "never fails with a raw Ruby error, only with the intended UnserializableValue refusal" do
