@@ -70,8 +70,9 @@ RSpec.describe "constructors of a stored validations bag" do
   #
   # Adding a site still requires auditing both the origin of every entry and its consumers.
   EXPECTED_BAG_DERIVATIONS = {
-    "lib/axn/internal/reflection/schema.rb" => 4,
+    "lib/axn/internal/reflection/schema.rb" => 3,
     "lib/axn/internal/reflection/schema/merge.rb" => 4,
+    "lib/axn/internal/reflection/schema/requiredness.rb" => 1,
   }.freeze
 
   DERIVATION_PATTERN = /\.with\((?:[^()]|\([^()]*\))*\bvalidations:/
