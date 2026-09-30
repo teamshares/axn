@@ -2234,7 +2234,7 @@ module Axn
         end
 
         # Only the declaration's own gate skips the lookup: an inbound `model:` bag never carries one
-        # (`Contract#_check_inbound_model_bag!` refuses it).
+        # (`Contract#_reject_model_bag_gates_and_tolerances!` refuses it).
         def model_lookup_gated?(config)
           Internal::FieldConfig::CONDITIONAL_GATE_KEYS.any? { |key| config.validations.key?(key) }
         end

@@ -535,7 +535,7 @@ module Axn
           _validate_reader_names!(reader_names)
 
           validations, metadata = _partition_field_options(fields, **)
-          _check_inbound_model_bag!(validations, fields)
+          _reject_model_bag_gates_and_tolerances!(validations, fields, direction: :expects)
           # Ahead of the block form's own write to this slot — reads the caller's own `shape:`, not what a block
           # would replace it with (see `_reject_raw_shape_before_block_overwrite!`).
           _reject_raw_shape_before_block_overwrite!(validations, "`shape:` on #{_declared_fields_label(fields)}", _declared_fields_label(fields),
@@ -625,6 +625,7 @@ module Axn
           _reject_dotted_field_name!(fields, on: nil, kind: "exposes")
 
           validations, metadata = _partition_field_options(fields, **)
+          _reject_model_bag_gates_and_tolerances!(validations, fields, direction: :exposes)
 
           # `exposes` takes no `on:` parameter, so the key arrives in the validations bag and would then be
           # absorbed by `_parse_field_configs`' subfield-parent parameter — stored as `config.on` on an outbound
@@ -1405,11 +1406,14 @@ module Axn
         # real problem, and `_reject_unknown_bag_keys!` holds them out of what it advertises via
         # `UNADVERTISED_BAG_KEYS`.
         #
-        # `if:`/`unless:`/`allow_nil:`/`allow_blank:` arrive with the shared-option union and stand for an
-        # `exposes` bag. An `expects` bag refuses them first and is judged against `INBOUND_MODEL_OPTION_KEYS`
-        # (`_check_inbound_model_bag!`).
-        MODEL_OPTION_KEYS = (Set.new(%i[klass finder not_found_on id_type message except_on]) |
-                             Axn::Validation::Base.shared_validation_option_keys).freeze
+        # `if:`/`unless:`/`allow_nil:`/`allow_blank:` are subtracted from the shared-option union: they belong on
+        # the declaration, and `_reject_model_bag_gates_and_tolerances!` refuses them inside the bag first, in
+        # both directions, with a message naming the declaration spelling.
+        MODEL_BAG_GATE_KEYS = %i[if unless].freeze
+        MODEL_BAG_TOLERANCE_KEYS = %i[allow_nil allow_blank].freeze
+        MODEL_OPTION_KEYS = ((Set.new(%i[klass finder not_found_on id_type message except_on]) |
+                              Axn::Validation::Base.shared_validation_option_keys) -
+                             MODEL_BAG_GATE_KEYS - MODEL_BAG_TOLERANCE_KEYS).freeze
 
         # What a `type:` bag may carry. `klass:` is the type check itself; `coerce:` opts into coercion
         # (`_expand_coerce_sugar!` writes it, and an author may write it directly inside the bag —
@@ -2220,51 +2224,54 @@ module Axn
                 ":#{id_key} reader for the raw id; drop the explicit :#{id_key}."
         end
 
-        # `if:`/`unless:`/`allow_nil:`/`allow_blank:` inside an inbound `model:` bag, refused by key presence (a
-        # blank `if: nil` included) at every `expects` position, top-level and dotted `on:` alike. Inside the bag
-        # they reach only `ModelValidator`, never the lookup: `FieldResolvers::Model` finds the record whenever
-        # anything reads the field, the presence check on a required field included. So a bag gate skips the
-        # record-type check, the record/id match and the not-found report while a required field still looks up
-        # and fails "not found", and the tolerance keys change nothing, except `allow_blank: false`, which makes
-        # an `optional:` field required again. The declaration's own `if:`/`unless:`/`optional:` are the
-        # spellings that do what these look like. An exposure has no lookup, and there a bag gate skips only the
-        # record-type check while presence still applies, which is a reading of its own, so its bag is not judged
-        # here.
+        # `if:`/`unless:`/`allow_nil:`/`allow_blank:` inside a `model:` bag, refused by key presence (a blank
+        # `if: nil` included) at every `expects` and `exposes` position: one rule, gates and tolerances go on the
+        # declaration. Inside the bag they reach only `ModelValidator`, never presence or the lookup.
         #
-        # The bag's key whitelist runs here too, against the inbound set, so an unknown-key refusal on `expects`
-        # never advertises the four keys this refuses. `on:`/`except_on:`/`strict:` stay in that set for the
-        # dedicated guards that name them, which run later.
-        def _check_inbound_model_bag!(validations, fields)
+        # On `expects`, `FieldResolvers::Model` finds the record whenever anything reads the field, the presence
+        # check on a required field included, so a bag gate skips the record-type check, the record/id match and
+        # the not-found report while a required field still looks up and fails "not found". On `exposes` there is
+        # no lookup, and a bag gate skips only the record-type check while presence is still enforced. In both,
+        # `allow_nil:` and `allow_blank: true` admit nothing the field does not already admit, and
+        # `allow_blank: false` makes an `optional:` field required again. The declaration's own
+        # `if:`/`unless:`/`optional:` are the spellings that do what these look like.
+        #
+        # Ahead of the bag's key whitelist (`MODEL_OPTION_KEYS`, which omits the four) and its
+        # `on:`/`except_on:`/`strict:` refusals, so the author reads why rather than "unsupported".
+        def _reject_model_bag_gates_and_tolerances!(validations, fields, direction:)
           bag = Internal::ShapeGraph.hash_or_nil(validations[:model])
           return if nil.equal?(bag)
 
-          gates = Internal::FieldConfig::CONDITIONAL_GATE_KEYS.select { |key| Internal::ShapeGraph.carries_key?(bag, key) }
+          gates = MODEL_BAG_GATE_KEYS.select { |key| Internal::ShapeGraph.carries_key?(bag, key) }
           tolerances = MODEL_BAG_TOLERANCE_KEYS.select { |key| Internal::ShapeGraph.carries_key?(bag, key) }
+          return if gates.empty? && tolerances.empty?
+
           where = _declared_fields_label(fields)
           sentences = []
-          unless gates.empty?
-            sentences << "#{_model_bag_keys_label(gates)} inside model: on #{where} only gates the record checks " \
-                         "(the record type, the record/id match, the not-found report), never the lookup, which runs " \
-                         "whenever the field is read — the presence check on a required field included. Put the " \
-                         "condition on the declaration: `expects #{where}, model: …, #{gates.first}: …`."
-          end
+          sentences << _model_bag_gate_sentence(gates, where, direction) unless gates.empty?
           unless tolerances.empty?
-            sentences << "#{_model_bag_keys_label(tolerances)} inside model: on #{where} does not make the field " \
-                         "optional: `allow_nil:` and `allow_blank: true` there change nothing, and `allow_blank: false` " \
-                         "makes an `optional:` field required again. Declare the tolerance on the field: " \
-                         "`expects #{where}, model: …, optional: true`."
+            sentences << "#{_model_bag_keys_label(tolerances)} inside model: on #{where} does not make the " \
+                         "#{direction == :expects ? 'field' : 'exposure'} optional: `allow_nil:` and `allow_blank: true` " \
+                         "there admit nothing it does not already admit, and `allow_blank: false` makes an `optional:` " \
+                         "one required again. Declare the tolerance on the declaration: `#{direction} #{where}, model: …, " \
+                         "optional: true`."
           end
-          raise ArgumentError, sentences.join(" ") unless sentences.empty?
-
-          _reject_unknown_bag_keys!(bag, INBOUND_MODEL_OPTION_KEYS, option: "model:")
+          raise ArgumentError, sentences.join(" ")
         end
 
-        MODEL_BAG_TOLERANCE_KEYS = %i[allow_nil allow_blank].freeze
-        private_constant :MODEL_BAG_TOLERANCE_KEYS
-
-        # `MODEL_OPTION_KEYS` less the four keys an inbound bag refuses (`_check_inbound_model_bag!`).
-        INBOUND_MODEL_OPTION_KEYS = (MODEL_OPTION_KEYS - Internal::FieldConfig::CONDITIONAL_GATE_KEYS - MODEL_BAG_TOLERANCE_KEYS).freeze
-        private_constant :INBOUND_MODEL_OPTION_KEYS
+        def _model_bag_gate_sentence(gates, where, direction)
+          keys = _model_bag_keys_label(gates)
+          fix = "Put the condition on the declaration: `#{direction} #{where}, model: …, #{gates.first}: …`"
+          if direction == :expects
+            "#{keys} inside model: on #{where} only gates the record checks (the record type, the record/id " \
+              "match, the not-found report), never the lookup, which runs whenever the field is read — the presence " \
+              "check on a required field included. #{fix}."
+          else
+            "#{keys} inside model: on #{where} only gates the record-type check: presence is still enforced, so a " \
+              "nil exposure fails whatever the condition says. #{fix}, which gates both (or add `optional: true` " \
+              "if only the requirement should go)."
+          end
+        end
 
         def _model_bag_keys_label(keys) = keys.map { |key| "`#{key}:`" }.join(" / ")
 

@@ -249,12 +249,12 @@ In addition to the [standard ActiveModel validations](https://guides.rubyonrails
 
     **The `model:` bag only accepts the keys above** — `klass:`, `finder:`, `not_found_on:`, `id_type:`, `message:` — and anything else, a misspelled `finder:` or a `class:` written for `klass:` included, raises `ArgumentError` at declaration rather than declaring cleanly and being ignored.
 
-    **`if:`/`unless:`/`allow_nil:`/`allow_blank:` belong on the declaration, not inside the bag.** On `expects`, all four raise `ArgumentError` inside `model:`, even with a blank value like `if: nil`. Inside the bag they reach only the record checks (the record's type, the record/id match, the not-found report) and never the lookup, which runs whenever the field is read, including by a required field's presence check. So `model: { klass: Company, if: -> { … } }` still looks up and fails "Company not found". The tolerance keys either change nothing, or (`allow_blank: false`) make an `optional:` field required again. Write the condition or the tolerance on the declaration instead:
+    **`if:`/`unless:`/`allow_nil:`/`allow_blank:` belong on the declaration, never inside the bag.** On both `expects` and `exposes`, all four raise `ArgumentError` inside `model:`, even with a blank value like `if: nil`. Inside the bag they reach only the record checks, never presence or the lookup. On `expects` the lookup runs whenever the field is read, including by a required field's presence check, so `model: { klass: Company, if: -> { … } }` still looks up and fails "Company not found". On `exposes` a bag gate skips only the record-type check, so a nil exposure still fails. The tolerance keys either admit nothing the field didn't already admit, or (`allow_blank: false`) make an `optional:` field required again. Write the condition or the tolerance on the declaration instead:
     ```ruby
     expects :company, model: { klass: Company }, if: -> { billing_enabled? }
     expects :company, model: { klass: Company }, optional: true
+    exposes :company, model: { klass: Company }, optional: true
     ```
-    `exposes` has no lookup, so its `model:` bag still takes `if:`/`unless:`: there a bag gate skips only the record-type check, while the exposure stays required.
 
 * `confirmation: true` - declares a companion input, `<field>_confirmation`, and fails unless it matches the field's actual value
   * Note this departs from ActiveModel, which lets an omitted confirmation pass. See [Confirmation pairs](#confirmation) for the details.

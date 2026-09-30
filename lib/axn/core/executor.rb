@@ -1743,7 +1743,7 @@ module Axn
       # the model-consistency check (which lives outside AM) must waive too — otherwise a gated-off model
       # field would still raise on a record/id conflict, the one check that survives a closed gate. Only the
       # declaration's own if:/unless: can gate it: an inbound `model:` bag never carries a gate of its own
-      # (`Contract#_check_inbound_model_bag!` refuses one). Key presence is checked first, and the `source` is
+      # (`Contract#_reject_model_bag_gates_and_tolerances!` refuses one). Key presence is checked first, and the `source` is
       # yielded lazily, so an ungated config constructs nothing and resolves nothing — zero cost off the
       # gated path.
       def _model_gate_closed?(config)

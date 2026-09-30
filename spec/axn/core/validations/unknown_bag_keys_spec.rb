@@ -136,25 +136,19 @@ RSpec.describe "an unknown key in an axn-owned validator bag" do
           .to raise_error(ArgumentError, /`strict:` inside model:/)
       end
 
-      it "refuses if:/unless:/allow_nil:/allow_blank: on an expects, naming every one at once" do
+      # A dedicated refusal names why these belong on the declaration, in both directions, rather than calling
+      # them unsupported.
+      it "refuses if:/unless:/allow_nil:/allow_blank: with the dedicated message, naming every one at once" do
         klass = lead_class
 
-        expect do
-          build_axn { expects :lead, model: { klass:, if: -> { true }, unless: -> { false }, allow_nil: true, allow_blank: true } }
-        end.to raise_error(ArgumentError) { |error|
-          expect(error.message).to start_with("`if:` / `unless:` inside model: on :lead only gates the record checks")
-            .and include(" `allow_nil:` / `allow_blank:` inside model: on :lead does not make the field optional")
-        }
-      end
-
-      # An exposure has no lookup: a bag gate there skips only the record-type check while presence still
-      # applies, which is a reading of its own.
-      it "declares clean with if:/unless:/allow_nil:/allow_blank: on an exposes" do
-        klass = lead_class
-
-        expect do
-          build_axn { exposes :lead, model: { klass:, if: -> { true }, unless: -> { false }, allow_nil: true, allow_blank: true } }
-        end.not_to raise_error
+        { expects: "field", exposes: "exposure" }.each do |direction, noun|
+          expect do
+            build_axn { public_send(direction, :lead, model: { klass:, if: -> { true }, unless: -> { false }, allow_nil: true, allow_blank: true }) }
+          end.to raise_error(ArgumentError) { |error|
+            expect(error.message).to start_with("`if:` / `unless:` inside model: on :lead only gates the record")
+              .and include(" `allow_nil:` / `allow_blank:` inside model: on :lead does not make the #{noun} optional")
+          }
+        end
       end
 
       it "does not advertise on:/except_on:/strict: as supported" do
@@ -456,8 +450,14 @@ RSpec.describe "an unknown key in an axn-owned validator bag" do
   # legal `if:`/`unless:`/`allow_nil:`/`allow_blank:`/`except_on:` into an unknown key in any of the four
   # bags, and the `(supported: …)` list must never recommend a key a dedicated guard refuses on sight.
   describe "the four vocabularies" do
+    # `model:` holds out exactly the gate and tolerance keys, which belong on the declaration and are refused
+    # inside the bag by a dedicated message.
+    it "model: stays a superset of ActiveModel's shared validation options, less its gates and tolerances" do
+      missing = Axn::Validation::Base.shared_validation_option_keys.to_a - Axn::Core::Contract::ClassMethods::MODEL_OPTION_KEYS.to_a
+      expect(missing).to contain_exactly(:if, :unless, :allow_nil, :allow_blank)
+    end
+
     {
-      model: Axn::Core::Contract::ClassMethods::MODEL_OPTION_KEYS,
       type: Axn::Core::Contract::ClassMethods::TYPE_OPTION_KEYS,
       validate: Axn::Core::Contract::ClassMethods::VALIDATE_OPTION_KEYS,
       shape: Axn::Core::Contract::ClassMethods::SHAPE_OPTION_KEYS,
