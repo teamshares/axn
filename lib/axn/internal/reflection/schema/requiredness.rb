@@ -34,10 +34,10 @@ module Axn
           NodeAnnotation = Data.define(:required, :nullable)
 
           # One bottom-up pass over the whole subfield tree, computed once from build_input and threaded
-          # through every emission site below (apply_nested_subfields!/apply_children!/apply_implicit_node!/
-          # apply_model_id_requiredness!) instead of each of them independently re-walking the subtree via
-          # subtree_requires_presence?/required_child? — the repeated-recomputation pattern that let a
-          # dropped/blocked deep shape agree at some sites but not others.
+          # through every emission site (apply_nested_subfields!/apply_children!/apply_implicit_node! in
+          # `schema.rb`, apply_model_id_requiredness! in `ModelId`) instead of each of them independently
+          # re-walking the subtree via subtree_requires_presence?/required_child? — the repeated-recomputation
+          # pattern that let a dropped/blocked deep shape agree at some sites but not others.
           # `compare_by_identity`: SubfieldTree::Node is a plain Data value, so identity (not #==/#hash on its
           # contents) is what distinguishes one tree position from another.
           def derive_annotations(roots, satisfiability: false)
