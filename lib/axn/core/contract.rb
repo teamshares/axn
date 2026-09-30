@@ -2246,31 +2246,36 @@ module Axn
           tolerances = MODEL_BAG_TOLERANCE_KEYS.select { |key| Internal::ShapeGraph.carries_key?(bag, key) }
           return if gates.empty? && tolerances.empty?
 
-          where = _declared_fields_label(fields)
-          sentences = []
-          sentences << _model_bag_gate_sentence(gates, where, direction) unless gates.empty?
-          unless tolerances.empty?
-            sentences << "#{_model_bag_keys_label(tolerances)} inside model: on #{where} does not make the " \
-                         "#{direction == :expects ? 'field' : 'exposure'} optional: `allow_nil:` and `allow_blank: true` " \
-                         "there admit nothing it does not already admit, and `allow_blank: false` makes an `optional:` " \
-                         "one required again. Declare the tolerance on the declaration: `#{direction} #{where}, model: …, " \
-                         "optional: true`."
-          end
-          raise ArgumentError, sentences.join(" ")
+          raise ArgumentError, _model_bag_refusal(gates, tolerances, _declared_fields_label(fields), direction)
         end
 
-        def _model_bag_gate_sentence(gates, where, direction)
-          keys = _model_bag_keys_label(gates)
-          fix = "Put the condition on the declaration: `#{direction} #{where}, model: …, #{gates.first}: …`"
-          if direction == :expects
-            "#{keys} inside model: on #{where} only gates the record checks (the record type, the record/id " \
-              "match, the not-found report), never the lookup, which runs whenever the field is read — the presence " \
-              "check on a required field included. #{fix}."
-          else
-            "#{keys} inside model: on #{where} only gates the record-type check: presence is still enforced, so a " \
-              "nil exposure fails whatever the condition says. #{fix}, which gates both (or add `optional: true` " \
-              "if only the requirement should go)."
+        # The gist first (which keys, where), then the fix, then why. One message whatever mix of keys is present.
+        def _model_bag_refusal(gates, tolerances, where, direction)
+          keys = gates + tolerances
+          declaration = "#{direction} #{where}, model: …"
+          fixes = []
+          reasons = []
+          unless gates.empty?
+            fixes << "put the condition on the declaration: `#{declaration}, #{gates.first}: …`"
+            reasons << if direction == :expects
+                         "Inside the bag a gate reaches only the record checks (the record type, the record/id match, " \
+                           "the not-found report), never the lookup, which runs whenever the field is read, including " \
+                           "by a required field's presence check."
+                       else
+                         "Inside the bag a gate reaches only the record-type check, while presence is still enforced, " \
+                           "so a nil exposure fails whatever the condition says."
+                       end
           end
+          unless tolerances.empty?
+            fixes << "declare the tolerance #{fixes.empty? ? 'on the declaration' : 'there too'}: `#{declaration}, optional: true`"
+            subject = direction == :expects ? "field" : "exposure"
+            reasons << "`allow_nil:` and `allow_blank: true` inside the bag admit nothing the #{subject} does not " \
+                       "already admit, and `allow_blank: false` makes an `optional:` #{subject} required again."
+          end
+          fixes[0] += " (or `optional: true` if only the requirement should go)" if direction == :exposes && tolerances.empty?
+
+          "#{_model_bag_keys_label(keys)} #{keys.one? ? "isn't" : "aren't"} allowed inside `model:` on #{direction} " \
+            "#{where} — #{fixes.join('; ')}. #{reasons.join(' ')}"
         end
 
         def _model_bag_keys_label(keys) = keys.map { |key| "`#{key}:`" }.join(" / ")

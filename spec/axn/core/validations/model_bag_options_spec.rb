@@ -13,22 +13,22 @@ RSpec.describe "a gate or tolerance key inside a model: bag" do
   end
 
   define_method(:expected_message) do |direction, key|
+    head = "`#{key}:` isn't allowed inside `model:` on #{direction} :company — "
     if %i[if unless].include?(key)
-      fix = "Put the condition on the declaration: `#{direction} :company, model: …, #{key}: …`"
+      fix = "put the condition on the declaration: `#{direction} :company, model: …, #{key}: …`"
       if direction == :expects
-        "`#{key}:` inside model: on :company only gates the record checks (the record type, the record/id match, " \
-          "the not-found report), never the lookup, which runs whenever the field is read — the presence check on " \
-          "a required field included. #{fix}."
+        "#{head}#{fix}. Inside the bag a gate reaches only the record checks (the record type, the record/id match, " \
+          "the not-found report), never the lookup, which runs whenever the field is read, including by a required " \
+          "field's presence check."
       else
-        "`#{key}:` inside model: on :company only gates the record-type check: presence is still enforced, so a " \
-          "nil exposure fails whatever the condition says. #{fix}, which gates both (or add `optional: true` if " \
-          "only the requirement should go)."
+        "#{head}#{fix} (or `optional: true` if only the requirement should go). Inside the bag a gate reaches only " \
+          "the record-type check, while presence is still enforced, so a nil exposure fails whatever the condition says."
       end
     else
-      "`#{key}:` inside model: on :company does not make the #{direction == :expects ? 'field' : 'exposure'} " \
-        "optional: `allow_nil:` and `allow_blank: true` there admit nothing it does not already admit, and " \
-        "`allow_blank: false` makes an `optional:` one required again. Declare the tolerance on the declaration: " \
-        "`#{direction} :company, model: …, optional: true`."
+      subject = direction == :expects ? "field" : "exposure"
+      "#{head}declare the tolerance on the declaration: `#{direction} :company, model: …, optional: true`. " \
+        "`allow_nil:` and `allow_blank: true` inside the bag admit nothing the #{subject} does not already admit, " \
+        "and `allow_blank: false` makes an `optional:` #{subject} required again."
     end
   end
 
@@ -96,11 +96,23 @@ RSpec.describe "a gate or tolerance key inside a model: bag" do
       .to raise_error(ArgumentError, expected_message(:exposes, :if))
   end
 
-  it "names every offending key in one refusal" do
+  it "names every offending key in one refusal, gist first, then each fix, then why" do
     expect { build_axn { expects :company, model: { klass: Company, allow_nil: true, if: -> { true }, unless: :x? } } }
-      .to raise_error(ArgumentError, %r{\A`if:` / `unless:` inside model: .* `allow_nil:` inside model: })
+      .to raise_error(ArgumentError) { |error|
+        expect(error.message).to start_with(
+          "`if:` / `unless:` / `allow_nil:` aren't allowed inside `model:` on expects :company — put the condition on " \
+          "the declaration: `expects :company, model: …, if: …`; declare the tolerance there too: " \
+          "`expects :company, model: …, optional: true`. Inside the bag a gate reaches only the record checks",
+        ).and end_with("makes an `optional:` field required again.")
+      }
     expect { build_axn { exposes :company, model: { klass: Company, allow_blank: true, unless: :x? } } }
-      .to raise_error(ArgumentError, /\A`unless:` inside model: .* `allow_blank:` inside model: /)
+      .to raise_error(ArgumentError) { |error|
+        expect(error.message).to start_with(
+          "`unless:` / `allow_blank:` aren't allowed inside `model:` on exposes :company — put the condition on the " \
+          "declaration: `exposes :company, model: …, unless: …`; declare the tolerance there too: " \
+          "`exposes :company, model: …, optional: true`. Inside the bag a gate reaches only the record-type check",
+        ).and end_with("makes an `optional:` exposure required again.")
+      }
   end
 
   it "advertises only the keys a model: bag accepts on an unknown key" do

@@ -145,8 +145,9 @@ RSpec.describe "an unknown key in an axn-owned validator bag" do
           expect do
             build_axn { public_send(direction, :lead, model: { klass:, if: -> { true }, unless: -> { false }, allow_nil: true, allow_blank: true }) }
           end.to raise_error(ArgumentError) { |error|
-            expect(error.message).to start_with("`if:` / `unless:` inside model: on :lead only gates the record")
-              .and include(" `allow_nil:` / `allow_blank:` inside model: on :lead does not make the #{noun} optional")
+            expect(error.message).to start_with("`if:` / `unless:` / `allow_nil:` / `allow_blank:` aren't allowed inside " \
+                                                "`model:` on #{direction} :lead — put the condition on the declaration")
+              .and include("admit nothing the #{noun} does not already admit")
           }
         end
       end

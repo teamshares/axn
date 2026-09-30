@@ -722,7 +722,7 @@ RSpec.describe "Axn class-level schema reflection" do
       stub_const("LookupCo", Struct.new(:id) { def self.find(id) = id == 1 ? new(id) : nil })
 
       expect { build_axn { expects :company, model: { klass: LookupCo, finder: :find, id_type: Integer, if: nil }, if: -> { false } } }
-        .to raise_error(ArgumentError, /\A`if:` inside model: on :company only gates the record checks/)
+        .to raise_error(ArgumentError, /\A`if:` isn't allowed inside `model:` on expects :company — /)
     end
 
     # A JSON number arrives as an Integer or a Float, and `"number"` cannot say which a field wants, so any numeric
