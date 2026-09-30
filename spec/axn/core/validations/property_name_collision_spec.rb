@@ -2944,7 +2944,9 @@ RSpec.describe "declaration-time property name collisions" do
       describe "a config whose emitted schema is built from a reduced view of it" do
         def gated_type_axn(klass, direction, gate: true)
           member = Axn::Core::Contract::ShapeConfig.new(field: :keep, validations: {})
-          shape = { members: [member], container: klass }
+          # Beside a gated type the container is judged with the class check possibly skipped, so the Hash stands; an
+          # ungated Data type needs a container it covers.
+          shape = { members: [member], container: gate ? Hash : klass }
           type = gate ? { klass:, if: :flag } : { klass: }
           build_axn { send(direction, :x, optional: true, shape:, type:) }
         end

@@ -1364,10 +1364,35 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
           .to raise_error(ArgumentError, /beside `type: Object` — .*`type: Object` admits values that aren't, which skip them\.\z/)
       end
 
-      it "does not claim the members are never checked beside a gated type:, which a closed gate skips" do
+      # The rule weighs the type against the container, so it stands down where the two can part: a `type:` gated on
+      # its own skips its check on the calls it closes while the shape still runs.
+      it "stands down beside a type: gated on its own, where the shape runs without the class check" do
+        length = Axn::Core::Contract::ShapeConfig.new(field: :length, validations: { type: { klass: Integer } }, method_call: true)
+        klass = build_axn do
+          def hash_mode? = false
+          expects :value, type: { klass: Hash, if: :hash_mode? }, shape: { container: String, members: [length] }
+        end
+
+        expect(klass.call(value: "abc")).to be_ok
+        expect(klass.call(value: "abcd")).to be_ok
+        expect(klass.input_schema.dig(:properties, :value)).not_to have_key(:properties)
+      end
+
+      # A declaration-level gate opens and closes both entries together, and a gate of the shape's own only narrows it
+      # to calls the class check also runs on, so both still refuse; so do the single-entry refusals under any gate.
+      it "still refuses under a declaration gate, a gate of the shape's own, and at the single-entry refusals" do
         sku = member
-        expect { build_axn { expects :val, type: { klass: Hash, if: -> { true } }, shape: { container: Data.define(:x), members: [sku] } } }
-          .to raise_error(ArgumentError, /admits values that aren't, which skip them\.\z/)
+        point = Data.define(:x)
+        expect { build_axn { expects :val, type: Hash, shape: { container: point, members: [sku] }, if: -> { false } } }
+          .to raise_error(ArgumentError, /they are never checked\.\z/)
+        expect { build_axn { expects :val, type: Hash, shape: { container: point, members: [sku], if: -> { false } } } }
+          .to raise_error(ArgumentError, /they are never checked\.\z/)
+        expect { build_axn { expects :val, shape: { container: Hash, members: [sku] }, if: -> { false } } }
+          .to raise_error(ArgumentError, /without a `type:`/)
+        expect { build_axn { expects :val, type: Array, of: { klass: Array, shape: { container: Hash, members: [sku] }, if: -> { false } } } }
+          .to raise_error(ArgumentError, /beside `klass: Array`/)
+        expect { build_axn { expects(:val, type: Hash, shape: { members: [sku], if: -> { false } }) { field :a, type: String } } }
+          .to raise_error(ArgumentError, /isn't allowed beside a `do ... end` block/)
       end
 
       it "refuses it at a shape member, a raw member, an of: bag and a map axis" do

@@ -342,7 +342,7 @@ module Axn
             return EVERY_VALUE_REACH if kinds.all?(:any) && (kinds.any? || container_holds_every_value?(container))
 
             wire = wire_classes_admitted(tokens)
-            return no_wire_reach(kinds, opaque_is_object) if wire.empty?
+            return no_wire_reach(kinds, opaque_is_object) if wire.empty? && kinds.any?
 
             checked = wire.select { |klass| container_reads?(klass, container) }
             return nil unless checked == [::Hash]
@@ -362,7 +362,11 @@ module Axn
             OBJECT_REACH if opaque_is_object && (kinds - %i[object opaque]).empty?
           end
 
+          # A position declaring no class (or whose `type:` is gated, and so dropped from the gate-closed validations
+          # reflection reads) admits every wire value.
           def wire_classes_admitted(tokens)
+            return WIRE_CLASSES if tokens.empty?
+
             WIRE_CLASSES.select { |wire| tokens.any? { |token| token_admits?(token, wire) } }
           end
 

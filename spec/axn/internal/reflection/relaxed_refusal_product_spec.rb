@@ -147,24 +147,30 @@ module RelaxedRefusalProduct
                      "[Hash,Data]" => "[Hash, #{P}::Point]", "[String,Symbol]" => "[String, Symbol]" },
              container: { "cArray" => "Array", "cHash" => "Hash", "c-" => nil, "cData" => "#{P}::Point", "cObject" => "Object",
                           "cSymbol" => "Symbol" },
-             req: { "req" => "", "optional" => ", optional: true" }, gate: { "ungated" => "", "closed" => ", if: -> { false }" },
+             req: { "req" => "", "optional" => ", optional: true" },
+             # Where the gate sits — [declaration, the `type:` entry's own, the shape entry's own] — since a refusal
+             # weighing the type against the container stands down only where the two can part.
+             gate: { "ungated" => ["", "", ""], "closed" => [", if: -> { false }", "", ""], "type closed" => ["", ", if: -> { false }", ""],
+                     "type open" => ["", ", if: -> { true }", ""], "shape closed" => ["", "", ", if: -> { false }"] },
              of: { "no of" => "", "of Hash" => ", of: Hash", "of String" => ", of: String" } }
     out = []
     combos(axes) do |l, v|
-      shape = v[:container] ? "{ container: #{v[:container]}, members: [#{P}::SKU] }" : "{ members: [#{P}::SKU] }"
-      type = v[:type] ? "type: #{v[:type]}, " : ""
+      decl_gate, type_gate, shape_gate = v[:gate]
+      next if l[:gate].start_with?("type") && v[:type].nil?
+
+      shape = v[:container] ? "{ container: #{v[:container]}, members: [#{P}::SKU]#{shape_gate} }" : "{ members: [#{P}::SKU]#{shape_gate} }"
+      type = v[:type] ? "type: { klass: #{v[:type]}#{type_gate} }, " : ""
       id = l.values.join(" ")
-      out << cell("G5", "field #{id}", "expects :val, #{type}shape: #{shape}#{v[:of]}#{v[:req]}#{v[:gate]}", %i[val])
-      out << cell("G5", "member #{id}", "expects :o, type: Hash do\n field :val, #{type}shape: #{shape}#{v[:of]}#{v[:req]}#{v[:gate]}\nend", %i[o val])
-      raw_type = v[:type] ? "type: { klass: #{v[:type]} }, " : ""
+      out << cell("G5", "field #{id}", "expects :val, #{type}shape: #{shape}#{v[:of]}#{v[:req]}#{decl_gate}", %i[val])
+      out << cell("G5", "member #{id}", "expects :o, type: Hash do\n field :val, #{type}shape: #{shape}#{v[:of]}#{v[:req]}#{decl_gate}\nend", %i[o val])
       raw_tol = l[:req] == "optional" ? ", allow_blank: true" : ""
-      out << cell("G5", "raw member #{id}", "expects :o, type: Hash, shape: { members: [#{P}.member(:val, #{raw_type}shape: #{shape}" \
-                                            "#{v[:of]}#{raw_tol}#{v[:gate]})] }", %i[o val])
-      next unless l[:of] == "no of"
+      out << cell("G5", "raw member #{id}", "expects :o, type: Hash, shape: { members: [#{P}.member(:val, #{type}shape: #{shape}" \
+                                            "#{v[:of]}#{raw_tol}#{decl_gate})] }", %i[o val])
+      next unless l[:of] == "no of" && !l[:gate].start_with?("type")
 
       klass = v[:type] ? "klass: #{v[:type]}, " : ""
-      out << cell("G5", "bag #{id}", "expects :val, type: Array#{v[:req]}, of: { #{klass}shape: #{shape}#{v[:gate]} }", %i[val], array: true)
-      out << cell("G5", "map #{id}", "expects :val, type: Hash#{v[:req]}, of: { values: { #{klass}shape: #{shape}#{v[:gate]} } }", %i[val k])
+      out << cell("G5", "bag #{id}", "expects :val, type: Array#{v[:req]}, of: { #{klass}shape: #{shape}#{decl_gate} }", %i[val], array: true)
+      out << cell("G5", "map #{id}", "expects :val, type: Hash#{v[:req]}, of: { values: { #{klass}shape: #{shape}#{decl_gate} } }", %i[val k])
     end
     out
   end

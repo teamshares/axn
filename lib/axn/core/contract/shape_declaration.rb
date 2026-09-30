@@ -270,10 +270,18 @@ module Axn
         # one descends from the other. A module on either side can be mixed into a subclass of the other, so it
         # proves nothing, and falls to "narrows".
         #
+        # The rule weighs TWO entries — the declared class and the shape's container — so it holds only on a call where
+        # both run. The shape runs wherever the position's class check does, bar a gate of the shape's own, which only
+        # narrows it to calls where the class check runs too; and a declaration-level `if:`/`unless:` opens and closes
+        # both together. A `type:` entry carrying its own gate is the one case that parts them: on a call it closes,
+        # the shape runs with no class check beside it (`type: { klass: Hash, if: :hash_mode? }` beside
+        # `container: String` checks a String's members whenever `hash_mode?` is false). So the field-and-member
+        # caller stands down there. A bag's `klass:` cannot carry a gate of its own, so the bag caller never has to.
+        #
         # `Array` is `_reject_distributing_shape!`'s, where it is the distributing marker rather than a gate, and a
         # non-class is `_reject_non_class_container!`'s; so is a type token the runtime cannot hold a value to, which
         # its own guard refuses. This stands down for all three rather than naming a less specific defect first.
-        def _reject_uncovered_container!(container, tokens, where:, option:, gated: false)
+        def _reject_uncovered_container!(container, tokens, where:, option:)
           return if nil.equal?(container) || ::Array.equal?(container) || Internal::ShapeGraph::ANY_CONTAINER.equal?(container)
           return unless Internal::Identity.kind?(container, ::Module)
           return unless tokens.all? { |token| _supported_type_token?(token) }
@@ -283,11 +291,12 @@ module Axn
           relations = tokens.map { |token| _container_relation(token, container) }
           return if relations.include?(:covered) && relations.all? { |relation| %i[covered disjoint].include?(relation) }
 
-          raise ArgumentError, _uncovered_container_message(container, tokens, relations, where:, option:, gated:)
+          raise ArgumentError, _uncovered_container_message(container, tokens, relations, where:, option:)
         end
 
         # The same guard at a field or a shape member, whose declared class is its `type:`. Stands down beside
-        # `type: Array`, where the shape distributes and `_reject_distributing_shape!` judges the container.
+        # `type: Array`, where the shape distributes and `_reject_distributing_shape!` judges the container, and beside
+        # a `type:` entry gated on its own, which cannot be proved to run on the calls the shape does.
         def _reject_uncovered_raw_container!(carrier, where)
           return unless Internal::ShapeGraph.carries_key?(carrier, :shape)
           return if _distributing_shape?(carrier)
@@ -295,9 +304,9 @@ module Axn
           shape = Internal::ShapeGraph.hash_or_nil(carrier[:shape])
           return if nil.equal?(shape)
 
-          type_bag = Internal::ShapeGraph.hash_or_nil(carrier[:type])
-          gated = !nil.equal?(type_bag) && Internal::FieldConfig::CONDITIONAL_GATE_KEYS.any? { |key| Internal::ShapeGraph.carries_key?(type_bag, key) }
-          _reject_uncovered_container!(shape[:container], _declared_type_tokens(_declared_type_klass(carrier)), where:, option: "type:", gated:)
+          return if Axn::Validation::Base.entry_self_gated?(carrier[:type])
+
+          _reject_uncovered_container!(shape[:container], _declared_type_tokens(_declared_type_klass(carrier)), where:, option: "type:")
         end
 
         # How one declared type token stands to the container: `:covered` when every value of it is the container,
@@ -327,9 +336,9 @@ module Axn
         # that names the declared class at this position (`type:` at a field or member, `klass:` in a bag), so the
         # fix lands on a key the declaration carries.
         #
-        # "Never checked" is claimed only where the declared class is checked on every call: a gated `type:` skips
-        # its check on the calls its condition closes, and a value that is the container can reach the members there.
-        def _uncovered_container_message(container, tokens, relations, where:, option:, gated:)
+        # "Never checked" holds on every call the shape runs: the caller stands down wherever the class check could be
+        # skipped while the shape runs.
+        def _uncovered_container_message(container, tokens, relations, where:, option:)
           named = _declared_type_label(container)
           checked = "The members are checked only on a value that `is_a?(#{named})`"
           if tokens.empty?
@@ -338,7 +347,7 @@ module Axn
           end
 
           declared = "`#{option} #{tokens.one? ? _declared_type_label(tokens.first) : "[#{tokens.map { |token| _declared_type_label(token) }.join(', ')}]"}`"
-          reach = if relations.all?(:disjoint) && !gated
+          reach = if relations.all?(:disjoint)
                     "no value #{declared} admits is one, so they are never checked"
                   else
                     "#{declared} admits values that aren't, which skip them"
