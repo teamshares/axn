@@ -1408,6 +1408,42 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
           .to raise_error(ArgumentError, /isn't allowed beside a `do ... end` block/)
       end
 
+      # `container: Array` beside another type weighs the value the type admits against the container that
+      # distributes, so it stands down where the two can part: an Array reaches the shape on the calls a gate of the
+      # type's own closes, and its elements' members are checked there.
+      it "stands down on container: Array beside a type: gated on its own, or one the shape's blank gate parts from" do
+        sku = member
+        own_gate = build_axn do
+          def hash_mode? = false
+          expects :val, type: { klass: Hash, if: :hash_mode? }, shape: { container: Array, members: [sku] }
+        end
+        dropped = build_axn do
+          def hash_mode? = false
+          expects :val, type: Hash, if: :hash_mode?, shape: { container: Array, members: [sku], if: nil }
+        end
+
+        [own_gate, dropped].each do |klass|
+          expect(klass.call(val: [{ sku: "a" }])).to be_ok
+          expect(klass.call(val: [{ sku: 5 }])).not_to be_ok
+          expect(klass.input_schema_residues.map(&:summary)).to include(a_string_including("only on a value that is its `container:`"))
+        end
+      end
+
+      # Where the type runs whenever the shape does, the distributing container still reaches nothing it admits; and
+      # beside `type: Array` the shape is folded into the elements whether or not the type check runs, so a gate on
+      # the type never rescues an element container that skips elements.
+      it "still refuses container: Array under a shared gate, and an element container beside a gated type: Array" do
+        sku = member
+        expect { build_axn { expects :val, type: Hash, shape: { container: Array, members: [sku] }, if: -> { false } } }
+          .to raise_error(ArgumentError, /reads as "distribute over the elements"/)
+        expect { build_axn { expects :val, type: Hash, shape: { container: Array, members: [sku], if: -> { false } } } }
+          .to raise_error(ArgumentError, /reads as "distribute over the elements"/)
+        expect { build_axn { expects :val, shape: { container: Array, members: [sku] } } }
+          .to raise_error(ArgumentError, /reads as "distribute over the elements"/)
+        expect { build_axn { expects :val, type: { klass: Array, if: -> { false } }, shape: { container: Hash, members: [sku] } } }
+          .to raise_error(ArgumentError, /beside `type: Array`, whose shape distributes over the elements/)
+      end
+
       it "refuses it at a shape member, a raw member, an of: bag and a map axis" do
         sku = member
         raw = Axn::Core::Contract::ShapeConfig.new(field: :val, validations: { shape: { container: Hash, members: [sku] } })

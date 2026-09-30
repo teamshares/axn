@@ -6,6 +6,8 @@ require "time"
 
 require "axn/internal/identity"
 require "axn/internal/native_methods"
+# `blank_refusal` spells the blank value sets the vocabulary holds.
+require "axn/internal/reflection/schema/vocabulary"
 
 module Axn
   module Internal

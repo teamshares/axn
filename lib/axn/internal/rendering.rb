@@ -28,6 +28,11 @@ module Axn
 
       UNKNOWN_LOCATION = "unknown location"
 
+      # The object addresses `stable_module_name`/`stable_class_name` replace.
+      ANONYMOUS_MODULE_ADDRESS = /#<(?:Class|Module):0x\h+>/
+      OBJECT_ADDRESS = /:0x\h+>/
+      private_constant :ANONYMOUS_MODULE_ADDRESS, :OBJECT_ADDRESS
+
       # Bound so a Symbol's name is read without dispatching anything redefinable.
       SYMBOL_NAME = ::Symbol.instance_method(:name)
       private_constant :SYMBOL_NAME
@@ -55,10 +60,6 @@ module Axn
         # and a bare `#<Name>` for any other address a rendering carries (a singleton class's object).
         def stable_module_name(mod) = without_addresses(module_name(mod))
         def stable_class_name(value) = without_addresses(class_name(value))
-
-        ANONYMOUS_MODULE_ADDRESS = /#<(?:Class|Module):0x\h+>/
-        OBJECT_ADDRESS = /:0x\h+>/
-        private_constant :ANONYMOUS_MODULE_ADDRESS, :OBJECT_ADDRESS
 
         def without_addresses(rendered)
           stable = rendered.gsub(ANONYMOUS_MODULE_ADDRESS) { |address| address.start_with?("#<Class") ? "(anonymous class)" : "(anonymous module)" }
