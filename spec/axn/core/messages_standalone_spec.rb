@@ -211,6 +211,24 @@ RSpec.describe "Axn error block that interpolates the exception message" do
       expect(action.call.error).to eq("W: child: child")
     end
 
+    it "prints the raw text beside an authored conditional reason" do
+      action = build_axn do
+        error { |e| "W: #{e.message}" }
+        error "friendly", if: ArgumentError
+        def call = raise ArgumentError, "raw"
+      end
+      expect(action.call.error).to eq("W: raw: friendly")
+    end
+
+    it "repeats a conditional reason that is the exception's own message" do
+      action = build_axn do
+        error { |e| "W: #{e.message}" }
+        error(if: ArgumentError, &:message)
+        def call = raise ArgumentError, "raw"
+      end
+      expect(action.call.error).to eq("W: raw: raw")
+    end
+
     it "leaks the raw text of an unexpected exception" do
       expect(with_header(interpolating_header, -> { raise "kaboom" }).call.error).to eq("W: kaboom")
     end

@@ -768,7 +768,7 @@ def build_error_message(exception:)
 end
 ```
 
-Use the exception to choose the header, not to repeat its message: the failure's reason is attached to the header for you, so interpolating `e.message` prints it twice. See [Prefixing failure reasons](/usage/writing#prefixing-failure-reasons).
+Use the exception to choose the header, not to repeat its message: the failure's reason is attached to the header for you, so interpolating `e.message` either prints it twice or puts raw exception text into `result.error`. See [Prefixing failure reasons](/usage/writing#prefixing-failure-reasons).
 
 ## Message Matching Order {#message-matching-order}
 

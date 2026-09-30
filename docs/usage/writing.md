@@ -218,7 +218,7 @@ BadExample.call(user_id: 123).exception # => Axn::OutboundValidationError
 
 The default `error` and `success` message strings ("Something went wrong" / "Action completed successfully", respectively) _are_ technically safe to show users, but you'll often want to set them to something more useful.
 
-There are `success` and `error` declarations for that -- you can set strings (most common) or a callable (note for the error case, if you give it a callable that expects a single argument, the exception that was raised will be passed in). Use that argument to choose a header (for instance by exception class), not to repeat `e.message`: the failure's reason is attached to your `error` for you, so interpolating it prints it twice (see [Prefixing failure reasons](#prefixing-failure-reasons)).
+There are `success` and `error` declarations for that -- you can set strings (most common) or a callable (note for the error case, if you give it a callable that expects a single argument, the exception that was raised will be passed in). Use that argument to choose a header (for instance by exception class), not to repeat `e.message`: the failure's reason is attached to your `error` for you, so interpolating the message either prints it twice or puts raw exception text into `result.error` (see [Prefixing failure reasons](#prefixing-failure-reasons)).
 
 For instance, configuring the action like this:
 
@@ -416,7 +416,7 @@ error { |e| "#{tool_name} tool failed: #{e.message}" }  # [!code warning]
 error { "#{tool_name} tool failed" }                    # [!code focus]
 ```
 
-When a reason is attached — a `fail!` message, a `fails_on … &:message`, a matched conditional, a nested child's failure — interpolating it into the header prints it twice: `"MyTool tool failed: card declined: card declined"`. When no reason is attached (an unexpected exception, a validation failure), `e.message` is the raw technical text, and the header puts it straight into the user-facing `result.error`, which otherwise stays free of it.
+The reason is attached after the header, so interpolating `e.message` prints it twice whenever the reason *is* the exception's own message — a `fail!` message, a `fails_on … &:message`, a nested child's failure: `"MyTool tool failed: card declined: card declined"`. Beside an authored reason (`error "friendly", if: ArgumentError`) it puts the raw text next to the authored one: `"MyTool tool failed: <raw message>: friendly"`. And when no reason is attached (an unexpected exception, a validation failure), `e.message` is the raw technical text, and the header puts it straight into the user-facing `result.error`, which otherwise stays free of it.
 
 If an exception class's own message really is user-facing, opt that class in on its own: `error(if: SomeError, &:message)` or `fails_on SomeError, &:message`.
 
