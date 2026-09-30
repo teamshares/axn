@@ -781,16 +781,13 @@ RSpec.describe Axn::Internal::Reflection::Values do
       expect(described_class.serialize_value(money, reject_opaque: true)).to eq("$5.00")
     end
 
-    # A `to_hash` is a projection only where ActiveSupport's generic Object#as_json exists to delegate to it
-    # (a Rails app — see spec_rails). With no `as_json` in reach the routing chain is `to_h` then `to_s`,
-    # which never consults `to_hash`, so such a value renders as an address and is opaque here. Pinned
-    # because the same value serializes its `to_hash` under Rails.
-    it "treats a value declaring only to_hash as opaque, since nothing here routes through to_hash" do
-      only_to_hash = opaque_object.tap { |o| def o.to_hash = { label: "public" } }
+    # A value declaring only `to_hash` is a Hash-shaped value: it renders that Hash, and is not opaque, whether
+    # or not ActiveSupport's generic Object#as_json (which delegates to it) is loaded.
+    it "renders a value declaring only to_hash through it, and does not treat it as opaque" do
+      only_to_hash = opaque_object.tap { |o| def o.to_hash = { label: "public", amount: BigDecimal("3.14") } }
 
-      expect(described_class.serialize_value(only_to_hash)).to match(/\A#<Object:0x[0-9a-f]+>\z/)
-      expect { described_class.serialize_value(only_to_hash, path: "dto", reject_opaque: true) }
-        .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /`dto`.*only via the default Object#to_s/m)
+      expect(described_class.serialize_value(only_to_hash)).to eq("label" => "public", "amount" => 3.14)
+      expect(described_class.serialize_value(only_to_hash, path: "dto", reject_opaque: true)).to eq("label" => "public", "amount" => 3.14)
     end
 
     it "checks inside an Array, naming the indexed path" do
@@ -1379,6 +1376,39 @@ RSpec.describe Axn::Internal::Reflection::Values do
 
       expect(described_class.borrowed_wire_key(key)).to eq("custom")
       expect(described_class.borrowed_wire_key(key)).to eq(described_class.canonical_wire_key(key))
+    end
+  end
+
+  # An Enumerable that is not a Hash or an Array is a collection of its elements. `Enumerable#to_h` reads
+  # them as key/value pairs, so routing through it raised on a Set of numbers and turned a Set of pairs into a
+  # Hash; its projection is `to_a`, with or without ActiveSupport's `Enumerable#as_json`.
+  describe "an Enumerable that is neither a Hash nor an Array" do
+    it "renders a Set as an Array of its elements, by the leaf rules an Array's get" do
+      expect(described_class.serialize_value(Set[BigDecimal("3.14"), 2])).to eq([3.14, 2])
+      expect(described_class.serialize_value(Set[[1, 2]])).to eq([[1, 2]])
+      expect(described_class.serialize_value(Set.new)).to eq([])
+      expect { described_class.serialize_value(Set[Float::NAN], path: "tags") }
+        .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /`tags\[0\]`/)
+    end
+
+    it "renders a lazily-produced Enumerable's elements" do
+      expect(described_class.serialize_value([1, 2].each)).to eq([1, 2])
+    end
+
+    it "follows a class's OWN to_h over the elements" do
+      shaped = Class.new do
+        include Enumerable
+
+        def each(&) = [1, 2].each(&)
+        def to_h = { size: 2 }
+      end
+
+      expect(described_class.serialize_value(shaped.new)).to eq("size" => 2)
+    end
+
+    it "renders a Range as its string form rather than expanding it" do
+      expect(described_class.serialize_value(1..3)).to eq("1..3")
+      expect(described_class.serialize_value(1..)).to eq("1..")
     end
   end
 end

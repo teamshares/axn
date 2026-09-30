@@ -1117,20 +1117,46 @@ module Axn
         # (:to_h), so a Data/Struct renders by the same rules at every depth, with or without the core_ext
         # loaded. `Enumerable#as_json` (`to_a.as_json`: a Set, or any non-Array Enumerable) and the generic
         # `Object#as_json` delegating to `to_hash` are the other two one-shot renderers, and are unrolled the
-        # same way (:enumerable_as_json, :delegated_as_json).
+        # same way (:enumerable_as_json, :delegated_as_json). Neither route depends on ActiveSupport being
+        # loaded: a `to_hash`-only value is a Hash-shaped value there too, rather than an object address.
         def projection_for(value)
+          as_json_owner = owner_of(value, :as_json) if value.respond_to?(:as_json)
+          return :to_h if data_or_struct_owner?(as_json_owner)
+
+          enumerable = enumerable_projection(value, as_json_owner)
+          return enumerable unless enumerable.nil?
+
           if value.respond_to?(:as_json)
-            as_json_owner = owner_of(value, :as_json)
-            return :to_h if data_or_struct_owner?(as_json_owner)
-
-            return :enumerable_as_json if Axn::Internal::Identity.same?(as_json_owner, ::Enumerable)
-
             generic = ::Object.equal?(as_json_owner)
             return :own_as_json unless generic
             return value.respond_to?(:to_hash) ? :delegated_as_json : :generic_as_json unless value.respond_to?(:to_h)
           end
 
-          value.respond_to?(:to_h) ? :to_h : :to_s
+          return :to_s if Axn::Internal::Identity.kind?(value, ::Range)
+          return :to_h if value.respond_to?(:to_h)
+
+          value.respond_to?(:to_hash) ? :delegated_as_json : :to_s
+        end
+
+        # An Enumerable that is not a Hash or an Array (a Set, a Range, an Enumerator): its `to_h` is, unless it
+        # defines one, `Enumerable#to_h`, which reads the elements as key/value PAIRS — it raises on a
+        # `Set[3.14]` and silently turns `Set[[1, 2]]` into `{1 => 2}`. The elements are what it holds, so
+        # `to_a` is its projection, with or without ActiveSupport's `Enumerable#as_json` (`to_a.as_json`).
+        # A class that defines its OWN `to_h` declared a shape, which wins in both environments, as it does
+        # for any other value; one with its own `as_json` (an ActiveRecord::Relation, say) follows it.
+        # Answers nil when the value is none of those, leaving `projection_for` to route it.
+        def enumerable_projection(value, as_json_owner)
+          return unless Axn::Internal::Identity.kind?(value, ::Enumerable)
+          return unless as_json_owner.nil? || Axn::Internal::Identity.same?(as_json_owner, ::Enumerable)
+          # A Range is a value, not a collection of its members: ActiveSupport renders it through its own `as_json`
+          # (`to_s`), and expanding an endless or very large one would never finish.
+          return if Axn::Internal::Identity.kind?(value, ::Range)
+
+          if Axn::Internal::Identity.same?(owner_of(value, :to_h), ::Enumerable)
+            :enumerable_as_json
+          elsif !as_json_owner.nil?
+            :to_h
+          end
         end
 
         # The plain Hash/Array `serialize_value` walks for an `as_json` route. ActiveSupport's `Enumerable#as_json`
@@ -1178,7 +1204,7 @@ module Axn
                              :method_missing_backed_projection?, :effective_displaced_method, :method_missing_projection_reason,
                              :dynamic_respond_to?, :overridden_beyond_kernel?, :effective_projection_displaces?,
                              :denied_projection_reason, :data_or_struct_owner?, :generic_as_json_projection_reason,
-                             :as_json_projection
+                             :as_json_projection, :enumerable_projection
       end
     end
   end

@@ -359,6 +359,18 @@ RSpec.describe Axn::Internal::Reflection::Values do
             .to eq("tags" => [1.5], "meta" => { "amount" => 3.14 })
         end
 
+        it "follows an Enumerable's own to_h, and renders a Range as its string form, exactly as without the core_ext" do
+          shaped = Class.new do
+            include Enumerable
+
+            def each(&) = [1, 2].each(&)
+            def to_h = { size: 2 }
+          end
+
+          expect(described_class.serialize_value(shaped.new)).to eq("size" => 2)
+          expect(described_class.serialize_value(1..3)).to eq("1..3")
+        end
+
         it "refuses an opaque member inside a Set under reject_opaque" do
           expect { described_class.serialize_value(Set[Object.new], reject_opaque: true) }
             .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /\[0\]/)
