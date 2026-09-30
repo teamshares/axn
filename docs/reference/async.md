@@ -83,6 +83,39 @@ Disables async execution entirely. The action will raise a `NotImplementedError`
 async false
 ```
 
+`async :disabled` and `async "disabled"` are the same as `async false`.
+
+### Custom Adapters
+
+Register a module under a name, then declare it like a built-in adapter with `async :name`. The module supplies a private class-side `_enqueue_async_job(kwargs)`, which `call_async` runs after its notification and logging.
+
+```ruby
+module DurableQueueAdapter
+  extend ActiveSupport::Concern
+
+  class_methods do
+    private
+
+    def _enqueue_async_job(kwargs)
+      DurableQueue.push(name, kwargs, **_async_config)
+    end
+
+    def _durable_queue_options = _async_config.slice(:priority)
+  end
+end
+
+Axn::Async::Adapters.register(:durable_queue, DurableQueueAdapter)
+```
+
+Supply every class-side method through a module the adapter owns, such as a `ClassMethods` concern, rather than defining it directly on the including class. A class can declare several adapters over its lifetime or across its subclasses, and each declaration must be able to replace the previous adapter's methods. A method defined straight onto a class shadows every module a later adapter adds.
+
+Prefix helper names with the adapter's name (`_durable_queue_options`, not `_options`). Every adapter's class-side methods share one namespace on the class, so two adapters defining the same helper name call each other's implementation.
+
+axn checks both rules when a class declares an adapter:
+
+- **An `ArgumentError` saying a declaration "can't take effect"** means the class re-declared its adapter, the `_enqueue_async_job` it reaches provably belongs to another adapter, and nothing the new adapter added replaces it. That happens when another adapter defined its hook directly on the class, or when the class reaches another adapter's own `ClassMethods` hook. Where the check cannot tell, it lets the declaration through: an adapter whose module was already present (included by hand, or through an ancestor) is served by its own hook, and two adapters that extend the same free-standing hook module both run that shared hook. Move the adapter's class-side methods into a module it owns.
+- **A warning that two adapters "both define" a method** means a newly declared adapter adds a class-side helper whose name another adapter on the class already uses. Prefix each adapter's helper names.
+
 ## Argument Serialization
 
 Arguments passed to `call_async` are serialized to the backing job queue and rehydrated before your action runs on the worker. What survives that round trip depends on whether ActiveJob is loaded in your app — but it is the same across every adapter within a given deployment, so a `Time` argument behaves identically whether you run on Sidekiq or ActiveJob.

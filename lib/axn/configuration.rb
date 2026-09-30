@@ -193,8 +193,9 @@ module Axn
 
     # Whether a default async adapter is configured — the only thing a gem needs to know about the
     # `_default_async_*` trio below, which stays underscored because core reads all three of them
-    # across files. `present?` rather than `!!`, matching how `Axn::Async` itself tests the adapter.
-    def default_async? = _default_async_adapter.present?
+    # across files. `present?` rather than `!!`, matching how `Axn::Async` itself tests the adapter. A default of
+    # `:disabled` is stored as that key (see `Adapters.key`) but configures no async, so it answers false like `false`.
+    def default_async? = _default_async_adapter.present? && _default_async_adapter != :disabled
 
     def _default_async_adapter = @default_async_adapter ||= false
     def _default_async_config = @default_async_config ||= {}
@@ -203,7 +204,8 @@ module Axn
     def set_default_async(adapter = false, **config, &block) # rubocop:disable Style/OptionalBooleanParameter
       raise ArgumentError, "Cannot set default async adapter to nil as it would cause infinite recursion" if adapter.nil?
 
-      @default_async_adapter = adapter unless adapter.nil?
+      adapter = Axn::Async::Adapters.key(adapter)
+      @default_async_adapter = adapter
       @default_async_config = config.any? ? config : {}
       @default_async_config_block = block_given? ? block : nil
 
@@ -217,18 +219,22 @@ module Axn
       Axn::Async::Adapters::Sidekiq.configure_default_worker!(config: @default_async_config, block: @default_async_config_block)
     end
 
-    # Async configuration for EnqueueAllOrchestrator (used by enqueue_all_async)
-    # Defaults to the default async config if not explicitly set
-    def _enqueue_all_async_adapter = @enqueue_all_async_adapter || _default_async_adapter
-    def _enqueue_all_async_config = @enqueue_all_async_config || _default_async_config
-    def _enqueue_all_async_config_block = @enqueue_all_async_config_block || _default_async_config_block
+    # Async configuration for EnqueueAllOrchestrator (used by enqueue_all_async), defaulting to the default async
+    # config when no adapter is set here. The adapter, config and block come from ONE source, never mixed: a
+    # default block is written for the default's adapter, so an explicit `set_enqueue_all_async(:sidekiq)` must
+    # not pick up, say, an Active Job default's `self.priority =` just because it passed no block of its own.
+    def _enqueue_all_async_adapter = _enqueue_all_async_set? ? @enqueue_all_async_adapter : _default_async_adapter
+    def _enqueue_all_async_config = _enqueue_all_async_set? ? @enqueue_all_async_config : _default_async_config
+    def _enqueue_all_async_config_block = _enqueue_all_async_set? ? @enqueue_all_async_config_block : _default_async_config_block
+    def _enqueue_all_async_set? = @enqueue_all_async_adapter.present?
 
     # Read only by `_apply_async_to_enqueue_all_orchestrator` below. The `_default_async_*` trio above
     # is public for the opposite reason: `Axn.async` and the Sidekiq adapter read it off `Axn.config`
     # across files, so it cannot be private. A gem asking only "is async on?" uses `default_async?`.
-    private :_enqueue_all_async_adapter, :_enqueue_all_async_config, :_enqueue_all_async_config_block
+    private :_enqueue_all_async_adapter, :_enqueue_all_async_config, :_enqueue_all_async_config_block, :_enqueue_all_async_set?
 
     def set_enqueue_all_async(adapter, **config, &block)
+      adapter = Axn::Async::Adapters.key(adapter)
       @enqueue_all_async_adapter = adapter
       @enqueue_all_async_config = config.any? ? config : {}
       @enqueue_all_async_config_block = block_given? ? block : nil

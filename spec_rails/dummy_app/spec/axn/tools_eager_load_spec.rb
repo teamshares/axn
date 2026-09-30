@@ -1,16 +1,9 @@
 # frozen_string_literal: true
 
+require "open3"
+
 RSpec.describe "Axn tool registry under Rails" do
-  around do |example|
-    original_adapters = Axn::Tools::Registry.adapters.dup
-
-    Axn::Tools::Registry.reset_adapters!
-
-    example.run
-  ensure
-    Axn::Tools::Registry.reset_adapters!
-    original_adapters.each { |adapter| Axn::Tools.register_adapter(adapter) }
-  end
+  include_context "with an isolated tool adapter registry"
 
   # Registers `:mcp` with a real config source (an anonymous module carrying a validated
   # `tool_roots` list), so the spec exercises the production read path
@@ -39,13 +32,17 @@ RSpec.describe "Axn tool registry under Rails" do
   # The dummy app namespaces app/actions under `Actions` (see
   # config/initializers/axn.rb -> app_actions_autoload_namespace = :Actions), so the
   # fixture at app/actions/tools/sample_widget.rb autoloads as Actions::Tools::SampleWidget.
-  it "eager-loads the tool_roots dir on demand and finds the tool without referencing it first" do
+  #
+  # In this process the examples can prove that `eager_load_dir` is called, and with which dir, but
+  # not that it is what LOADS the fixture: a constant is loaded once per process and reloading is
+  # disabled in test, so after the first example to touch it (in any file) it is simply defined.
+  # That first-load claim is proved in a fresh process at the bottom of this file.
+  it "eager-loads the tool_roots dir on demand and finds the tool" do
     expect(Rails.autoloaders.main).to receive(:eager_load_dir)
       .with(Rails.root.join("app/actions/tools").to_s).and_call_original
 
     tools = Axn::Tools.for(:mcp)
 
-    expect(defined?(Actions::Tools::SampleWidget)).to eq("constant")
     expect(tools).to include(Actions::Tools::SampleWidget)
   end
 
@@ -62,7 +59,6 @@ RSpec.describe "Axn tool registry under Rails" do
 
     tools = Axn::Tools.for(:mcp)
 
-    expect(defined?(Actions::Tools::SampleWidget)).to eq("constant")
     expect(tools).to include(Actions::Tools::SampleWidget)
   end
 
@@ -74,7 +70,6 @@ RSpec.describe "Axn tool registry under Rails" do
 
     tools = Axn::Tools.for(:mcp)
 
-    expect(defined?(Actions::Tools::SampleWidget)).to eq("constant")
     expect(tools).to include(Actions::Tools::SampleWidget)
   end
 
@@ -86,7 +81,6 @@ RSpec.describe "Axn tool registry under Rails" do
 
     tools = Axn::Tools.for(:mcp)
 
-    expect(defined?(Actions::Tools::SampleWidget)).to eq("constant")
     expect(tools).to include(Actions::Tools::SampleWidget)
   end
 
@@ -102,7 +96,6 @@ RSpec.describe "Axn tool registry under Rails" do
 
     tools = Axn::Tools.for(:mcp)
 
-    expect(defined?(Actions::Tools::SampleWidget)).to eq("constant")
     expect(tools).to include(Actions::Tools::SampleWidget)
   end
 
@@ -115,5 +108,38 @@ RSpec.describe "Axn tool registry under Rails" do
     expect(Rails.autoloaders.main).not_to receive(:eager_load_dir)
 
     Axn::Tools.for(:mcp)
+  end
+end
+
+# The one claim the in-process examples above cannot make: that the on-demand load is what brings an
+# unreferenced tool into existence. Only a fresh process guarantees the fixture is not loaded yet, so
+# this boots one, checks Zeitwerk still holds the fixture as a pending autoload, then asks the
+# registry for the adapter's tools.
+RSpec.describe "Axn tool registry under Rails, in a fresh process" do
+  # Non-interpolating so the probe's own `#{}`s survive to the child process.
+  let(:probe) do
+    <<~'RUBY'
+      require File.expand_path("config/environment", Dir.pwd)
+      source = Module.new do
+        extend Axn::Configurable
+        extend Axn::Tools::AdapterRoots
+      end
+      source.config.tool_roots = %w[actions/tools]
+      Axn::Tools.register_adapter(:mcp, source)
+      puts "before=#{Actions::Tools.autoload?(:SampleWidget) ? 'pending' : 'loaded'}"
+      tools = Axn::Tools.for(:mcp)
+      puts "after=#{Actions::Tools.autoload?(:SampleWidget) ? 'pending' : 'loaded'}"
+      puts "tools=#{tools.map(&:name).join(',')}"
+    RUBY
+  end
+
+  it "loads a tool nothing has referenced yet, on the first request for the adapter's tools" do
+    # CI unset: under CI the dummy app eager-loads everything at boot, which would load the fixture first.
+    output, status = Open3.capture2e({ "RAILS_ENV" => "test", "CI" => nil }, RbConfig.ruby, "-e", probe, chdir: Rails.root.to_s)
+    raise "boot failed (#{status.exitstatus}):\n#{output}" unless status.success?
+
+    expect(output).to include("before=pending")
+    expect(output).to include("after=loaded")
+    expect(output).to include("tools=Actions::Tools::SampleWidget")
   end
 end

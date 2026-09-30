@@ -50,10 +50,24 @@ module Axn
 
         included do
           raise LoadError, "ActiveJob is not available. Please add 'activejob' to your Gemfile." unless defined?(::ActiveJob::Base)
+        end
 
+        # Per-declaration setup, run by `async` on EVERY `async :active_job` (see Sidekiq's `_configure_action!`):
+        # a Concern's `included` block runs only when the module is first added, so a subclass re-declaring the
+        # adapter, or a class returning to it, would otherwise skip validation and keep the proxy built from an
+        # earlier declaration's block. The proxy is rebuilt lazily from the current block on the next enqueue.
+        def self._configure_action!(action)
+          _validate_declaration!(action)
+
+          proxy_ivar = :@active_job_proxy_class
+          Axn::Internal::NativeMethods.ivar_remove(action, proxy_ivar) if Axn::Internal::NativeMethods.ivar_defined?(action, proxy_ivar)
+          action.send(:remove_const, :ActiveJobProxy) if action.const_defined?(:ActiveJobProxy, false)
+        end
+
+        def self._validate_declaration!(action)
           # ActiveJob configuration requires a block because methods like retry_on/discard_on
           # take exception classes as arguments, not just simple values.
-          if _async_config&.any?
+          if action._async_config&.any?
             raise ArgumentError,
                   "ActiveJob adapter requires a configuration block. " \
                   "Use `async :active_job do ... end` instead of keyword arguments."
@@ -61,16 +75,17 @@ module Axn
 
           # Validate Rails version for exhaustion-based reporting modes
           # after_discard (required for :first_and_exhausted and :only_exhausted) is Rails 7.1+
-          unless ::ActiveJob::Base.respond_to?(:after_discard)
-            mode = Axn.config.async_exception_reporting
-            if %i[first_and_exhausted only_exhausted].include?(mode)
-              raise ArgumentError,
-                    "async_exception_reporting mode :#{mode} requires Rails 7.1+ for ActiveJob adapter. " \
-                    "Rails 7.1 introduced `after_discard` which is needed to detect exhausted retries. " \
-                    "Use :every_attempt mode or upgrade to Rails 7.1+."
-            end
-          end
+          return if ::ActiveJob::Base.respond_to?(:after_discard)
+
+          mode = Axn.config.async_exception_reporting
+          return unless %i[first_and_exhausted only_exhausted].include?(mode)
+
+          raise ArgumentError,
+                "async_exception_reporting mode :#{mode} requires Rails 7.1+ for ActiveJob adapter. " \
+                "Rails 7.1 introduced `after_discard` which is needed to detect exhausted retries. " \
+                "Use :every_attempt mode or upgrade to Rails 7.1+."
         end
+        private_class_method :_validate_declaration!
 
         class_methods do
           private

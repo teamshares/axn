@@ -6,6 +6,14 @@
 RSpec.describe Axn::Configuration do
   subject(:config) { Axn.config }
 
+  # Every example here writes the process-global default and enqueue-all async settings, which later files read
+  # (a leftover enqueue-all adapter is re-applied to the orchestrator by the next `set_default_async`). Put both
+  # back to their unset state. Runs before rspec-mocks teardown, so the stubs below still intercept the re-apply.
+  after do
+    config.set_enqueue_all_async(nil)
+    config.set_default_async(false)
+  end
+
   describe "async configuration with real adapters" do
     # These tests stub _apply_async_to_enqueue_all_orchestrator to avoid
     # permanently mutating the EnqueueAllOrchestrator class (which would
@@ -85,10 +93,12 @@ RSpec.describe Axn::Configuration do
   end
 
   describe "eager EnqueueAllOrchestrator configuration" do
-    # This test actually applies the config - run it last and only with sidekiq
-    # to avoid polluting other tests.
+    # This test really applies the config, and `async` includes the adapter module into its target for good, so
+    # the target is a throwaway subclass standing in for the orchestrator constant rather than the shared class.
     it "applies sidekiq config to EnqueueAllOrchestrator" do
       skip "Sidekiq not loaded" unless defined?(Sidekiq)
+
+      stub_const("Axn::Async::EnqueueAllOrchestrator", Class.new(Axn::Async::EnqueueAllOrchestrator))
 
       config.set_enqueue_all_async(:sidekiq)
 

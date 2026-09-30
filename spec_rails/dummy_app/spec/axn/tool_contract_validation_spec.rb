@@ -8,20 +8,6 @@
 # spec's boot), so these drive the real callback chains: `ActiveSupport::Reloader.prepare!` runs the `to_prepare`
 # callbacks the engine registered, which is also the path a development reload takes.
 RSpec.describe "tool contract validation at app setup" do
-  # Scoped to the examples that register their own adapters: the boot-state examples above must see the app's
-  # real registrations, since those are precisely what boot used.
-  shared_context "with an isolated adapter registry" do
-    around do |example|
-      original = Axn::Tools::Registry.adapters.to_a
-      sources = original.to_h { |adapter| [adapter, Axn::Tools::Registry.adapter_config_source(adapter)] }
-      Axn::Tools::Registry.reset_adapters!
-      example.run
-    ensure
-      Axn::Tools::Registry.reset_adapters!
-      sources.each { |adapter, source| Axn::Tools.register_adapter(adapter, source) }
-    end
-  end
-
   # A colliding contract no eager rule sees: two shape members whose names canonicalize to one JSON property.
   # Named, because the registry drops anonymous classes from enumeration.
   def colliding_tool
@@ -123,8 +109,10 @@ RSpec.describe "tool contract validation at app setup" do
     end
   end
 
+  # Isolated only here, where examples register their own adapters: the boot-state examples above must see the
+  # app's real registrations, since those are precisely what boot used.
   describe "a reload with an invalid tool contract" do
-    include_context "with an isolated adapter registry"
+    include_context "with an isolated tool adapter registry"
 
     it "raises through the engine's hook, naming the offending class" do
       Axn::Tools.register_adapter(:mcp)

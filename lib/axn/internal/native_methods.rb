@@ -277,6 +277,13 @@ module Axn
           MODULE_PRIVATE_INSTANCE_METHODS.bind_call(mod, false).include?(name)
       end
 
+      # Every name a MODULE declares in its OWN table, at any visibility: the list form of
+      # `declares_own_instance_method?`, for a caller comparing two modules' tables rather than asking about one name.
+      # Same Module precondition as the readers above.
+      def self.own_instance_method_names(mod)
+        MODULE_INSTANCE_METHODS.bind_call(mod, false) | MODULE_PRIVATE_INSTANCE_METHODS.bind_call(mod, false)
+      end
+
       # WHICH visibility a MODULE declares `name` at in its OWN table — :public, :protected or :private — or nil
       # when it declares none. For a caller that has to REPRODUCE a declaration elsewhere, where the
       # public/not-public boolean `public_instance_method?` answers is not enough: protected collapses into
