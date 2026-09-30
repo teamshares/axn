@@ -191,14 +191,31 @@ module Axn
           # nil-rejecting check (or one reflection cannot judge), every such check is effectively gated, and no
           # default rescues the omission. A gated config whose checks all tolerate nil is relaxable too, but there is
           # nothing for its gate to relax, so it is not counted.
+          #
+          # The other way a config conditionally rejects nil is inside its `shape:`: a shape reading members off a nil
+          # (an `Object` or classless container) rejects it only where a member gated on a condition, or checked by a
+          # verdict resolved per call, does (`Validation::Base.shape_nil_verdict`). Requiredness counts that shape as
+          # letting the nil through; here it keeps the gated rejection it can still make.
           def conditionally_requires_presence?(config)
-            return false unless requiredness_conditionally_relaxable?(config)
             return false if usable_default?(config, subfield: true)
+            return shape_conditionally_rejects_nil?(config) unless requiredness_conditionally_relaxable?(config)
 
             shared = shared_validation_options(config.validations)
             Axn::Validation::Base.validator_entries(config.validations).any? do |key, opt|
               nil_verdict_unknowable?(key, opt, shared) || !nil_tolerant_validation?(key, opt, shared)
             end
+          end
+
+          # A `shape:` that runs on the nil (no tolerance of the config's own or the entry's skips it) and whose members
+          # may reject it on some call.
+          def shape_conditionally_rejects_nil?(config)
+            shape = config.validations[:shape]
+            return false unless shape
+
+            options = effective_entry_options(shape, shared_validation_options(config.validations))
+            return false if options[:allow_nil] || options[:allow_blank]
+
+            Axn::Validation::Base.shape_nil_verdict(shape) == :conditional
           end
 
           # Whether omitting/nil-ing this node's value strands a required descendant — the transitive

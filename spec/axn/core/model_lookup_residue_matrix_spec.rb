@@ -30,6 +30,16 @@ RSpec.describe "the model lookup residue against the runtime's verdict on an unk
     "a descendant whose presence check is gated open" => "expects :name, on: :company, presence: { if: -> { true } }",
     "a required descendant below an optional one" => "expects :address, on: :company, optional: true\nexpects :zip, on: :address",
     "a gated descendant below an optional one" => "expects :address, on: :company, optional: true\nexpects :zip, on: :address, if: -> { true }",
+    # A shape reading its members off the nil parent: it rejects the nil only where a member does, which a gate or a
+    # `validate:` callable leaves conditional.
+    "a shape descendant with a gated member" =>
+      "expects(:profile, on: :company, type: Object, presence: false) { field :sku, type: String, if: -> { true } }",
+    "a shape descendant with a callable member" =>
+      "expects(:profile, on: :company, type: Object, presence: false) { field :to_s, method_call: true, presence: false, validate: ->(_v) { 'bad' } }",
+    "a shape descendant with a member that rejects the nil" =>
+      "expects(:profile, on: :company, type: Object, presence: false) { field :sku, type: String }",
+    "a shape descendant whose members admit the nil" =>
+      "expects(:profile, on: :company, type: Object, presence: false) { field :to_s, type: String, optional: true, method_call: true }",
   }
   siblings = {
     "no id sibling" => nil,

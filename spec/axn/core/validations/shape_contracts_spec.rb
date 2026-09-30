@@ -1276,7 +1276,7 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
           build_axn do
             expects(:rows, type: Array, shape: { members: [sku] }) { field :sku, type: String }
           end
-        end.to raise_error(ArgumentError, /`shape:` on :rows is declared twice/)
+        end.to raise_error(ArgumentError, /\A`shape:` on :rows isn't allowed beside a `do ... end` block — declare the members once, in the block\./)
       end
     end
 
@@ -1327,6 +1327,118 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
         klass = build_axn { expects :row, type: Hash, shape: { members: [sku] } }
 
         expect(klass.call(row: { sku: "x" })).to be_ok
+      end
+    end
+
+    # `ShapeValidator` checks the members only on a value that is the container, so a hand-written container the
+    # declared class does not imply leaves the members unchecked on values the class admits. Refused at every
+    # position a raw shape can be written; a union whose classes each either are the container or never are stands.
+    describe "a hand-written container: the declared class does not imply" do
+      let(:head) { "isn't allowed in `shape:` on :val" }
+
+      it "refuses it with no type:, where every value that is not the container skips the members" do
+        sku = member
+        klass = nil
+        expect { klass = build_axn { expects :val, shape: { container: Hash, members: [sku] } } }
+          .to raise_error(ArgumentError, "`container: Hash` #{head} without a `type:` — add `type: Hash`. The members are " \
+                                         "checked only on a value that `is_a?(Hash)`, and without a `type:` every other " \
+                                         "value skips them.")
+        expect(klass).to be_nil
+      end
+
+      it "refuses a container no declared class is, whose members are never checked" do
+        sku = member
+        point = Data.define(:x)
+        expect { build_axn { expects :val, type: Hash, shape: { container: point, members: [sku] } } }
+          .to raise_error(ArgumentError,
+                          /\A`container: .*` #{head} beside `type: Hash` — drop `container:` to check the members on every value `type: Hash` admits\./)
+        expect { build_axn { expects :val, type: Hash, shape: { container: point, members: [sku] } } }
+          .to raise_error(ArgumentError, /so they are never checked\.\z/)
+        expect { build_axn { expects :val, type: [Array, Hash], shape: { container: point, members: [sku] } } }
+          .to raise_error(ArgumentError, /beside `type: \[Array, Hash\]` — keep in `type:` only classes whose values always or never pass/)
+      end
+
+      it "refuses a container that only narrows a declared class" do
+        sku = member
+        expect { build_axn { expects :val, type: Object, shape: { container: Hash, members: [sku] } } }
+          .to raise_error(ArgumentError, /beside `type: Object` — .*`type: Object` admits values that aren't, which skip them\.\z/)
+      end
+
+      # The rule weighs the type against the container, so it stands down where the two can part: a `type:` gated on
+      # its own skips its check on the calls it closes while the shape still runs.
+      it "stands down beside a type: gated on its own, where the shape runs without the class check" do
+        length = Axn::Core::Contract::ShapeConfig.new(field: :length, validations: { type: { klass: Integer } }, method_call: true)
+        klass = build_axn do
+          def hash_mode? = false
+          expects :value, type: { klass: Hash, if: :hash_mode? }, shape: { container: String, members: [length] }
+        end
+
+        expect(klass.call(value: "abc")).to be_ok
+        expect(klass.call(value: "abcd")).to be_ok
+        expect(klass.input_schema.dig(:properties, :value)).not_to have_key(:properties)
+      end
+
+      # A shape that drops the declaration's gate with a blank key of its own runs where the class check it inherits
+      # does not, which parts the two just as a gate of the type's own does.
+      it "stands down where the shape drops a declaration gate the type keeps" do
+        length = Axn::Core::Contract::ShapeConfig.new(field: :length, validations: { type: { klass: Integer } }, method_call: true)
+        klass = build_axn do
+          def hash_mode? = false
+          expects :value, type: Hash, if: :hash_mode?, shape: { container: String, members: [length], if: nil }
+        end
+
+        expect(klass.call(value: "abc")).to be_ok
+      end
+
+      # A declaration-level gate opens and closes both entries together, and a gate of the shape's own only narrows it
+      # to calls the class check also runs on, so both still refuse; so do the single-entry refusals under any gate.
+      it "still refuses under a declaration gate, a gate of the shape's own, and at the single-entry refusals" do
+        sku = member
+        point = Data.define(:x)
+        expect { build_axn { expects :val, type: Hash, shape: { container: point, members: [sku] }, if: -> { false } } }
+          .to raise_error(ArgumentError, /they are never checked\.\z/)
+        expect { build_axn { expects :val, type: Hash, shape: { container: point, members: [sku], if: -> { false } } } }
+          .to raise_error(ArgumentError, /they are never checked\.\z/)
+        expect { build_axn { expects :val, shape: { container: Hash, members: [sku] }, if: -> { false } } }
+          .to raise_error(ArgumentError, /without a `type:`/)
+        expect { build_axn { expects :val, type: Array, of: { klass: Array, shape: { container: Hash, members: [sku] }, if: -> { false } } } }
+          .to raise_error(ArgumentError, /beside `klass: Array`/)
+        expect { build_axn { expects(:val, type: Hash, shape: { members: [sku], if: -> { false } }) { field :a, type: String } } }
+          .to raise_error(ArgumentError, /isn't allowed beside a `do ... end` block/)
+      end
+
+      it "refuses it at a shape member, a raw member, an of: bag and a map axis" do
+        sku = member
+        raw = Axn::Core::Contract::ShapeConfig.new(field: :val, validations: { shape: { container: Hash, members: [sku] } })
+        expect { build_axn { expects(:o, type: Hash) { field :val, shape: { container: Hash, members: [sku] } } } }
+          .to raise_error(ArgumentError, /\A`container: Hash` isn't allowed in `shape:` on shape member `val` without a `type:`/)
+        expect { build_axn { expects :o, type: Hash, shape: { members: [raw] } } }
+          .to raise_error(ArgumentError, /\A`container: Hash` isn't allowed in `shape:` on shape member `val` without a `type:`/)
+        expect { build_axn { expects :val, type: Array, of: { shape: { container: Hash, members: [sku] } } } }
+          .to raise_error(ArgumentError, /\A`container: Hash` isn't allowed in `shape:` inside the `of:` bag on :val without a `klass:` — add `klass: Hash`\./)
+        expect { build_axn { expects :val, type: Hash, of: { values: { klass: Array, shape: { container: Hash, members: [sku] } } } } }
+          .to raise_error(ArgumentError, /inside the `of: \{ values: … \}` bag on :val beside `klass: Array` — to describe what is inside each element/)
+      end
+
+      # The field twin (`type: Array` beside `container: Hash`) is refused by the distributing-shape guard; the bag
+      # spelling never distributes, so its members were checked on no call while the schema claimed they were.
+      it "refuses `klass: Array` beside `container: Hash` in an of: bag, whose members no element reaches" do
+        sku = member
+        expect { build_axn { expects :val, type: Array, of: { klass: Array, shape: { container: Hash, members: [sku] } } } }
+          .to raise_error(ArgumentError, /beside `klass: Array` — .*no value `klass: Array` admits is one, so they are never checked\./)
+      end
+
+      it "still declares a container every declared class is, a union naming its Hash branch, and a container every value is" do
+        sku = member
+        point = Data.define(:sku)
+        expect { build_axn { expects :val, type: point, shape: { container: Data, members: [sku] } } }.not_to raise_error
+        expect { build_axn { expects :val, type: Hash, shape: { container: Enumerable, members: [sku] } } }.not_to raise_error
+        expect { build_axn { expects :val, type: [Hash, NilClass], shape: { container: Hash, members: [sku] }, optional: true } }.not_to raise_error
+        expect { build_axn { expects :val, type: Array, of: { shape: { container: Object, members: [sku] } } } }.not_to raise_error
+
+        union = build_axn { expects :val, type: [Array, Hash], shape: { container: Hash, members: [sku] } }
+        expect(union.call(val: [1])).to be_ok
+        expect(union.call(val: { sku: 5 })).not_to be_ok
       end
     end
   end

@@ -760,6 +760,12 @@ module Axn
         # it defers to whatever holds the name instead of raising (`_define_subfield_readers!`); and a name
         # only an inferred reader holds is free for an explicit declaration to take, which is what makes the
         # author's own `<field>_confirmation` line replace the companion axn generated for them.
+        #
+        # A `model:` field's generated `<field>_id` reader is on neither side either, for the same reason: it is
+        # derived from another declaration, so an explicit declaration of that name takes it, and the explicit
+        # reader is defined over it. That is what the reverse order already does, where
+        # `_reader_name_available?` declines to generate the id reader over the explicit one, and what the top
+        # level does in both orders.
         def _validate_subfield_reader_names!(configs)
           seen = []
           configs.each do |config|
@@ -769,7 +775,8 @@ module Axn
             # Read natively, like every other method-table question a declaration guard asks: `self` is the
             # author's class, and a singleton `method_defined?` of its own answering false would admit the
             # duplicate this refuses.
-            taken = Axn::Internal::NativeMethods.declared_instance_method(self, reader) && !_inferred_reader?(reader)
+            taken = Axn::Internal::NativeMethods.declared_instance_method(self, reader) && !_inferred_reader?(reader) &&
+                    !_derived_companion_reader?(reader)
             if taken || seen.include?(reader)
               raise ArgumentError,
                     "expects does not support duplicate sub-keys (i.e. `#{reader}` is already defined) — " \

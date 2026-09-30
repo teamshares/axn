@@ -39,6 +39,7 @@ module Axn
             when :inclusion, :exclusion then set_includes_nil?(options.call).nil?
             when :format then Axn::Validation::Base.format_admits_nil?(options.call).nil?
             when :acceptance then Axn::Validation::Base.acceptance_admits_nil?(options.call).nil?
+            when :shape then Axn::Validation::Base.shape_nil_verdict(options.call) == :conditional
             else false
             end
           end

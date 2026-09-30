@@ -121,6 +121,65 @@ RSpec.describe "model: id reader and consistency" do
     end
   end
 
+  # The generated `<field>_id` reader is inferred, so an explicit declaration of that name takes it in either order,
+  # nested exactly as at the top level. Nested, the explicit declaration written SECOND used to be refused as a
+  # duplicate sub-key while the reverse order declared.
+  describe "`<field>_id` reader — yields to an explicit declaration in either order" do
+    { "top level" => "", "nested" => "expects :payload, type: Hash" }.each do |position, parent|
+      context "#{position}, an explicit `type: Integer` id" do
+        let(:build) do
+          klass = co_class
+          on = position == "nested" ? { on: :payload } : {}
+          lambda do |order|
+            build_axn do
+              class_eval(parent)
+              decls = [-> { expects :company, **on, model: { klass:, finder: :find } }, -> { expects :company_id, **on, type: Integer }]
+              (order == :model_first ? decls : decls.reverse).each { |decl| instance_exec(&decl) }
+              exposes :cid
+
+              def call = expose(cid: company_id)
+            end
+          end
+        end
+        let(:payload) { position == "nested" ? { payload: { company_id: 5 } } : { company_id: 5 } }
+
+        it "declares with the model first, and the id reader is the explicit field" do
+          expect(build.call(:model_first).call(**payload).cid).to eq(5)
+        end
+
+        it "declares with the id first, and the id reader is the explicit field" do
+          expect(build.call(:id_first).call(**payload).cid).to eq(5)
+        end
+      end
+
+      context "#{position}, a second `model:` field named `<field>_id`" do
+        let(:build) do
+          klass = co_class
+          on = position == "nested" ? { on: :payload } : {}
+          lambda do |order|
+            build_axn do
+              class_eval(parent)
+              decls = [-> { expects :company, **on, model: { klass:, finder: :find } }, -> { expects :company_id, **on, model: { klass:, finder: :find } }]
+              (order == :model_first ? decls : decls.reverse).each { |decl| instance_exec(&decl) }
+              exposes :record
+
+              def call = expose(record: company_id)
+            end
+          end
+        end
+        let(:payload) do
+          record = co_class.new(7)
+          position == "nested" ? { payload: { company_id: record, company_id_id: 7 } } : { company_id: record, company_id_id: 7 }
+        end
+
+        it "declares in both orders, and the id reader is the explicit field's record in both" do
+          records = %i[model_first id_first].map { |order| build.call(order).call(**payload).record }
+          expect(records).to all(eq(co_class.new(7)))
+        end
+      end
+    end
+  end
+
   describe "record / id consistency check (default finder)" do
     let(:action) do
       klass = co_class

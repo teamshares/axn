@@ -115,7 +115,7 @@ RSpec.describe "a collision verdict and the schema it is about" do
       },
       "a per-validator-gated type: on exposes" => proc {
         exposes :thing, type: { klass: shaped, if: -> { true } },
-                        shape: { members: [member.call(latin1)], container: Hash }
+                        shape: { members: [member.call(latin1)], container: shaped }
       },
       "a subtree dropped beneath a model: ancestor" => proc {
         expects :rec, model:, optional: true

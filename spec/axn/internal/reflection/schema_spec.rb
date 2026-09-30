@@ -10957,18 +10957,199 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     end
   end
 
+  # A position that declares no object class reads its members off whatever it holds. A plain-key member cannot
+  # read a key off a String, so it makes the position an object; a `method_call:` member reads a method off it
+  # (`"abc".length`), so beside only such members the position states no type and names the method read.
+  describe "a shape's members at a position declaring no object class" do
+    def element(klass) = klass.input_schema.dig(:properties, :rows, :items)
+
+    it "leaves an untyped element read only through method_call: untyped, and names the read" do
+      klass = build_axn do
+        expects :rows, type: Array do
+          field :length, type: Integer, method_call: true
+        end
+      end
+
+      expect(element(klass)).to include(properties: { length: { type: "integer" } }, required: ["length"])
+      expect(element(klass)).not_to have_key(:type)
+      expect(klass.call(rows: ["abc"])).to be_ok
+      expect(klass.call(rows: [5])).not_to be_ok
+      expect(residue_summaries(klass)).to include(described_class::METHOD_READ_RESIDUE)
+    end
+
+    it "keeps the object type beside a plain-key member read on every call" do
+      klass = build_axn do
+        expects :rows, type: Array do
+          field :length, type: Integer, method_call: true
+          field :sku, type: String, optional: true
+        end
+      end
+
+      expect(element(klass)).to include(type: "object")
+      expect(klass.call(rows: ["abc"])).not_to be_ok
+      expect(residue_summaries(klass)).to be_empty
+    end
+
+    it "does not count a gated plain-key member, which a closed gate never reads" do
+      klass = build_axn do
+        expects :rows, type: Array do
+          field :length, type: Integer, method_call: true
+          field :sku, type: String, if: -> { false }
+        end
+      end
+
+      expect(element(klass)).not_to have_key(:type)
+      expect(klass.call(rows: ["abc"])).to be_ok
+    end
+
+    it "reaches a classless of: bag, a map's classless values axis, and a declared Object the same way" do
+      length = Axn::Core::Contract::ShapeConfig.new(field: :length, validations: { type: { klass: Integer } }, method_call: true)
+      bag = build_axn { expects :rows, type: Array, of: { shape: { members: [length] } } }
+      map = build_axn { expects :rows, type: Hash, of: { values: { shape: { members: [length] } } } }
+      object = build_axn { expects(:rows, type: Object) { field :length, type: Integer, method_call: true } }
+
+      expect(element(bag)).not_to have_key(:type)
+      expect(map.input_schema.dig(:properties, :rows, :additionalProperties)).not_to have_key(:type)
+      expect(object.input_schema.dig(:properties, :rows)).not_to have_key(:type)
+      expect([bag.call(rows: ["abc"]), map.call(rows: { "k" => "abc" }), object.call(rows: "abc")]).to all(be_ok)
+      expect([bag, map, object].map { |k| residue_summaries(k) }).to all(include(described_class::METHOD_READ_RESIDUE))
+    end
+  end
+
+  # Where the container is one nil is, the members are read off a nil value, and the shape rejects it only if a
+  # member does: a name nil answers (`to_s`) reads as nil, one it does not is "could not be read".
+  describe "a shape reading its members off a nil" do
+    it "does not require a field whose members all let the nil through" do
+      klass = build_axn { expects(:value, type: Object, presence: false) { field :to_s, type: String, optional: true, method_call: true } }
+
+      expect(klass.call).to be_ok
+      expect(klass.input_schema[:required]).to be_nil
+    end
+
+    it "does not count a validate: callable, whose verdict on nil is the caller's code" do
+      check = ->(v) { "bad" unless v.nil? }
+      klass = build_axn { expects(:value, type: Object, presence: false) { field :to_s, method_call: true, presence: false, validate: check } }
+
+      expect(klass.call).to be_ok
+      expect(klass.input_schema[:required]).to be_nil
+    end
+
+    it "still requires a field whose member cannot be read off a nil" do
+      klass = build_axn { expects(:value, type: Object, presence: false) { field :sku, type: String, optional: true } }
+
+      expect(klass.call).not_to be_ok
+      expect(klass.input_schema[:required]).to eq(["value"])
+    end
+
+    # Gates merge per key as ActiveModel merges them: an entry's blank `if:` drops the member's, so that entry runs on
+    # every call and the member reads the nil whatever the member's own gate says.
+    it "requires a field whose member's gate an entry's blank key drops" do
+      klass = build_axn { expects(:value, type: Object, presence: false) { field :sku, type: { klass: String, if: nil }, if: -> { false } } }
+
+      expect(klass.call).not_to be_ok
+      expect(klass.input_schema[:required]).to eq(["value"])
+    end
+
+    it "makes an untyped element an object for a plain-key member whose gate an entry's blank key drops" do
+      klass = build_axn do
+        expects :rows, type: Array do
+          field :length, type: Integer, method_call: true
+          field :sku, type: { klass: String, if: nil }, if: -> { false }
+        end
+      end
+
+      expect(klass.call(rows: ["abc"])).not_to be_ok
+      expect(klass.input_schema.dig(:properties, :rows, :items, :type)).to eq("object")
+    end
+
+    it "still requires a field whose member rejects the nil it reads" do
+      klass = build_axn { expects(:value, type: Object, presence: false) { field :to_s, type: String, method_call: true } }
+
+      expect(klass.call).not_to be_ok
+      expect(klass.input_schema[:required]).to eq(["value"])
+    end
+  end
+
+  # A union's `container:` names the branch whose values carry the members; every other branch skips them. The
+  # members land at the field's own node as `properties`, which JSON Schema applies to an object alone, and never at
+  # `items`, which belong to the Array branch.
+  describe "a shape on a union whose container is its Hash branch" do
+    let(:sku) { Axn::Core::Contract::ShapeConfig.new(field: :sku, validations: { type: { klass: String } }) }
+
+    it "states the members for the object branch and leaves the array branch alone" do
+      m = sku
+      klass = build_axn { expects :val, type: [Array, Hash], shape: { container: Hash, members: [m] } }
+      prop = klass.input_schema.dig(:properties, :val)
+
+      expect(prop).to include(properties: { sku: { type: "string" } }, required: ["sku"])
+      expect(prop).not_to have_key(:items)
+      expect(prop).not_to have_key(:type)
+      expect(klass.call(val: ["a"])).to be_ok
+      expect(klass.call(val: { sku: 5 })).not_to be_ok
+    end
+
+    it "leaves a scalar branch alone too" do
+      m = sku
+      klass = build_axn { expects :val, type: [String, Hash], shape: { container: Hash, members: [m] } }
+
+      expect(klass.input_schema.dig(:properties, :val)).not_to have_key(:type)
+      expect(klass.call(val: "abc")).to be_ok
+      expect(klass.input_schema_residues).to be_empty
+    end
+
+    # A JSON object arrives as a Hash, so a union of two object classes is one class on the wire: beside a container
+    # that is not the Hash, every wire object skips the members, and stating them would reject what the runtime
+    # accepts. Beside the Hash, every wire object carries them, which is exact.
+    it "states nothing, and names the selectivity, where the container is an object class the wire cannot pick out" do
+      m = sku
+      point = Data.define(:sku)
+      klass = build_axn { expects :val, type: [Hash, point], shape: { container: point, members: [m] } }
+
+      expect(klass.input_schema.dig(:properties, :val)).not_to have_key(:properties)
+      expect(klass.call(val: { other: "ok" })).to be_ok
+      expect(residue_summaries(klass)).to include(Axn::Internal::Reflection::Schema::Contents::SELECTIVE_SHAPE_RESIDUE)
+    end
+
+    it "states the members where the container is the Hash every wire object is" do
+      m = sku
+      point = Data.define(:sku)
+      klass = build_axn { expects :val, type: [Hash, point], shape: { container: Hash, members: [m] } }
+
+      expect(klass.input_schema.dig(:properties, :val)).to include(type: "object", required: ["sku"])
+      expect(klass.call(val: { other: "ok" })).not_to be_ok
+    end
+
+    it "does the same at an of: bag" do
+      m = sku
+      klass = build_axn { expects :val, type: Array, of: { klass: [Array, Hash], shape: { container: Hash, members: [m] } } }
+
+      expect(klass.input_schema.dig(:properties, :val, :items)).to include(properties: { sku: { type: "string" } })
+      expect(klass.input_schema.dig(:properties, :val, :items)).not_to have_key(:type)
+      expect(klass.input_schema_residues).to be_empty
+    end
+  end
+
   describe "a shaped position's null branch survives the members overlay" do
     def items_node(bag)
       klass = build_axn { expects :f, type: Array, of: bag }
       described_class.build_input(klass.internal_field_configs, klass.subfield_configs)[:properties][:f][:items]
     end
 
+    # A plain-key member read on every call is what makes a classless position an object at all (see the
+    # `method_call:` block below), so each of these carries one.
+    let(:sku) { Axn::Core::Contract::ShapeConfig.new(field: :sku, validations: { type: { klass: String } }) }
+
     it "keeps null on a classless shaped position declaring allow_nil:" do
-      expect(items_node(shape: { members: [] }, allow_nil: true)[:type]).to eq(%w[object null])
+      expect(items_node(shape: { members: [sku] }, allow_nil: true)[:type]).to eq(%w[object null])
     end
 
     it "keeps null on a classless shaped position declaring allow_blank:" do
-      expect(items_node(shape: { members: [] }, allow_blank: true)[:type]).to eq(%w[object null])
+      expect(items_node(shape: { members: [sku] }, allow_blank: true)[:type]).to eq(%w[object null])
+    end
+
+    # With no member to read, the runtime accepts any element, so the position states no type.
+    it "leaves a classless shaped position with no members untyped" do
+      expect(items_node(shape: { members: [] })).not_to have_key(:type)
     end
 
     # A classless bag that declares NO tolerance gets no null branch, even though its own empty validator set
@@ -10976,7 +11157,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     # constraints alone emits a document looser than the contract for every shaped position that HAS members
     # (`expects :items, type: Array do field :status, type: String end` rejects `[nil]`).
     it "leaves a classless shaped position that declares no tolerance a bare object" do
-      expect(items_node(shape: { members: [] })[:type]).to eq("object")
+      expect(items_node(shape: { members: [sku] })[:type]).to eq("object")
     end
 
     it "keeps a distributing shape block with required members non-nullable, matching its runtime" do

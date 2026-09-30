@@ -386,8 +386,8 @@ RSpec.describe "recursive of:" do
       shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :leaf, validations: leaf_validations)],
                 container: Hash }
       depth.times do
-        shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { shape: }),
-                            Axn::Core::Contract::ShapeConfig.new(field: :b, validations: { shape: })],
+        shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { type: { klass: Hash }, shape: }),
+                            Axn::Core::Contract::ShapeConfig.new(field: :b, validations: { type: { klass: Hash }, shape: })],
                   container: Hash }
       end
       shape
@@ -473,8 +473,8 @@ RSpec.describe "recursive of:" do
       shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :leaf, validations: leaf_validations)],
                 container: Hash }
       depth.times do
-        shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { shape: }),
-                            Axn::Core::Contract::ShapeConfig.new(field: :b, validations: { shape: })],
+        shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { type: { klass: Hash }, shape: }),
+                            Axn::Core::Contract::ShapeConfig.new(field: :b, validations: { type: { klass: Hash }, shape: })],
                   container: Hash }
       end
       shape
@@ -971,7 +971,8 @@ RSpec.describe "recursive of:" do
       end
       shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :sku, validations: { type: { klass: String } })],
                 container: liar }
-      action = build_axn { expects :rows, type: Array, of: { klass: Hash, shape: } }
+      # A union whose Hash branch the liar never covers, so the declaration stands and the gate is what is tested.
+      action = build_axn { expects :rows, type: Array, of: { klass: [Hash, liar], shape: } }
 
       # Gated on the liar, which the Hash below is not an instance of — so the members are never read and the
       # `sku` mismatch goes unreported. Were the sentinel check asking the CONTAINER, it would answer yes and
@@ -989,8 +990,8 @@ RSpec.describe "recursive of:" do
       shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :leaf, validations: leaf_validations)],
                 container: Hash }
       depth.times do
-        shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { shape: }),
-                            Axn::Core::Contract::ShapeConfig.new(field: :b, validations: { shape: })],
+        shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { type: { klass: Hash }, shape: }),
+                            Axn::Core::Contract::ShapeConfig.new(field: :b, validations: { type: { klass: Hash }, shape: })],
                   container: Hash }
       end
       shape
@@ -1268,8 +1269,8 @@ RSpec.describe "recursive of:" do
         shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :leaf, validations: { type: String })],
                   container: Hash }
         depth.times do
-          shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { shape: }),
-                              Axn::Core::Contract::ShapeConfig.new(field: :b, validations: { shape: })],
+          shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { type: { klass: Hash }, shape: }),
+                              Axn::Core::Contract::ShapeConfig.new(field: :b, validations: { type: { klass: Hash }, shape: })],
                     container: Hash }
         end
         shape

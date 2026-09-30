@@ -2660,8 +2660,8 @@ RSpec.describe "declaration-time property name collisions" do
       it "still allows one nested shape object reused by two sibling members" do
         nested = { members: [Axn::Core::Contract::ShapeConfig.new(field: :leaf, validations: {})], container: Hash }
         members = [
-          Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { shape: nested }),
-          Axn::Core::Contract::ShapeConfig.new(field: :b, validations: { shape: nested }),
+          Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { type: { klass: Hash }, shape: nested }),
+          Axn::Core::Contract::ShapeConfig.new(field: :b, validations: { type: { klass: Hash }, shape: nested }),
         ]
 
         klass = build_axn { expects :payload, type: Hash, shape: { members:, container: Hash } }
@@ -2791,8 +2791,8 @@ RSpec.describe "declaration-time property name collisions" do
       def shared_sibling_shape(depth)
         shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :leaf, validations: {})], container: Hash }
         depth.times do
-          shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { shape: }),
-                              Axn::Core::Contract::ShapeConfig.new(field: :b, validations: { shape: })],
+          shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { type: { klass: Hash }, shape: }),
+                              Axn::Core::Contract::ShapeConfig.new(field: :b, validations: { type: { klass: Hash }, shape: })],
                     container: Hash }
         end
         shape
@@ -2944,7 +2944,9 @@ RSpec.describe "declaration-time property name collisions" do
       describe "a config whose emitted schema is built from a reduced view of it" do
         def gated_type_axn(klass, direction, gate: true)
           member = Axn::Core::Contract::ShapeConfig.new(field: :keep, validations: {})
-          shape = { members: [member], container: Hash }
+          # Beside a gated type the container is judged with the class check possibly skipped, so the Hash stands; an
+          # ungated Data type needs a container it covers.
+          shape = { members: [member], container: gate ? Hash : klass }
           type = gate ? { klass:, if: :flag } : { klass: }
           build_axn { send(direction, :x, optional: true, shape:, type:) }
         end
@@ -3049,7 +3051,7 @@ RSpec.describe "declaration-time property name collisions" do
           inner = Axn::Core::Contract::ShapeConfig.new(
             field: :m,
             validations: { type: { klass: wide, if: :flag },
-                           shape: { members: [Axn::Core::Contract::ShapeConfig.new(field: :keep, validations: {})], container: Hash } },
+                           shape: { members: [Axn::Core::Contract::ShapeConfig.new(field: :keep, validations: {})], container: wide } },
           )
           klass = build_axn { exposes :payload, optional: true, type: Hash, shape: { members: [inner], container: Hash } }
 

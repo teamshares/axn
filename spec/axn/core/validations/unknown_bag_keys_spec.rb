@@ -394,12 +394,45 @@ RSpec.describe "an unknown key in an axn-owned validator bag" do
       # A distributing raw shape beside a block would be discarded by it, so the pairing is refused.
       it "refuses a distributing raw shape: beside a block" do
         expect { build_axn { expects(:rows, type: Array, shape: { members: [] }) { field :a, type: String } } }
-          .to raise_error(ArgumentError, /`shape:` on :rows is declared twice/)
+          .to raise_error(ArgumentError, /\A`shape:` on :rows isn't allowed beside a `do ... end` block — declare the members once, in the block\./)
       end
 
-      it "still declares a well-formed raw shape: beside a block" do
-        expect { build_axn { expects(:h, type: Hash, shape: { members: [], container: Hash }) { field :a, type: String } } }
-          .not_to raise_error
+      # The block replaces a well-formed raw shape just the same, so its members would be checked by nothing: refused
+      # at every position a block can be written, whatever the declared type.
+      describe "a well-formed raw shape: beside a block" do
+        let(:sku) { Axn::Core::Contract::ShapeConfig.new(field: :sku, validations: { type: { klass: String } }) }
+        let(:head) { "isn't allowed beside a `do ... end` block — declare the members once, in the block. " }
+
+        it "is refused on expects" do
+          member = sku
+          expect { build_axn { expects(:h, type: Hash, shape: { members: [member] }) { field :a, type: String } } }
+            .to raise_error(ArgumentError, "`shape:` on :h #{head}The block builds this value's shape and replaces the " \
+                                           "option, so everything the option names is discarded.")
+        end
+
+        it "is refused on exposes" do
+          member = sku
+          expect { build_axn { exposes(:h, type: Hash, shape: { members: [member] }) { field :a, type: String } } }
+            .to raise_error(ArgumentError, /\A`shape:` on :h #{Regexp.escape(head)}/)
+        end
+
+        it "is refused on a member's own subblock" do
+          member = sku
+          expect do
+            build_axn { expects(:o, type: Hash) { field(:inner, type: Hash, shape: { members: [member] }) { field :leaf, type: String } } }
+          end.to raise_error(ArgumentError, /\A`shape:` on shape member `inner` #{Regexp.escape(head)}/)
+        end
+
+        it "is refused with an empty members list and only a container:" do
+          expect { build_axn { expects(:h, type: Hash, shape: { members: [], container: Hash }) { field :a, type: String } } }
+            .to raise_error(ArgumentError, /\A`shape:` on :h #{Regexp.escape(head)}/)
+        end
+
+        it "still declares the block alone, and the raw shape alone" do
+          member = sku
+          expect { build_axn { expects(:h, type: Hash) { field :a, type: String } } }.not_to raise_error
+          expect { build_axn { expects :h, type: Hash, shape: { members: [member] } } }.not_to raise_error
+        end
       end
 
       # `on:`/`except_on:`/`strict:` are admitted into `SHAPE_OPTION_KEYS` deliberately, so the dedicated
