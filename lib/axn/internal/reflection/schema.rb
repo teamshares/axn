@@ -96,8 +96,6 @@ module Axn
         # validator at best and invalid at worst, so it is not emitted there at all.
         NUMERIC_TYPES = %w[integer number].freeze
 
-        EXCLUDED_FROM_INPUT_SCHEMA = %i[ambient_context].freeze
-
         # Per-node result of the single bottom-up derivation pass (derive_annotations): `required` means
         # the node must appear in its PARENT's `required` array (mirrors node_optional?'s own-level rule,
         # using the node's FULL config set — the same default `children_require_presence?` always used);

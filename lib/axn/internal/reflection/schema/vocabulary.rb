@@ -14,6 +14,8 @@ module Axn
 
           NULL_BRANCH = { type: "null" }.freeze
 
+          EXCLUDED_FROM_INPUT_SCHEMA = %i[ambient_context].freeze
+
           # Residues ride on the property they belong to under this key while it is being built, and are
           # rendered into `description` and stripped by `finalize_residues!` before the schema is returned.
           # A non-emitted key rather than a parallel accumulator threaded through every builder: a property
