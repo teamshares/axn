@@ -1791,7 +1791,7 @@ module Axn
         # the time this runs the node is the declaration walk's own copy, SHARED by every position reusing that
         # shape, while the container belongs to the position — so writing in place would give one position the
         # container derived for another. Mutates `bag`.
-        def _derive_inner_shape_container!(bag, fields)
+        def _derive_inner_shape_container!(bag, fields, where:)
           shape = Internal::ShapeGraph.hash_or_nil(bag[:shape])
           return if nil.equal?(shape)
 
@@ -1803,8 +1803,10 @@ module Axn
               else
                 Internal::ShapeGraph::ANY_CONTAINER
               end
-          elsif !::Array.equal?(bag[:klass])
-            _reject_distributing_inner_shape!(detached[:container], fields)
+          else
+            _reject_distributing_inner_shape!(detached[:container], fields) unless ::Array.equal?(bag[:klass])
+            klass_tokens = Internal::ShapeGraph.carries_key?(bag, :klass) ? _declared_type_tokens(bag[:klass]) : []
+            _reject_uncovered_container!(detached[:container], klass_tokens, where:, option: "klass:")
           end
           _reject_non_class_container!(detached[:container])
           bag[:shape] = detached
@@ -2690,6 +2692,7 @@ module Axn
           _reject_distributing_shape!(carrier, where)
           _reject_unshaped_shape!(carrier, where)
           _reject_unknown_shape_keys!(carrier, where)
+          _reject_uncovered_raw_container!(carrier, where)
 
           shape_only = carrier.slice(:shape)
           _reject_validator_context_scope!(shape_only, where: declaration_where)

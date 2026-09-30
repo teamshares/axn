@@ -239,19 +239,23 @@ module Axn
           # down emits exactly what a shape at the top emits. Its members are what the projection size cap and
           # collision attribution then charge, since both read `plan.type_schema` and this Hash IS that schema.
           #
-          # Gated on the same rule the field-level overlay is gated on (`shape_overlay_applies?`), asked of the bag
-          # itself because the bag's `klass:` is what its members are read off: a scalar element keeps its scalar
-          # type and validates members against it without ever emitting them, and on OUTPUT a class that is not
-          # provably member-keyed is left untyped rather than promising an object the serializer will not produce.
+          # Where the members land is `bag_member_reach`'s answer, asked of the bag itself because the bag's `klass:`
+          # is what its members are read off: a scalar element keeps its scalar type and validates members against it
+          # without ever emitting them, and on OUTPUT a class that is not provably member-keyed is left untyped rather
+          # than promising an object the serializer will not produce.
           def contents_member_schema(node, bag, for_output:, ancestry: nil)
             shape = emitted_contents_edge(bag, :shape)
             return node if nil.equal?(shape)
+
+            reach = for_output ? (shape_overlay_applies?(bag, for_output:) && OBJECT_REACH) : bag_member_reach(bag, shape)
             # A class with no JSON object form has nowhere to state the members on, while the runtime still reads
             # them — off each element of an Array (`klass: Array` distributes), or off whichever branch of a union
             # carries them — so inbound, their omission is named rather than silent.
-            return (for_output ? node : record_residue(node, UNSTATED_SHAPE_RESIDUE)) unless shape_overlay_applies?(bag, for_output:)
+            return (for_output ? node : record_residue(node, UNSTATED_SHAPE_RESIDUE)) unless reach
 
             member_props, required = member_properties(shape[:members], for_output:, ancestry:)
+            return overlay_member_properties(node, shape, reach, member_props, required) unless object_node_for_members?(shape, reach)
+
             # The object type is written back with the position's nullability rather than a bare "object" that would
             # discard it, and the question is asked in TWO parts because neither alone is the answer.
             #
@@ -280,12 +284,140 @@ module Axn
             #     ActiveModel lets it override the position per key: `of: { allow_nil: true, shape: { …,
             #     allow_nil: false } }` runs `ShapeValidator` on the nil and rejects it as unreadable.
             shape_tolerance = Axn::Validation::Base.effective_entry_options(shape, Axn::Validation::Base.tolerance_options(bag))
+            #
+            # A shape whose container nil is not (`Hash` beside `klass: [Hash, NilClass]`) skips a nil without reading
+            # it, so there the position's gate alone decides (`Validation::Base.shape_skips_nil?`).
             nullable = bag_nullable?(bag) &&
-                       !!(shape_tolerance[:allow_nil] || shape_tolerance[:allow_blank])
+                       !!(shape_tolerance[:allow_nil] || shape_tolerance[:allow_blank] || Axn::Validation::Base.shape_skips_nil?(shape))
             merged = node.merge(type: type_with_nullability("object", nullable:),
                                 properties: (node[:properties] || {}).merge(member_props))
             merged[:required] = required unless required.empty?
             merged
+          end
+
+          # How far a shape's members reach at the node holding them — which decides whether that node is an
+          # object, or only carries `properties`, which JSON Schema applies to an object alone:
+          #
+          #   * `OBJECT_REACH` — every class the position declares is an object on the wire, so the node is one;
+          #   * `EVERY_VALUE_REACH` — the position declares no class narrower than `Object`, so the members are read
+          #     off every value it admits: a plain-key member rejects a value it cannot read a key off, but a
+          #     `method_call:` member reads a method off a String or a number (`"abc".length`), so the node is an
+          #     object only when a plain-key member is read on every call (`members_force_object?`);
+          #   * `OBJECT_VALUES_REACH` — the container is one every JSON object is (the `Hash` branch of a union), and
+          #     every other declared class skips the members, so the node carries them for its objects and states
+          #     no type of its own;
+          #   * nil — the members are read off a value with no JSON object form, and are named instead.
+          OBJECT_REACH = :object
+          EVERY_VALUE_REACH = :every_value
+          OBJECT_VALUES_REACH = :object_values
+
+          # The reach at an `of:` bag, from its `klass:`. The scalar-element fold (`of: String` beside a distributing
+          # block) reads its members off a String, and keeps them unstated.
+          def bag_member_reach(bag, shape)
+            member_reach(Axn::Internal::ShapeGraph.type_tokens(bag[:klass]), shape[:container], opaque_is_object: false)
+          end
+
+          # The reach at a field or a shape member, from its `type:`. A class with no JSON form (`Data`, a plain
+          # class) keeps the object node a field has always given it; the runtime's type check is what no wire
+          # value passes there, and it is named on its own.
+          def field_member_reach(validations, shape)
+            member_reach(declared_type_tokens(validations), shape[:container], opaque_is_object: true)
+          end
+
+          # The declaration refuses a container that only narrows a declared class, so every class arriving here
+          # either is the container (its values carry the members) or never is (they skip them). What remains is
+          # which of them carry the members to the wire: none but objects may, or the node would have to state the
+          # members on a String.
+          def member_reach(tokens, container, opaque_is_object:)
+            kinds = tokens.filter_map { |token| member_token_kind(token) }
+            return EVERY_VALUE_REACH if kinds.all?(:any) && (kinds.any? || container_holds_every_value?(container))
+            return OBJECT_REACH if kinds.empty? || kinds.all?(:object)
+            return OBJECT_REACH if opaque_is_object && (kinds - %i[object opaque]).empty?
+            return nil if tokens.any? { |token| member_token_kind(token) == :scalar && token_carries_members?(token, container) }
+
+            OBJECT_VALUES_REACH if container_holds_every_object?(container)
+          end
+
+          # What one declared class is on the wire, for placing members: an object (`Hash`, `:params`, `Data`,
+          # `Struct`), any value at all (`Object`), a JSON scalar or array, or a class with no JSON form. `NilClass`
+          # is nullability, decided elsewhere, and is skipped.
+          def member_token_kind(token)
+            return nil if Axn::Internal::Identity.same?(token, ::NilClass)
+            return :object if object_typed_element?(token)
+            return :any if Axn::Internal::Identity.kind?(token, ::Module) && container_holds_every_value?(token)
+
+            single_type_for(token, for_output: false).empty? ? :opaque : :scalar
+          end
+
+          # Whether a declared scalar class's values are the container, and so carry the members.
+          def token_carries_members?(token, container)
+            return false unless Axn::Internal::Identity.kind?(container, ::Module)
+
+            classes = case token
+                      when :boolean then [::TrueClass, ::FalseClass]
+                      when :uuid then [::String]
+                      else [token]
+                      end
+            classes.any? { |klass| Axn::Internal::Identity.kind?(klass, ::Module) && Axn::Internal::NativeMethods.includes_module?(klass, container) }
+          end
+
+          # Whether every value is an instance of `container` (`Object`, `Kernel`, `BasicObject`), read off the
+          # object ancestry natively. `ANY_CONTAINER` is axn's own sentinel, and is not a Module.
+          def container_holds_every_value?(container)
+            return true if Axn::Internal::ShapeGraph::ANY_CONTAINER.equal?(container)
+
+            Axn::Internal::Identity.kind?(container, ::Module) && Axn::Internal::NativeMethods.includes_module?(::Object, container)
+          end
+
+          # Whether every JSON object — which arrives as a `Hash` — is an instance of `container`.
+          def container_holds_every_object?(container)
+            Axn::Internal::Identity.kind?(container, ::Module) && Axn::Internal::NativeMethods.includes_module?(::Hash, container)
+          end
+
+          # Whether the node holding the members is an object: always at `OBJECT_REACH`, and at `EVERY_VALUE_REACH`
+          # when a plain-key member rejects every value that is not one.
+          def object_node_for_members?(shape, reach)
+            OBJECT_REACH.equal?(reach) || (EVERY_VALUE_REACH.equal?(reach) && members_force_object?(shape))
+          end
+
+          # The members written onto a node that states no object type: `properties`/`required` only, which a value
+          # that is not an object passes untouched. A `method_call:` member read off such a value is checked on what
+          # the method returns, which is named.
+          def overlay_member_properties(node, shape, reach, member_props, required)
+            merged = node.merge(properties: (node[:properties] || {}).merge(member_props))
+            merged[:required] = required unless required.empty?
+            return merged unless EVERY_VALUE_REACH.equal?(reach) && members_read_methods?(shape)
+
+            record_residue(merged, METHOD_READ_RESIDUE)
+          end
+
+          # Whether a direct member reads by plain KEY on every call, which rejects every value it cannot read a key
+          # off: `ShapeValidator` reports such a member "could not be read" (or refuses the implicit method call)
+          # before any tolerance of its own applies. A member is read whenever one of its validator entries runs, so
+          # a member with none, one gated wholesale, or one whose every entry carries its own gate is not.
+          def members_force_object?(shape)
+            Axn::Internal::ShapeGraph.members(shape).any? { |member| !member_reads_method?(member) && member_always_read?(member) }
+          end
+
+          # Whether a direct member reads through `method_call:` on some call.
+          def members_read_methods?(shape)
+            Axn::Internal::ShapeGraph.members(shape).any? { |member| member_reads_method?(member) && member_active_entries(member).any? }
+          end
+
+          def member_reads_method?(member) = !!Axn::Internal::ShapeGraph.read(member, :method_call)
+
+          def member_always_read?(member)
+            return false if gated_validations?(member_validations(member))
+
+            member_active_entries(member).any? { |_key, opt| !entry_self_gated?(opt) }
+          end
+
+          def member_active_entries(member)
+            Axn::Validation::Base.validator_entries(member_validations(member)).select { |_key, opt| opt }
+          end
+
+          def member_validations(member)
+            Axn::Internal::ShapeGraph.hash_or_nil(Axn::Internal::ShapeGraph.read(member, :validations)) || {}
           end
 
           # One edge of a bag, reduced exactly as a field's entries are (`effective_validations`): an entry

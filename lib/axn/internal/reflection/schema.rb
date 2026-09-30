@@ -2006,20 +2006,33 @@ module Axn
             # The plan's own type schema, not a second `contents_schema_for` call: one build, and the plan is
             # then literally what gets emitted rather than a parallel derivation of it.
             items = plan.type_schema
-            if shape && plan.emitted
+            if shape && plan.emitted && plan.members_in_items?
               member_props, required = member_properties(shape[:members], for_output:, ancestry:)
               items = items.merge(type: "object", properties: plan.base_properties.merge(member_props))
               items[:required] = required unless required.empty?
             end
             prop[:items] = items unless items.empty?
+            apply_value_members!(prop, config, plan, for_output:, ancestry:) if shape && !plan.members_in_items?
           elsif shape
-            return unless plan.emitted
+            apply_value_members!(prop, config, plan, for_output:, ancestry:)
+          end
+        end
 
+        # A shape's members written at the field's own node, as far as `plan.reach` says they reach. Inbound, a
+        # shape whose members reach no JSON object is named rather than left silent.
+        def apply_value_members!(prop, config, plan, for_output:, ancestry:)
+          shape = plan.shape
+          return prop.replace(record_residue(prop, Contents::UNSTATED_SHAPE_RESIDUE)) if !plan.emitted && !for_output
+          return unless plan.emitted
+
+          member_props, required = member_properties(shape[:members], for_output:, ancestry:)
+          if object_node_for_members?(shape, plan.reach)
             prop[:type] = nil_allowed?(config) ? %w[object null] : "object"
             prop.delete(:format)
-            member_props, required = member_properties(shape[:members], for_output:, ancestry:)
             prop[:properties] = plan.base_properties.merge(member_props)
             prop[:required] = required unless required.empty?
+          else
+            prop.replace(overlay_member_properties(prop.merge(properties: plan.base_properties), shape, plan.reach, member_props, required))
           end
         end
 
@@ -2069,8 +2082,18 @@ module Axn
         # answer: `apply_structured_schema!` emits these members, and a rule charged against the plan walks the
         # same list rather than re-reading the config it came from. A plan whose `emitted` is false still carries
         # it (nothing about that decision changes which shape was consulted), so every consumer gates on `emitted`.
-        ShapePropertyPlan = Data.define(:emitted, :in_items, :type_schema, :shape, :container) do
+        ShapePropertyPlan = Data.define(:emitted, :in_items, :type_schema, :shape, :container, :members_in_items, :reach) do
+          def initialize(emitted:, in_items:, type_schema:, shape:, container:, members_in_items: in_items, reach: Contents::OBJECT_REACH)
+            super
+          end
+
           def in_items? = in_items
+
+          # Whether the SHAPE's members land at the items node. Only a shape distributing over the elements does,
+          # and every such shape is folded into the `of:` bag at declaration; a shape still on a field whose type
+          # admits an Array beside something else (`type: [Array, Hash]` beside `container: Hash`) names the members
+          # of the value itself, so they land at the field's own node while its `of:` contents stay in `items`.
+          def members_in_items? = members_in_items
 
           # A map puts its `of:` contents under `additionalProperties` at the field's own node. Asked of the
           # container the declaration named rather than of the schema that was built, so a values axis with
@@ -2108,6 +2131,12 @@ module Axn
           return nothing if !for_output && validations[:model]
 
           if in_items
+            if shape && !for_output
+              reach = field_member_reach(validations, shape)
+              return ShapePropertyPlan.new(emitted: !reach.nil?, in_items:, shape:, container:, members_in_items: false, reach:,
+                                           type_schema: of ? contents_node_schema(of, for_output:, ancestry:) : {})
+            end
+
             # Overlay the shape's object properties onto items only when the ELEMENTS are objects.
             emitted = shape_overlay_applies?(of, for_output:)
             # `contents_node_schema` seeds an element type's own members whenever there is an `of:`, shape or not —
@@ -2137,13 +2166,15 @@ module Axn
           return nothing unless shape
 
           # A shaped object field IS an object, even when its declared type: (e.g. a Data.define subclass) isn't
-          # in TYPE_MAP — on input unconditionally, on output only when the value serializes member-keyed.
-          emitted = !for_output || shape_serializes_to_object?(validations)
+          # in TYPE_MAP — on output only when the value serializes member-keyed, and on input as far as
+          # `field_member_reach` says the members reach.
+          reach = for_output ? Contents::OBJECT_REACH : field_member_reach(validations, shape)
+          emitted = for_output ? shape_serializes_to_object?(validations) : !reach.nil?
           type_klass = validations.dig(:type, :klass)
           base = emitted && strict_descendant?(type_klass, ::Data) ? type_klass.members.to_h { |m| [m, {}] } : {}
           # A non-array type contributes at ONE node (a multi-class `type:` reflects as `anyOf` branches of
           # scalar types, which name no properties), so its schema is just those properties.
-          ShapePropertyPlan.new(emitted:, in_items:, shape:, container:, type_schema: { properties: base })
+          ShapePropertyPlan.new(emitted:, in_items:, shape:, container:, reach:, type_schema: { properties: base })
         end
 
         # THE ONE derivation of the validations a projection is BUILT from, and the reason it is a function rather

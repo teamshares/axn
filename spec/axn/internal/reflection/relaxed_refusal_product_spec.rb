@@ -62,7 +62,7 @@ module RelaxedRefusalProduct
 
   def cells
     @cells ||= model_claim_cells + inclusion_cells + raw_shape_cells + id_type_cells + length_floor_cells +
-               union_of_cells + presence_cells
+               union_of_cells + presence_cells + method_read_cells
   end
 
   def cell(group, id, decl, path, array: false) = Cell.new(group:, id: "#{group}|#{id}", decl:, path:, array:)
@@ -136,10 +136,13 @@ module RelaxedRefusalProduct
     out
   end
 
-  # A raw `shape:` beside each type, with and without a hand-written `container:`, at every position one is written.
+  # A raw `shape:` beside each type, with and without a hand-written `container:`, at every position one is written:
+  # the grid of declared class x container, which the declaration refuses where the container leaves the members
+  # unchecked on values the class admits, and the emitter places exactly where it lets them stand.
   def raw_shape_cells
-    axes = { type: { "Array" => "Array", "Hash" => "Hash", "none" => nil, "Data" => "#{P}::Point", "[Array,Hash]" => "[Array, Hash]" },
-             container: { "cArray" => "Array", "cHash" => "Hash", "c-" => nil, "cData" => "#{P}::Point" },
+    axes = { type: { "Array" => "Array", "Hash" => "Hash", "none" => nil, "Data" => "#{P}::Point", "[Array,Hash]" => "[Array, Hash]",
+                     "[String,Hash]" => "[String, Hash]", "[Hash,NilClass]" => "[Hash, NilClass]", "Object" => "Object" },
+             container: { "cArray" => "Array", "cHash" => "Hash", "c-" => nil, "cData" => "#{P}::Point", "cObject" => "Object" },
              req: { "req" => "", "optional" => ", optional: true" }, gate: { "ungated" => "", "closed" => ", if: -> { false }" },
              of: { "no of" => "", "of Hash" => ", of: Hash", "of String" => ", of: String" } }
     out = []
@@ -157,8 +160,41 @@ module RelaxedRefusalProduct
 
       klass = v[:type] ? "klass: #{v[:type]}, " : ""
       out << cell("G5", "bag #{id}", "expects :val, type: Array#{v[:req]}, of: { #{klass}shape: #{shape}#{v[:gate]} }", %i[val], array: true)
+      out << cell("G5", "map #{id}", "expects :val, type: Hash#{v[:req]}, of: { values: { #{klass}shape: #{shape}#{v[:gate]} } }", %i[val k])
     end
     out
+  end
+
+  # Shape members read by plain key and by `method_call:` at every position that reads members off a value whose
+  # class is not declared an object: an element or a map value naming no class, a member's own elements, and a
+  # declared `Object`. A `method_call:` member reads a method off a String or an Array (`"abc".length`), so only a
+  # plain-key member read on every call makes the position an object.
+  def method_read_cells
+    mc = ["field :length, type: Integer, method_call: true", "#{P}.member(:length, method_call: true, type: { klass: Integer })"]
+    mc_opt = ["field :length, type: Integer, method_call: true, optional: true",
+              "#{P}.member(:length, method_call: true, type: { klass: Integer }, allow_blank: true)"]
+    mc_bare = ["field :length, method_call: true", "#{P}.member(:length, method_call: true, presence: true)"]
+    plain = ["field :sku, type: String", "#{P}.member(:sku, type: { klass: String })"]
+    plain_opt = ["field :sku, type: String, optional: true", "#{P}.member(:sku, type: { klass: String }, allow_blank: true)"]
+    plain_gated = ["field :sku, type: String, if: -> { false }", "#{P}.member(:sku, type: { klass: String }, if: -> { false })"]
+    members = { "mc" => [mc], "mc opt" => [mc_opt], "mc bare" => [mc_bare], "plain" => [plain], "plain opt" => [plain_opt],
+                "plain gated" => [plain_gated], "mc+plain" => [mc, plain], "mc+plain gated" => [mc, plain_gated], "none" => [] }
+    members.flat_map { |label, list| method_read_spellings(label, list) }
+  end
+
+  def method_read_spellings(label, list)
+    block = list.map(&:first).join("\n ")
+    raw = "{ members: [#{list.map(&:last).join(', ')}] }"
+    out = [
+      cell("G11", "classless bag #{label}", "expects :val, type: Array, of: { shape: #{raw} }", %i[val], array: true),
+      cell("G11", "Object bag #{label}", "expects :val, type: Array, of: { klass: Object, shape: #{raw} }", %i[val], array: true),
+      cell("G11", "classless map #{label}", "expects :val, type: Hash, of: { values: { shape: #{raw} } }", %i[val k]),
+    ]
+    return out if list.empty?
+
+    out << cell("G11", "block #{label}", "expects :val, type: Array do\n #{block}\nend", %i[val], array: true)
+    out << cell("G11", "member block #{label}", "expects :o, type: Hash do\n field :val, type: Array do\n  #{block}\n end\nend", %i[o val], array: true)
+    out << cell("G11", "object block #{label}", "expects :val, type: Object do\n #{block}\nend", %i[val])
   end
 
   # `id_type:` naming any class, beside each explicit `<field>_id` sibling, at the top level and nested.
@@ -302,14 +338,6 @@ RSpec.describe "the declarations the precision-only refusals used to refuse, aga
 
   # Divergences these declarations share with code that predates the relaxation, deferred to PRO-3582 by name.
   def deferred?(cell)
-    # A hand-written `container:` the declared type does not imply: none declared, a union, or a Data container beside
-    # `type: Hash`.
-    if cell.group == "G5" && (match = cell.id.match(/\|(?:raw member|field|member|bag) (\S+) (\S+) /))
-      type, container = match.captures
-      return true if %w[cHash cData].include?(container) && %w[none [Array,Hash]].include?(type)
-      return true if type == "Hash" && container == "cData"
-    end
-
     # A required `model:` beside a null-only explicit `<field>_id`, which no wire call can satisfy.
     cell.group == "G7" && cell.id.include?("sib:NilClass opt") && cell.id.include?(" required ")
   end

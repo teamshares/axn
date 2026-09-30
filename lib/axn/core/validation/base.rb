@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "axn/internal/identity"
+require "axn/internal/native_methods"
+require "axn/internal/shape_graph"
 require "axn/core/validation/clusivity_sets"
 
 module Axn
@@ -184,16 +186,36 @@ module Axn
         # here as a nil-rejecting validator and wrongly mark the field required.
         return true if key == :of
         return true if opts[:allow_nil] || opts[:allow_blank]
-        return true if key == :absence
-        return true if key == :acceptance && acceptance_admits_nil?(opts)
-        return true if key == :confirmation
-        return true if key == :format && format_admits_nil?(opts)
-        return true if key == :length && length_admits_nil?(opts)
-        return true if key == :type && type_admits_nil?(opts)
-        return true if key == :exclusion && set_includes_nil?(opts) == false
-        return true if key == :inclusion && set_includes_nil?(opts) == true
 
-        false
+        validator_admits_nil?(key, opts)
+      end
+
+      # Whether one validator, by its own options, lets a nil through with no tolerance declared.
+      def self.validator_admits_nil?(key, opts)
+        case key
+        when :absence, :confirmation then true
+        when :acceptance then acceptance_admits_nil?(opts)
+        when :format then format_admits_nil?(opts)
+        when :length then length_admits_nil?(opts)
+        when :type then type_admits_nil?(opts)
+        when :exclusion then set_includes_nil?(opts) == false
+        when :inclusion then set_includes_nil?(opts) == true
+        when :shape then shape_skips_nil?(opts)
+        else false
+        end
+      end
+
+      # `ShapeValidator` reads members only off a value that is its container (or off every element, for the
+      # distributing `Array`), so a nil reaches the members only where the container is one nil is: the no-gate
+      # sentinel, or a module nil is an instance of (`Object`, `Kernel`, `BasicObject`, `NilClass`). Anywhere else
+      # a nil skips the shape, and whatever rejects it is the `type:` beside it. Read natively, so a container
+      # cannot answer for itself.
+      def self.shape_skips_nil?(opts)
+        container = Internal::ShapeGraph.hash_or_nil(opts)&.[](:container)
+        return false if Internal::ShapeGraph::ANY_CONTAINER.equal?(container)
+        return false unless Internal::Identity.kind?(container, ::Module)
+
+        !Internal::NativeMethods.includes_module?(::NilClass, container)
       end
 
       # Whether a validator ENTRY is scoped to an ActiveModel validation CONTEXT — an `on:` among its options,

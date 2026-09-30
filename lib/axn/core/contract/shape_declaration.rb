@@ -252,15 +252,127 @@ module Axn
             "#{_declared_type_label(container)}, shape: { members: [...] } }`), or drop `container:`."
         end
 
-        # A raw distributing `shape:` (beside `type: Array`) together with a `do ... end` block: the block builds
-        # the slot the raw kwarg names, so the raw members would be discarded without a word and checked by
-        # nothing. Refused at every position a block can be written (a field, an exposure, a shape member).
+        # A hand-written `container:` other than `Array` that leaves the members unchecked on values the declared
+        # type admits. `ShapeValidator` checks the members only on a value that is the container, and skips every
+        # other value without a word, so the container decides which of the admitted values the members describe:
+        #
+        #   * no declared type (no `type:` at a field or member, no `klass:` in a bag) — every value that is not the
+        #     container skips the members, while the declaration reads as "this value has these members";
+        #   * a declared class the container only narrows (`type: Object` beside `container: Hash`) — the same, within
+        #     one declared class;
+        #   * no declared class the container covers (`klass: Array` beside `container: Hash`, `type: Hash` beside
+        #     `container: SomeData`) — the members are checked on no call at all.
+        #
+        # What stands: a container every declared class is (`type: SomeData` beside `container: Data` restates the
+        # derived one), and a UNION whose every class either is the container or provably never is — `type: [Array,
+        # Hash]` beside `container: Hash` names the members of the Hash branch, which is the one spelling that has.
+        # "Provably never" is two unrelated CLASSES: an object is an instance of one class, so it is both only when
+        # one descends from the other. A module on either side can be mixed into a subclass of the other, so it
+        # proves nothing, and falls to "narrows".
+        #
+        # `Array` is `_reject_distributing_shape!`'s, where it is the distributing marker rather than a gate, and a
+        # non-class is `_reject_non_class_container!`'s; so is a type token the runtime cannot hold a value to, which
+        # its own guard refuses. This stands down for all three rather than naming a less specific defect first.
+        def _reject_uncovered_container!(container, tokens, where:, option:, gated: false)
+          return if nil.equal?(container) || ::Array.equal?(container) || Internal::ShapeGraph::ANY_CONTAINER.equal?(container)
+          return unless Internal::Identity.kind?(container, ::Module)
+          return unless tokens.all? { |token| _supported_type_token?(token) }
+          # With no declared class, a container every object is (`Object`, `Kernel`, `BasicObject`) skips nothing.
+          return if tokens.empty? && Internal::NativeMethods.includes_module?(::Object, container)
+
+          relations = tokens.map { |token| _container_relation(token, container) }
+          return if relations.include?(:covered) && relations.all? { |relation| %i[covered disjoint].include?(relation) }
+
+          raise ArgumentError, _uncovered_container_message(container, tokens, relations, where:, option:, gated:)
+        end
+
+        # The same guard at a field or a shape member, whose declared class is its `type:`. Stands down beside
+        # `type: Array`, where the shape distributes and `_reject_distributing_shape!` judges the container.
+        def _reject_uncovered_raw_container!(carrier, where)
+          return unless Internal::ShapeGraph.carries_key?(carrier, :shape)
+          return if _distributing_shape?(carrier)
+
+          shape = Internal::ShapeGraph.hash_or_nil(carrier[:shape])
+          return if nil.equal?(shape)
+
+          type_bag = Internal::ShapeGraph.hash_or_nil(carrier[:type])
+          gated = !nil.equal?(type_bag) && Internal::FieldConfig::CONDITIONAL_GATE_KEYS.any? { |key| Internal::ShapeGraph.carries_key?(type_bag, key) }
+          _reject_uncovered_container!(shape[:container], _declared_type_tokens(_declared_type_klass(carrier)), where:, option: "type:", gated:)
+        end
+
+        # How one declared type token stands to the container: `:covered` when every value of it is the container,
+        # `:disjoint` when no value of it can be, `:narrowed` otherwise. A pseudo-type token stands for the classes
+        # its values have (`:params` a Hash, `:boolean` true or false, `:uuid` a String). Ancestry is read natively,
+        # so a class defining its own `<` or `ancestors` cannot answer for itself.
+        def _container_relation(token, container)
+          classes =
+            case token
+            when :params then [::Hash]
+            when :boolean then [::TrueClass, ::FalseClass]
+            when :uuid then [::String]
+            else [token]
+            end
+          relations = classes.map { |klass| _class_container_relation(klass, container) }.uniq
+          relations.one? ? relations.first : :narrowed
+        end
+
+        def _class_container_relation(klass, container)
+          return :covered if Internal::NativeMethods.includes_module?(klass, container)
+
+          classes = Internal::Identity.kind?(klass, ::Class) && Internal::Identity.kind?(container, ::Class)
+          classes && !Internal::NativeMethods.includes_module?(container, klass) ? :disjoint : :narrowed
+        end
+
+        # Summary first, then only what the container reaches: which values skip the members. `option` is the key
+        # that names the declared class at this position (`type:` at a field or member, `klass:` in a bag), so the
+        # fix lands on a key the declaration carries.
+        #
+        # "Never checked" is claimed only where the declared class is checked on every call: a gated `type:` skips
+        # its check on the calls its condition closes, and a value that is the container can reach the members there.
+        def _uncovered_container_message(container, tokens, relations, where:, option:, gated:)
+          named = _declared_type_label(container)
+          checked = "The members are checked only on a value that `is_a?(#{named})`"
+          if tokens.empty?
+            return "`container: #{named}` isn't allowed in #{where} without a `#{option}` — add `#{option} #{named}`. " \
+                   "#{checked}, and without a `#{option}` every other value skips them."
+          end
+
+          declared = "`#{option} #{tokens.one? ? _declared_type_label(tokens.first) : "[#{tokens.map { |token| _declared_type_label(token) }.join(', ')}]"}`"
+          reach = if relations.all?(:disjoint) && !gated
+                    "no value #{declared} admits is one, so they are never checked"
+                  else
+                    "#{declared} admits values that aren't, which skip them"
+                  end
+          "`container: #{named}` isn't allowed in #{where} beside #{declared} — #{_uncovered_container_fix(container, tokens, declared, option)}. " \
+            "#{checked}, and #{reach}."
+        end
+
+        # A single structured class takes the container it would derive, so dropping `container:` checks the members
+        # on every value of it — except `Array`, which derives the distributing reading, so members meant for an
+        # element's own contents are pointed at the nesting that says so. Anything else names the classes.
+        def _uncovered_container_fix(container, tokens, declared, option)
+          named = _declared_type_label(container)
+          if tokens.one? && ::Array.equal?(tokens.first)
+            "to describe what is inside each element, write the nesting: `of: { klass: Array, of: { klass: #{named}, " \
+              "shape: { members: [...] } } }`"
+          elsif tokens.one? && _shape_compatible_klass?(tokens.first)
+            "drop `container:` to check the members on every value #{declared} admits"
+          else
+            "keep in `#{option}` only classes whose values always or never pass `is_a?(#{named})`"
+          end
+        end
+
+        # A raw `shape:` together with a `do ... end` block, whatever the declared type: the block builds the slot
+        # the raw kwarg names and replaces it outright (`validations[:shape] = _build_shape(...)`), so the raw
+        # members and any `container:` would be discarded without a word and checked by nothing. Refused at every
+        # position a block can be written (a field, an exposure, a shape member). Only a `shape:` the caller
+        # actually wrote reaches this, since the block's own shape is built after it runs.
         def _reject_raw_shape_beside_block!(carrier, where)
-          return unless _distributing_shape?(carrier)
+          return unless Internal::ShapeGraph.carries_key?(carrier, :shape)
 
           raise ArgumentError,
-                "#{where} is declared twice — by the `shape:` option and by the `do ... end` block, which replaces " \
-                "it, so the option's members would be checked by nothing. Declare the members once."
+                "#{where} isn't allowed beside a `do ... end` block — declare the members once, in the block. The " \
+                "block builds this value's shape and replaces the option, so everything the option names is discarded."
         end
 
         def _distributing_container_message(where)
@@ -430,7 +542,7 @@ module Axn
 
           walked = _walk_shape_graph!(shape, walk, allowance, via:, via_name:)
           bag[:shape] = walked.copy
-          _derive_inner_shape_container!(bag, fields)
+          _derive_inner_shape_container!(bag, fields, where: _inner_shape_position_label(position, via, via_name, fields))
           # The level added here is the SHAPE node the bag carries; below it, the subtree's own answer stands.
           WalkedContracts.new(paths: walked.paths, height: walked.height + 1,
                               edge: walked.height.zero? ? SHAPE_EDGE : walked.edge)
@@ -681,6 +793,8 @@ module Axn
           # under `type: Array` stores the right container in each place rather than the last one walked.
           # Deriving BEFORE the walk instead would defeat that memo outright (a fresh detached node per
           # reference is a fresh identity), which is what keeps a shared sub-shape from costing 2^depth walks.
+          # After the walk, so a graph that cannot be walked at all (cyclic, generative) is reported as that.
+          _reject_uncovered_raw_container!(validations, "`shape:` on shape member #{_describe_shape_member(member, name)}")
           _derive_raw_shape_container!(validations)
           # The levels this member's shape adds below the member: the shape node itself, and for a distributing
           # member the element rung it is read off.
@@ -1026,6 +1140,8 @@ module Axn
                 :_distributing_shape_depth,
                 :_reject_unshaped_shape!, :_reject_unknown_shape_keys!, :_reject_distributing_shape!,
                 :_reject_raw_shape_beside_block!, :_distributing_container_message, :_distributing_element_container_message,
+                :_reject_uncovered_container!, :_reject_uncovered_raw_container!, :_container_relation, :_class_container_relation,
+                :_uncovered_container_message, :_uncovered_container_fix,
                 :_inner_shape_position_label,
                 :_walk_inner_contracts!, :_walk_declared_inner_contracts!, :_new_path_allowance,
                 :_snapshot_inner_shape!, :_snapshot_member_shape!, :_combine_inner_contracts,
