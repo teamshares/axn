@@ -6,6 +6,8 @@ require "time"
 
 require "axn/internal/identity"
 require "axn/internal/native_methods"
+# `blank_refusal` spells the blank value sets the vocabulary holds.
+require "axn/internal/reflection/schema/vocabulary"
 
 module Axn
   module Internal
@@ -44,6 +46,10 @@ module Axn
             Time => "date-time",
           }.freeze
 
+          # What a presence check rejects at a position naming no type, spelled as the value set it is: every blank,
+          # nil among them only where nothing tolerates nil (`allow_nil: true, presence: true` accepts it).
+          def blank_refusal(nullable:) = { enum: nullable ? Vocabulary::NON_NIL_BLANK_WIRE_VALUES : Vocabulary::BLANK_WIRE_VALUES }
+
           # Forbid `null` on a property (a required model-id token can't be null). Strips the null branch from
           # an explicit type/anyOf; for the generated id property (untyped — a model PK has no fixed JSON type)
           # there's no branch to strip, so add an explicit `not: { type: "null" }` constraint.
@@ -54,6 +60,9 @@ module Axn
             elsif prop[:anyOf].is_a?(Array)
               prop[:anyOf] = prop[:anyOf].reject { |member| member[:type] == "null" }
             elsif !prop.key?(:type)
+              # A blank value set a presence check wrote already names nil.
+              return if prop[:not].is_a?(::Hash) && prop[:not][:enum].is_a?(::Array) && prop[:not][:enum].include?(nil)
+
               # Null rejection is an additional constraint, not a replacement for an existing
               # prohibition (for example, the presence floor on a type-agnostic projection).
               prop[:allOf] = Array(prop[:allOf]) + [{ not: prop[:not] }] if prop.key?(:not)

@@ -371,6 +371,47 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
     expect(rendered).to be_empty, "these documents render a callable:\n  #{rendered.join("\n  ")}"
   end
 
+  # The same promise for every other token a document names: an anonymous class or module renders as its object
+  # address, so each position that names a token — a declared `type:` and union, an `of:` bag and a map axis, a
+  # `model:` class and its `id_type:`, a numeric class, a constant set under an anonymous class, a bound that is an
+  # instance of one — is declared with anonymous ones, in both directions.
+  it "never renders any token's address into a document" do
+    anon = Class.new
+    anon.const_set(:Inner, Class.new)
+    numeric = Class.new(Numeric)
+    mod = Module.new
+    model = Class.new { def self.fetch(id) = id }
+    tokens = { "class" => anon, "nested constant" => anon::Inner, "module" => mod, "numeric" => numeric,
+               "singleton" => Object.new.singleton_class }
+    declarations = tokens.flat_map do |label, token|
+      [
+        ["#{label} type", :in, { type: token }], ["#{label} union", :in, { type: [token, String] }],
+        ["#{label} of", :in, { type: Array, of: token }], ["#{label} map", :in, { type: Hash, of: { values: { klass: token } } }],
+        ["#{label} keys", :in, { type: Hash, of: { keys: { klass: token } } }],
+        ["#{label} id_type", :in, { model: { klass: model, finder: :fetch, id_type: token } }],
+        ["#{label} out type", :out, { type: token }], ["#{label} out of", :out, { type: Array, of: token }]
+      ]
+    end
+    declarations += [
+      ["anonymous model", :in, { model: { klass: Class.new { def self.fetch(id) = id }, finder: :fetch } }],
+      ["instance equal_to", :in, { type: Integer, comparison: { equal_to: anon.new } }],
+      ["instance in a validate: residue", :in, { type: Integer, numericality: { greater_than: anon.new } }],
+    ]
+
+    declared = 0
+    rendered = declarations.filter_map do |label, direction, decl|
+      klass = declare(direction, decl)
+      next if klass.nil?
+
+      declared += 1
+      schema = direction == :in ? klass.input_schema : klass.output_schema
+      label if JSON.generate(schema).match?(/0x\h{4,}/)
+    end
+
+    expect(declared).to be > 35
+    expect(rendered).to be_empty, "these documents render a token's address:\n  #{rendered.join("\n  ")}"
+  end
+
   # `default:` is not a validator, so the walk above never declares one — and a default changes what reaches
   # every check: an omitted value becomes the default, which a gated check may then reject only on some calls.
   # Two defaults per cell: the type's blank (the value a presence check turns on), and one the plain cell

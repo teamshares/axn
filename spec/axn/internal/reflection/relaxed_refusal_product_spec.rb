@@ -323,9 +323,10 @@ module RelaxedRefusalProduct
     out
   end
 
-  # A tolerance beside an explicit `presence:`, at every position the two can meet.
+  # A tolerance beside an explicit `presence:`, at every position the two can meet — a position naming no type
+  # included, where the presence check is spelled as a value set rather than a floor on a type.
   def presence_cells
-    axes = { type: %w[String Array Hash Integer [String,NilClass]].to_h { |t| [t, TYPES[t]] },
+    axes = { type: %w[String Array Hash Integer [String,NilClass] unknown].to_h { |t| [t, TYPES[t]] }.merge("untyped" => nil),
              tol: { "allow_nil" => "allow_nil: true", "allow_blank" => "allow_blank: true", "optional" => "optional: true" },
              presence: { "true" => "presence: true", "allow_nil false" => "presence: { allow_nil: false }",
                          "allow_blank false" => "presence: { allow_blank: false }", "gated closed" => "presence: { if: -> { false } }" } }
@@ -334,13 +335,16 @@ module RelaxedRefusalProduct
       id = l.values.join(" ")
       pair = "#{v[:tol]}, #{v[:presence]}"
       raw_pair = "#{v[:tol].sub('optional: true', 'allow_blank: true')}, #{v[:presence]}"
-      out << cell("G10", "field #{id}", "expects :val, type: #{v[:type]}, #{pair}", %i[val])
-      out << cell("G10", "field transformed #{id}", "expects :val, type: #{v[:type]}, #{pair}, preprocess: ->(v) { v }", %i[val])
-      out << cell("G10", "member #{id}", "expects :o, type: Hash do\n field :val, type: #{v[:type]}, #{pair}\nend", %i[o val])
-      out << cell("G10", "raw member #{id}", "expects :o, type: Hash, shape: { members: [#{P}.member(:val, type: { klass: #{v[:type]} }, #{raw_pair})] }",
+      type = v[:type] ? "type: #{v[:type]}, " : ""
+      klass = v[:type] ? "klass: #{v[:type]}, " : ""
+      raw_type = v[:type] ? "type: { klass: #{v[:type]} }, " : ""
+      out << cell("G10", "field #{id}", "expects :val, #{type}#{pair}", %i[val])
+      out << cell("G10", "field transformed #{id}", "expects :val, #{type}#{pair}, preprocess: ->(v) { v }", %i[val])
+      out << cell("G10", "member #{id}", "expects :o, type: Hash do\n field :val, #{type}#{pair}\nend", %i[o val])
+      out << cell("G10", "raw member #{id}", "expects :o, type: Hash, shape: { members: [#{P}.member(:val, #{raw_type}#{raw_pair})] }",
                   %i[o val])
-      out << cell("G10", "bag #{id}", "expects :val, type: Array, of: { klass: #{v[:type]}, #{pair} }", %i[val], array: true)
-      out << cell("G10", "map #{id}", "expects :val, type: Hash, of: { values: { klass: #{v[:type]}, #{pair} } }", %i[val])
+      out << cell("G10", "bag #{id}", "expects :val, type: Array, of: { #{klass}#{pair} }", %i[val], array: true)
+      out << cell("G10", "map #{id}", "expects :val, type: Hash, of: { values: { #{klass}#{pair} } }", %i[val])
     end
     out
   end
@@ -374,10 +378,6 @@ RSpec.describe "the declarations the precision-only refusals used to refuse, aga
   # allows so a regression beside one still fails.
   def stated_exception?(cell, value, direction, satisfiable:)
     return true if direction == :looser && value == " " # a String presence's whitespace
-    # An untyped `<field>_id, default:` sibling's blank refusal, which the schema does not state on any declaration
-    # (PRO-3615, "An untyped required field emits `{}`"). An optional `model:` beside it no longer carries a lookup
-    # residue that happened to cover it, since a miss there resolves to nil.
-    return true if direction == :looser && cell.group == "G7" && cell.id.include?("sib:untyped default") && non_nil_blank?(value)
     return false unless direction == :stricter
     return true if value.nil? && cell.id.include?("default") # an explicit nil a `default:` fills
     # The model id's narrower type: a scalar `id_type:` states a type the lookup never checks.
@@ -393,12 +393,6 @@ RSpec.describe "the declarations the precision-only refusals used to refuse, aga
     !value.nil? && (value == false || (value.respond_to?(:empty?) && value.empty?) || (value.is_a?(String) && value.strip.empty?))
   end
 
-  # Divergences these declarations share with code that predates the relaxation, deferred to PRO-3582 by name.
-  def deferred?(cell)
-    # A required `model:` beside a null-only explicit `<field>_id`, which no wire call can satisfy.
-    cell.group == "G7" && cell.id.include?("sib:NilClass opt") && cell.id.include?(" required ")
-  end
-
   it "never rejects a value the runtime accepts, and names every value it accepts that the runtime rejects" do
     stricter = []
     unreported = []
@@ -406,7 +400,7 @@ RSpec.describe "the declarations the precision-only refusals used to refuse, aga
 
     RelaxedRefusalProduct.cells.each do |cell|
       klass = declare(cell.decl)
-      next if klass.nil? || deferred?(cell)
+      next if klass.nil?
 
       declared += 1
       document = schemer(klass.input_schema)

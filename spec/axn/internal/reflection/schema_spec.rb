@@ -1576,7 +1576,74 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       end
 
       expect { klass.input_schema }.not_to raise_error
-      expect(klass.input_schema[:properties][:company_id]).to eq(type: "null")
+      expect(klass.input_schema[:properties][:company_id].except(:description)).to eq(type: "null")
+      expect(klass.input_schema[:properties][:company_id][:description]).not_to include("admits only null")
+    end
+
+    # A dotted child reading a key off the generated id makes that id an object, which replaces the type `id_type:`
+    # would state. The runtime checks neither, so the document is exact; the declared type is named rather than
+    # vanishing. Where the id keeps its type (a `method_call:` claim), or an explicit sibling states its own, there
+    # is nothing to name.
+    describe "a nested claim on the generated id" do
+      let(:note) { "its `id_type:` (Integer) is not stated, since a nested declaration reads the id as an object" }
+
+      def id_residues(klass) = klass.input_schema_residues.select { |r| r.path == %i[payload company_id] }.map(&:summary)
+
+      it "names the declared id_type: an object claim replaces" do
+        klass = build_axn do
+          expects :payload, type: Hash
+          expects :company, on: :payload, model: { klass: Struct.new(:id), finder: :new, id_type: Integer }
+          expects :detail, on: "payload.company_id"
+        end
+
+        expect(klass.input_schema.dig(:properties, :payload, :properties, :company_id, :type)).to eq("object")
+        expect(id_residues(klass)).to include(note)
+      end
+
+      it "names it when an untyped explicit sibling carries the claim" do
+        klass = build_axn do
+          expects :payload, type: Hash
+          expects :company, on: :payload, model: { klass: Struct.new(:id), finder: :new, id_type: Integer }
+          expects :company_id, on: :payload, as: :cid
+          expects :detail, on: :cid
+        end
+
+        expect(id_residues(klass)).to include(note)
+      end
+
+      it "names nothing where the id keeps its type, or a sibling states its own" do
+        method_read = build_axn do
+          expects :payload, type: Hash
+          expects :company, on: :payload, model: { klass: Struct.new(:id), finder: :new, id_type: Integer }
+          expects :size, on: "payload.company_id", method_call: true, type: Integer
+        end
+        typed_sibling = build_axn do
+          expects :payload, type: Hash
+          expects :company, on: :payload, model: { klass: Struct.new(:id), finder: :new, id_type: Integer }
+          expects :company_id, on: :payload, as: :cid, type: Hash
+          expects :detail, on: :cid
+        end
+
+        expect(method_read.input_schema.dig(:properties, :payload, :properties, :company_id, :type)).to eq("integer")
+        expect(id_residues(method_read)).not_to include(note)
+        expect(id_residues(typed_sibling)).not_to include(note)
+      end
+    end
+
+    # A dotted child reaching the generated id makes that key an implicit node; whichever is declared first, the
+    # model's own id property — its description, its type, its residues — is what the child's claim merges into.
+    it "emits the same id property whichever of a dotted child and its model is declared first" do
+      model = ->(k) { k.expects :company, on: :payload, model: { klass: Struct.new(:id), finder: :new, id_type: Integer } }
+      children = [->(k) { k.expects :detail, on: "payload.company_id" },
+                  ->(k) { k.expects :size, on: "payload.company_id", method_call: true }]
+      children.each do |child|
+        before = build_axn { [->(k) { k.expects :payload, type: Hash }, child, model].each { |step| step.call(self) } }
+        after = build_axn { [->(k) { k.expects :payload, type: Hash }, model, child].each { |step| step.call(self) } }
+
+        id = before.input_schema.dig(:properties, :payload, :properties, :company_id)
+        expect(id[:description]).to start_with("ID of the")
+        expect(id).to eq(after.input_schema.dig(:properties, :payload, :properties, :company_id))
+      end
     end
 
     # the merged type must not resurrect a null branch the required-id null pass already stripped.
@@ -1997,6 +2064,27 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
       expect(items[:type]).to eq("string")
       expect(klass.input_schema_residues.map(&:summary)).to include(a_string_including("its `shape:` members are checked"))
+    end
+
+    # A member is read only when one of its entries runs, so members carrying none reject nothing off any class —
+    # and naming them as checked would describe a check that never fails.
+    it "names no members off a scalar element when none of them carries an entry" do
+      silent = build_axn do
+        expects(:items, type: Array, of: String) do
+          field :sku, optional: true
+          field :length, method_call: true, optional: true
+        end
+      end
+      checked = build_axn do
+        expects(:items, type: Array, of: String) do
+          field :sku, optional: true
+          field :length, method_call: true, type: Integer
+        end
+      end
+
+      expect(silent.call(items: ["abc", ""])).to be_ok
+      expect(silent.input_schema_residues).to eq([])
+      expect(checked.input_schema_residues.map(&:summary)).to include(a_string_including("its `shape:` members are checked"))
     end
 
     it "does not advertise object array-items OUTPUT for `of:` a custom-as_json Data (but keeps them on input)" do
@@ -5070,6 +5158,46 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             .to eq([:x])
         end
 
+        # Where one route of a merged node transforms its value and another does not, the conjoin keeps the untransformed
+        # route's keywords and names the transformed one's; the routes a property is said to be built from
+        # (`property_routes`, and the representative that is its first) are the ones it kept. So the document is the
+        # same whichever route is declared first, and a transformed route's member never reads as emitted.
+        describe "a merged node with one transformed route" do
+          def merged(first, second)
+            routes = {
+              plain: ->(k) { k.expects :company, on: "payload.inner", as: :r_e, type: Hash },
+              transformed: lambda do |k|
+                k.expects(:company, on: :pin, as: :r_a, type: Hash, preprocess: ->(v) { v }) { field :leaf, type: String }
+              end,
+            }
+            build_axn do
+              expects :payload, type: Hash
+              expects :inner, on: :payload, as: :pin, type: Hash
+              [routes.fetch(first), routes.fetch(second)].each { |route| route.call(self) }
+            end
+          end
+
+          it "states the untransformed route whichever is declared first" do
+            plain_first = merged(:plain, :transformed).input_schema
+            transformed_first = merged(:transformed, :plain).input_schema
+            company = transformed_first.dig(:properties, :payload, :properties, :inner, :properties, :company)
+
+            expect(company[:type]).to eq("object")
+            expect(company[:properties]).to be_nil
+            expect(company[:description]).to include("transformed before these are checked")
+            expect(transformed_first).to eq(plain_first)
+          end
+
+          it "builds the property from the routes the conjoin kept" do
+            klass = merged(:transformed, :plain)
+            node = klass._resolved_subfields.tree.roots[:payload].children[:inner].children[:company]
+
+            expect(described_class.property_routes(node.configs).map(&:field)).to eq([:company])
+            expect(described_class.property_routes(node.configs).first.preprocess).to be_nil
+            expect(described_class.property_representative(node.configs)).to equal(described_class.property_routes(node.configs).first)
+          end
+        end
+
         # A model's generated `<field>_id` is skipped only when something else has ALREADY written that key.
         # A `shape:` member on a non-representative route of a merged node is declared but never emitted, so
         # treating it as that something skipped the generated property and left `company_id` `required` with
@@ -5338,7 +5466,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
             inner = schema[:properties][:payload][:properties][:inner]
             expect(inner).not_to have_key(:type)
-            expect(inner[:allOf]).to include({ not: { enum: ["", [], {}, false, nil] } })
+            expect(inner[:allOf]).to include(a_hash_including(not: { enum: ["", [], {}, false, nil] }))
             expect(inner[:description]).to include('"type":{"klass":"Enumerable"}')
             validator = JSONSchemer.schema(JSON.parse(JSON.generate(inner)))
             expect(validator.valid?([1])).to be(true)
@@ -5775,7 +5903,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
             inner = schema[:properties][:payload][:properties][:inner]
             expect(inner).not_to have_key(:type)
-            expect(inner[:allOf]).to eq([{ not: { enum: ["", [], {}, false, nil] } }])
+            expect(inner[:not]).to eq(enum: ["", [], {}, false, nil])
             expect(inner[:description]).to include('({"type":"integer"})')
             expect(JSONSchemer.schema(JSON.parse(JSON.generate(inner))).valid?("5")).to be(true)
             expect(klass.call(payload: { inner: "5" })).to be_ok
@@ -5958,7 +6086,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
 
             inner = schema[:properties][:payload][:properties][:inner]
-            expect(constraints(inner)).to include(minLength: 3, minItems: 3, minProperties: 3)
+            expect(inner[:allOf]).to include(a_hash_including(minLength: 3, minItems: 3, minProperties: 3))
             expect(inner).not_to have_key(:type)
             expect(inner[:description]).to start_with("some description")
             expect(inner[:description]).to include('"length":{"minimum":3}')
@@ -7117,7 +7245,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             properties: {
               address: {
                 properties: {
-                  zip: { default: "x", not: { type: "null" } },
+                  zip: { default: "x", not: { enum: ["", [], {}, false, nil] }, minItems: 1, minProperties: 1, minLength: 1 },
                 },
               },
             },
@@ -7215,7 +7343,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
               status: { type: "string", minLength: 1 },
               address: {
                 properties: {
-                  zip: { default: "x", not: { type: "null" } },
+                  zip: { default: "x", not: { enum: ["", [], {}, false, nil] }, minItems: 1, minProperties: 1, minLength: 1 },
                 },
               },
             },
@@ -10125,7 +10253,9 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
         expect(action.call(f: ["a"])).to be_ok
         expect(action.call(f: [nil])).not_to be_ok
-        expect(action.input_schema.dig(:properties, :f, :items)).to eq(not: { type: "null" })
+        expect(action.call(f: [""])).not_to be_ok
+        expect(action.input_schema.dig(:properties, :f, :items))
+          .to eq(not: { enum: ["", [], {}, false, nil] }, minItems: 1, minProperties: 1, minLength: 1)
       end
 
       # Outbound the schema may say LESS than the contract and never more, and an untyped OUTPUT position is
@@ -10146,13 +10276,14 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         fielded = build_axn { expects :f, format: { with: /\Aa/ } }
 
         # No TYPE is inferred at either position, which is the claim — neither a pattern nor a size names one
-        # JSON type. The element node is not EMPTY, though: the position still rejects nil (`nil.to_s` is `""`,
-        # which this pattern refuses), so it says that much, and names the pattern it cannot state for the
-        # non-string values it admits.
-        expect(constraints(bagged.input_schema.dig(:properties, :f, :items))).to eq(not: { type: "null" })
+        # JSON type. Each node still says what it can: the pattern on a string, the element's nil refusal
+        # (`nil.to_s` is `""`, which this pattern refuses), the required field's blank refusal — and names the
+        # pattern it cannot state for the non-string values it admits.
+        expect(constraints(bagged.input_schema.dig(:properties, :f, :items))).to eq(not: { type: "null" }, pattern: "^a")
         expect(bagged.input_schema.dig(:properties, :f, :items, :description)).to include('"format":')
         expect(bagged.input_schema.dig(:properties, :f, :items)).not_to have_key(:type)
-        expect(constraints(fielded.input_schema[:properties][:f])).to eq({})
+        expect(constraints(fielded.input_schema[:properties][:f]))
+          .to eq(not: { enum: ["", [], {}, false, nil] }, minItems: 1, minProperties: 1, minLength: 1, pattern: "^a")
         expect(fielded.input_schema[:properties][:f][:description]).to include('"format":{"with":')
       end
     end

@@ -831,7 +831,7 @@ module Axn
           return MENTIONABLE_MAP.bind_call(value) { |element| json_mentionable(element) } if exactly?(value, ::Array)
           return mentionable_pairs(value) if exactly?(value, ::Hash)
           # A declared class, named through `Module#to_s` bound rather than its own `to_s`.
-          return Axn::Internal::Rendering.module_name(value) if Axn::Internal::Identity.kind?(value, ::Module)
+          return Axn::Internal::Rendering.stable_module_name(value) if Axn::Internal::Identity.kind?(value, ::Module)
 
           mentionable_rendering(value)
         end
@@ -876,7 +876,7 @@ module Axn
           to_s = LITERAL_RENDERINGS[Axn::Internal::Identity.class_of(value)]
           return Axn::Internal::Text.renderable(to_s.bind_call(value)) if to_s
 
-          Axn::Internal::Rendering.class_name(value)
+          Axn::Internal::Rendering.stable_class_name(value)
         end
 
         # A Range's endpoints are reduced like any other value, so an endpoint of a caller's class runs nothing.
@@ -1154,7 +1154,7 @@ module Axn
 
           type_info = json_type_for(config.validations, for_output:)
           nullable = nil_allowed?(config)
-          apply_type_info!(prop, type_info, config, nullable:)
+          apply_type_info!(prop, type_info, config, nullable:, for_output:)
 
           prop = with_input_default(prop, config, subfield:, for_output:)
 
@@ -1165,7 +1165,7 @@ module Axn
           # holds the permissive fallback until `apply_structured_schema!` rewrites it to `object`. Deriving
           # the key any earlier reads an intermediate type and lands the floor under a key that cannot express
           # it. Nothing above depends on the constraint already being there.
-          if !for_output && type_info.empty? && declared_config.validations[:type] && !structured?(config)
+          if !for_output && type_info.empty? && !structured?(config)
             apply_untyped_value_constraints!(prop, config.validations, nullable:)
           else
             apply_value_constraints!(prop, config.validations, nullable:, for_output:)
@@ -1249,19 +1249,59 @@ module Axn
           return prop if integer && admits.call(::Float)
           return prop if integer && numeric.all? { |token| Internal::Identity.same?(token, ::Integer) }
 
-          names = numeric.map { |token| Axn::Internal::Rendering.module_name(token) }.join(", ")
+          names = numeric.map { |token| Axn::Internal::Rendering.stable_module_name(token) }.join(", ")
           record_residue(prop, "the runtime checks for a Ruby #{names}, and a JSON number arrives as an Integer (1) or a " \
                                "Float (1.5)")
         end
 
-        # The property another declaration emits at a `model:` route's own key — a non-model route merged onto the
-        # node, an ancestor's shape member, or another `model:` route's generated id. The route reads that key as
-        # the record, and a JSON value never is one, so only a blank passes; the property says what the other
-        # declaration accepts, which is more. Conditional exactly when the lookup is.
-        def with_model_raw_key_residue(prop, model_configs)
-          return record_residue(prop, MODEL_RAW_KEY_RESIDUE) unless model_configs.all? { |config| model_lookup_gated?(config) }
+        # Everything a `model:` route leaves unsaid about the two keys it reads, written once the properties at
+        # this level are final, whichever declaration wrote them — the one writer of a model id's residues at
+        # either depth. `explicit_id` is the declaration that owns the id's key when one does (a `<field>_id`
+        # sibling or a shape member), whose own `type:` then speaks for the id.
+        def name_model_routes!(properties, key, model_configs, descendants:, explicit_id: nil)
+          id_field = Internal::FieldConfig.model_id_key(key)
+          id_prop = properties[id_field]
+          if id_prop
+            id_prop = with_model_lookup_residue(id_prop, model_configs, descendants:)
+            id_prop = with_unstated_id_type_residue(id_prop, model_configs, explicit_id)
+          end
+          # The route reads its own key as the record, and a JSON value never is one, so only a blank passes there.
+          # Where another declaration emits a property at that key — a non-model route merged onto the node, an
+          # ancestor's shape member, another `model:` route's generated id — that property says what the other
+          # declaration accepts, which is more. Where nothing does, the document admits any value at the key, so
+          # the id says not to send it. Conditional exactly when the lookup is.
+          if properties.key?(key)
+            properties[key] = with_model_route_residue(properties[key], model_configs, MODEL_RAW_KEY_RESIDUE)
+          elsif id_prop
+            id_prop = with_model_route_residue(id_prop, model_configs, model_raw_key_note(key))
+          end
+          properties[id_field] = id_prop if id_prop
+        end
 
-          record_residue(prop, "#{GATED_RESIDUE}; #{MODEL_RAW_KEY_RESIDUE}", kind: :conditional)
+        def with_model_route_residue(prop, model_configs, summary)
+          return record_residue(prop, summary) unless model_configs.all? { |config| model_lookup_gated?(config) }
+
+          record_residue(prop, "#{GATED_RESIDUE}; #{summary}", kind: :conditional)
+        end
+
+        def model_raw_key_note(key)
+          "don't send `#{Axn::Internal::Text.renderable(key.name)}` itself, which is read as the record and rejected " \
+            "unless it is blank; send this id"
+        end
+
+        # A declared `id_type:` describes the lookup token, and a nested declaration reading the id as an object
+        # replaces the type it would state. The runtime checks neither, so the document stays exact; the author's
+        # stated token type is still named rather than vanishing. An explicit `<field>_id` declaration with a
+        # `type:` of its own is what the author wrote at that key, so it speaks for the id without a note.
+        def with_unstated_id_type_residue(prop, model_configs, explicit_id)
+          return prop if explicit_id && explicit_id.validations[:type]
+
+          declared = reconciled_declared_id_type(model_configs)
+          shape = declared && model_id_type_schema(declared)
+          return prop if shape.nil? || projected_types(prop).include?(shape[:type])
+
+          record_residue(prop, "its `id_type:` (#{Axn::Internal::Rendering.stable_module_name(declared)}) is not stated, " \
+                               "since a nested declaration reads the id as an object")
         end
 
         # How the runtime treats a `default:` (`FieldConfig.resolve_default`): anything answering `call` is
@@ -1311,18 +1351,21 @@ module Axn
         # only a gate makes required) states it as conditional, since the gate's state is not knowable here. The
         # explicit `<field>_id` sibling's default rescues an OMITTED id only, never one the caller supplied.
         def with_model_lookup_residue(prop, model_configs, descendants:)
-          return prop if prop.nil? || projected_types(prop) == ["null"]
+          return prop if prop.nil?
 
+          # An id admitting only null names no record, so where the lookup's miss is rejected, so is every call
+          # that sends one — a Ruby caller passing the record itself is the only one that passes.
+          summary = projected_types(prop) == ["null"] ? MODEL_NULL_ID_RESIDUE : MODEL_LOOKUP_RESIDUE
           rejecting = descendants == :always ? model_configs : model_configs.reject { |config| nil_accepted?(config) }
           if rejecting.empty?
             return prop unless descendants == :conditional
 
-            return record_residue(prop, "#{GATED_RESIDUE}; #{MODEL_LOOKUP_RESIDUE}", kind: :conditional)
+            return record_residue(prop, "#{GATED_RESIDUE}; #{summary}", kind: :conditional)
           end
 
-          return record_residue(prop, MODEL_LOOKUP_RESIDUE) unless rejecting.all? { |config| model_lookup_gated?(config) }
+          return record_residue(prop, summary) unless rejecting.all? { |config| model_lookup_gated?(config) }
 
-          record_residue(prop, "#{GATED_RESIDUE}; #{MODEL_LOOKUP_RESIDUE}", kind: :conditional)
+          record_residue(prop, "#{GATED_RESIDUE}; #{summary}", kind: :conditional)
         end
 
         # Only the declaration's own gate skips the lookup: an inbound `model:` bag never carries one
@@ -1476,7 +1519,7 @@ module Axn
         end
 
         # Writes the resolved JSON type (and nullability/format/singleton-enum) from json_type_for into prop.
-        def apply_type_info!(prop, type_info, config, nullable:)
+        def apply_type_info!(prop, type_info, config, nullable:, for_output:)
           if type_info[:anyOf]
             members = type_info[:anyOf]
             members = drop_uuid_format(members) if type_allows_blank?(config)
@@ -1492,12 +1535,13 @@ module Axn
             end
           elsif type_info[:type]
             apply_single_type!(prop, type_info, config, nullable:)
-          elsif type_info.empty? && config.validations[:type] && !structured?(config)
-            # A declared type with no JSON spelling (an unknown class) asserts no type, but a required position
-            # still rejects a blank — nil among them — on every call. Spelled as a value set, the only form left
-            # without a type to hang a size or a null branch on.
+          elsif type_info.empty? && !structured?(config) && (config.validations[:type] || !for_output)
+            # A position asserting no type — a declared class with no JSON spelling, or no `type:` at all — still
+            # rejects a blank, nil among them, on every call its presence check runs. Spelled as a value set, the
+            # only form left without a type to hang a size or a null branch on. Outbound an undeclared type stays
+            # silent: the schema may say less than what an action exposes, never more.
             if presence_rejects_blank?(config.validations)
-              prop[:not] = { enum: BLANK_WIRE_VALUES }
+              prop[:not] = blank_refusal(nullable:)
             elsif !nullable
               reject_null!(prop)
             end
@@ -2023,7 +2067,8 @@ module Axn
         def apply_value_members!(prop, config, plan, for_output:, ancestry:)
           shape = plan.shape
           if !plan.emitted && !for_output
-            return prop.replace(record_residue(prop, unstated_members_residue(declared_type_tokens(config.validations), shape[:container])))
+            residue = unstated_members_residue(declared_type_tokens(config.validations), shape)
+            return residue ? prop.replace(record_residue(prop, residue)) : prop
           end
           return unless plan.emitted
 

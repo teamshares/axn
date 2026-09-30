@@ -10,7 +10,7 @@ require "json"
 # shape member, a `model:` route's generated id, a `model:` route's own raw key, a `Data`-inferred member
 # placeholder, and a map's `of:` values axis — is paired with every other, and each route varies its type
 # (Hash, String, untyped, the `[Hash, String]` union) and its presence (required, optional, `allow_nil`, a literal
-# and a Proc default, a closed and an open gate). Every cell that declares is held to both inbound directions
+# and a Proc default, a closed and an open gate, a value-preserving `preprocess:`). Every cell that declares is held to both inbound directions
 # against a pool of ordinary values at that node: never reject what the runtime accepts, and name everything
 # accepted that the runtime rejects with a residue on the path the payload actually reaches.
 #
@@ -51,7 +51,8 @@ module MergeCornerProduct
             "union" => ["type: [Hash, String]", "[Hash, String]"] }.freeze
   LITERALS = { "Hash" => '{ "a" => 1 }', "String" => '"x"', "untyped" => '"x"', "union" => '"x"' }.freeze
   PRESENCES = { "required" => "", "optional" => "optional: true", "allow_nil" => "allow_nil: true",
-                "default" => :literal, "procdefault" => :proc, "closed" => "if: -> { false }", "open" => "if: -> { true }" }.freeze
+                "default" => :literal, "procdefault" => :proc, "closed" => "if: -> { false }", "open" => "if: -> { true }",
+                "transformed" => "preprocess: ->(v) { v }" }.freeze
 
   # A route is one declaration landing on the node: `lines` are whole declarations of their own, `member` a block
   # member of the anchor, `raw` a raw member of the anchor's `shape:`, `anchor` options of the anchor itself.
@@ -100,8 +101,9 @@ module MergeCornerProduct
     end
   end
 
-  # A block member of the anchor. A member declares no `default:` (refused at declaration), so none is generated.
-  def block_routes(node: :company, variations: value_variations.reject { |_, pres| pres.include?("default") })
+  # A block member of the anchor. A member declares no `default:` or `preprocess:` (refused at declaration), so
+  # neither is generated.
+  def block_routes(node: :company, variations: value_variations.reject { |_, pres| pres.include?("default") || pres == "transformed" })
     variations.map { |type, pres| route("B", "#{type} #{pres}", node:, member: opts("field :#{node}", TYPES[type][0], presence(pres, type))) }
   end
 
@@ -262,19 +264,6 @@ module MergeCornerProduct
     longer.first(shorter.size) == shorter
   end
 
-  # Single-declaration divergences this product meets on its way to the merges, deferred to PRO-3582 by name.
-  def deferred?(cell, value, schema)
-    # An untyped required field states neither its blank refusal nor, as a member or at the top level, its null one.
-    return true if (value.nil? || non_nil_blank?(value)) && cell.routes.any? { |r| r.match?(/\A[EAB]\(untyped (required|default|procdefault|open)\)/) }
-
-    # A `model:` route's own raw key, which nothing else declares, is absent from the document.
-    cell.routes.any? { |r| r.start_with?("Mraw(") } && !node_declared?(schema, cell.path)
-  end
-
-  def node_declared?(schema, path)
-    path.reduce(schema) { |node, key| node.is_a?(Hash) ? node.dig(:properties, key) : nil }.is_a?(Hash)
-  end
-
   def non_nil_blank?(value) = !value.nil? && !OMITTED.equal?(value) && (value == false || (value.respond_to?(:empty?) && value.empty?))
 
   # The doctrine's stated exceptions (AGENTS.md, "exact at its core"), asked as narrowly as the payload allows.
@@ -305,7 +294,7 @@ module MergeCornerProduct
       verdicts.each do |value, payload, runtime_ok, doc_ok|
         if runtime_ok && !doc_ok
           yield cell, :stricter, payload unless stated_exception?(cell, value, satisfiable)
-        elsif doc_ok && !runtime_ok && residues.none? { |r| explains?(r, cell.path, value) } && !deferred?(cell, value, schema)
+        elsif doc_ok && !runtime_ok && residues.none? { |r| explains?(r, cell.path, value) }
           yield cell, :looser, payload
         end
       end

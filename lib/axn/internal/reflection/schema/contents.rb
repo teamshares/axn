@@ -99,17 +99,18 @@ module Axn
             # the runtime rejects, and stripped nil from an enum at a position that accepts it.
             nullable = bag_nullable?(bag)
             node = reconcile_contents_nullability(node, nullable:, for_output:)
-            # A `klass:` JSON has no type for leaves the node untyped, and a presence check still rejects every
-            # blank there — spelled as a value set, as a field's untyped floor is (`apply_type_info!`).
-            if !for_output && untyped_node?(node) && !Axn::Internal::ShapeGraph.type_tokens(bag[:klass]).empty? &&
-               presence_rejects_blank?(constraints)
-              node = node.merge(not: { enum: BLANK_WIRE_VALUES })
-            end
             # The bag's value validators (PRO-3193), through the same projector a named position uses. Applied
             # before the member/contents merges below so a `type:` those steps install cannot be read as the type
             # a keyword should key off — the node's type here is the bag's own `klass:`, which is what the
-            # validators constrain.
-            apply_value_constraints!(node, constraints, nullable:, for_output:, declared_klass: bag[:klass])
+            # validators constrain. A node naming no type — no `klass:`, or one JSON has no type for — takes a
+            # field's untyped reading (`apply_type_info!`): a presence check rejects every blank as a value set,
+            # and each keyword is written for every JSON type it can mean something for.
+            if !for_output && untyped_node?(node)
+              node = node.merge(not: blank_refusal(nullable:)) if presence_rejects_blank?(constraints)
+              apply_untyped_value_constraints!(node, constraints, nullable:)
+            else
+              apply_value_constraints!(node, constraints, nullable:, for_output:, declared_klass: bag[:klass])
+            end
             node = with_bag_residues(node, bag, constraints) unless for_output
             node = contents_member_schema(node, bag, for_output:, ancestry:)
             inner = emitted_contents_edge(bag, :of)
@@ -255,7 +256,8 @@ module Axn
             unless reach
               return node if for_output
 
-              return record_residue(node, unstated_members_residue(Axn::Internal::ShapeGraph.type_tokens(bag[:klass]), shape[:container]))
+              residue = unstated_members_residue(Axn::Internal::ShapeGraph.type_tokens(bag[:klass]), shape)
+              return residue ? record_residue(node, residue) : node
             end
 
             member_props, required = member_properties(shape[:members], for_output:, ancestry:)
@@ -393,8 +395,12 @@ module Axn
 
           # The residue naming members `member_reach` leaves unstated: where the position admits a wire value its
           # container does not read, the members are selective in a way JSON Schema cannot follow; otherwise they
-          # are read off a value with no JSON object form.
-          def unstated_members_residue(tokens, container)
+          # are read off a value with no JSON object form. Nil where no member carries an entry: a member is read
+          # only when one of its entries runs, so members with none reject nothing, off any class.
+          def unstated_members_residue(tokens, shape)
+            return nil if Axn::Internal::ShapeGraph.members(shape).none? { |member| member_active_entries(member).any? }
+
+            container = shape[:container]
             wire = wire_classes_admitted(tokens)
             return UNSTATED_SHAPE_RESIDUE if wire.empty? || wire.all? { |klass| container_reads?(klass, container) }
 
@@ -674,7 +680,7 @@ module Axn
             #
             # Only nil. The other blanks `presence:` rejects (`""`, `[]`, `{}`, `false`) need to know that
             # presence is WHY the position is non-nullable — a `klass:` that simply excludes NilClass says nothing
-            # about them — and that plumbing is PRO-3244's, alongside the rest of the blank axis.
+            # about them — so `contents_node_schema` widens this to the blank value set where it is.
             #
             # INBOUND only, and the asymmetry is the doctrine rather than an omission: outbound the schema may say
             # LESS than the contract and never more, and an untyped output position is untyped precisely because

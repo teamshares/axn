@@ -585,7 +585,7 @@ module Axn
               context.delete(:type)
               prop.merge!(context)
             end
-            presence_rejects_blank?(validations) ? prop.merge(not: { enum: BLANK_WIRE_VALUES }) : prop
+            presence_rejects_blank?(validations) ? prop.merge(not: blank_refusal(nullable: nil_allowed?(config))) : prop
           end
 
           def branch_projection_required?(config)

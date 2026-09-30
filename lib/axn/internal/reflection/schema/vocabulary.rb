@@ -63,6 +63,9 @@ module Axn
           # Here rather than on `Schema` because `Contents` floors an untyped bag position with it.
           BLANK_WIRE_VALUES = ["", [].freeze, {}.freeze, false, nil].freeze
 
+          # The blanks a nil-tolerant presence check still rejects (`allow_nil: true, presence: true`).
+          NON_NIL_BLANK_WIRE_VALUES = (BLANK_WIRE_VALUES - [nil]).freeze
+
           GATED_RESIDUE = "a conditional validator at this position applies only on the calls " \
                           "its condition opens"
 
@@ -70,6 +73,10 @@ module Axn
 
           # A `model:` id is checked against the records its lookup can find, which no document can state.
           MODEL_LOOKUP_RESIDUE = "the id must name a record the model lookup finds; one it does not find is rejected"
+
+          # A required `model:` beside a `<field>_id` that admits only null: no wire call names a record.
+          MODEL_NULL_ID_RESIDUE = "this id admits only null, which names no record, so the `model:` route rejects " \
+                                  "every call that sends it"
 
           # A `model:` route reads its own key as the record itself, which no JSON value is, so another declaration
           # that puts a property at that key admits values the route rejects.

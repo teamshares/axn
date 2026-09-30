@@ -267,6 +267,8 @@ In addition to the [standard ActiveModel validations](https://guides.rubyonrails
       ```
     * Absent both, the property stays untyped (just a description, and `not: { type: "null" }` when required) — the same schema this always emitted.
     * An explicit `<field>_id` sibling with a `type:` of its own is what the runtime checks, so its type is what the schema states whatever `id_type:` says; two `model:` routes at one node that declare different `id_type:`s leave the id untyped.
+    * A nested declaration that reads the id as an object (`expects :detail, on: "payload.company_id"`) replaces the type `id_type:` would state, and the id's description says so.
+    * The field's own key (`company`) is read as the record itself, so the runtime rejects any value sent there but a blank. Where no other declaration puts that key in the document, the id's description says not to send it.
 
     **The `model:` bag only accepts the keys above** — `klass:`, `finder:`, `not_found_on:`, `id_type:`, `message:` — and anything else, a misspelled `finder:` or a `class:` written for `klass:` included, raises `ArgumentError` at declaration rather than declaring cleanly and being ignored.
 
@@ -1174,7 +1176,7 @@ Each residue carries the `path` of property keys to the property it qualifies (a
 
 The schema describes the contract `Axn.call` enforces. A `preprocess:` runs before every check, so a preprocessed field states none of its checks — they judge the Proc's output, not the wire value — and names them instead. Coercion is different: a `coerce:` field, or a call made through a tool invoker (which turns input coercion on), also accepts a String the declared type can be parsed from, and the schema keeps the declared type rather than widening for that courtesy.
 
-A class JSON has no type for (`type: Money`, `type: Comparable`) asserts no `type`; its other checks are still stated per JSON type (`minLength` for a string, `minItems` for an array), a required one still rejects every blank, and the class itself is named as a residue.
+A class JSON has no type for (`type: Money`, `type: Comparable`) asserts no `type`; its other checks are still stated per JSON type (`minLength` for a string, `minItems` for an array), a required one still rejects every blank, and the class itself is named as a residue. A field with no `type:` at all reads the same way: `expects :note` emits `not: { enum: ["", [], {}, false, null] }`, leaving `null` out where the field tolerates nil. An anonymous class or module is named `(anonymous class)` or `(anonymous module)` rather than by its object address, so the document is the same on every boot.
 
 A field is marked `required` unless a **declared signal** says it may be omitted: a usable `default:` (present — a `Proc` counts — and not blank — a `default: {}`/`""` can't satisfy the field's presence, so it stays required), or a nil/blank-tolerant declaration (`optional:` / `allow_nil:` / `allow_blank:`). `presence: false` alone does **not** make a typed field omittable — it only drops the presence (blank) check, leaving the type check to still reject `nil`; combine it with a tolerance flag (or use `optional:`/`allow_nil:` directly) to actually permit omission. Every `exposes` field is `required` in `output_schema` (the serializer always emits every key; nullability is carried by the property's `type`, e.g. `["string", "null"]`).
 

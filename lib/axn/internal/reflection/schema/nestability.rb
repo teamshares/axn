@@ -55,20 +55,27 @@ module Axn
             configs.any? { |c| c.validations[:model] || !nestable_as_object?(c) }
           end
 
-          # The config a subfield node's own object property is BUILT from: the first route that is not a `model:`
-          # one (a model route emits `<leaf>_id` in place of the object, so it shapes no object property). Nil at a
-          # pure-model node, which emits no object property at all.
+          # The config a subfield node's own object property is BUILT from: the first route `property_routes`
+          # keeps. Nil at a pure-model node, which emits no object property at all.
           #
           # `apply_children!` builds the property from it and conjoins every other route onto it
-          # (`property_routes`); `annotate_node!` decides the node's nullability from it, which the emitter then
-          # caps by every route's own nil-tolerance.
-          def property_representative(configs) = configs.reject { |c| c.validations[:model] }.first
+          # (`conjoined_route_property`); `annotate_node!` decides the node's nullability from it, which the emitter
+          # then caps by every route's own nil-tolerance.
+          def property_representative(configs) = property_routes(configs).first
 
-          # Every route whose own declaration reaches a subfield node's object property: each non-`model:` route,
-          # since each one's check runs on every call and `apply_explicit_child!` conjoins them all. One owner for
-          # the readers that must name what the property was built FROM — the shape members an ancestor emitted at
-          # a child's key, and the projection size cap, which charges each of their shapes.
-          def property_routes(configs) = configs.reject { |c| c.validations[:model] }
+          # Every route whose own declaration reaches a subfield node's object property: each non-`model:` route (a
+          # model route emits `<leaf>_id` in place of the object, so it shapes no object property), since each
+          # one's check runs on every call and `apply_explicit_child!` conjoins them all — except that where some
+          # routes transform the wire value and others do not, the conjoin stands the transforming ones down
+          # (`combine_two`), so their keywords and shape members never reach the property and they are left out
+          # here too. One owner for the readers that must name what the property was built FROM — the shape
+          # members an ancestor emitted at a child's key, the id a shape member claims, and the property-name
+          # ownership the collision rules read.
+          def property_routes(configs)
+            routes = configs.reject { |c| c.validations[:model] }
+            kept = routes.reject { |c| transforms_wire_value?([c]) }
+            kept.empty? ? routes : kept
+          end
 
           def object_type_branches(config)
             type_opt = config.validations[:type]

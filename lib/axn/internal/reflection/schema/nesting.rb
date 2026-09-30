@@ -103,7 +103,7 @@ module Axn
             elsif !preprocessed?(node_configs) &&
                   node_configs.any? { |c| presence_rejects_blank?(gate_closed_validations(c, c.validations)) }
               # Untyped, a presence check still rejects every blank — nil among them — as a value set.
-              prop[:not] = { enum: BLANK_WIRE_VALUES }
+              prop[:not] = blank_refusal(nullable: ann[node].nullable)
             elsif !ann[node].nullable
               reject_null!(prop)
             end
@@ -151,7 +151,7 @@ module Axn
             # of which routes a property is built from, so the member a child is conjoined with is judged by the
             # configs that produced it.
             emitted_ancestor_configs = property_routes(parent_configs) + carried
-            children.each do |key, node|
+            model_routes_first(children).each do |key, node|
               if node.implicit?
                 apply_implicit_node!(prop, key, node, ancestor_configs, ann)
                 next
@@ -194,10 +194,20 @@ module Axn
             model_id_siblings.each do |id_field, model_configs, explicit_id|
               merge_model_id_type_into_sibling!(prop[:properties][id_field], model_configs, explicit_id) if prop[:properties][id_field]
             end
-            name_model_lookups!(prop, children, ann)
+            name_model_lookups!(prop, children, ann, model_id_siblings.to_h { |id_field, _configs, explicit_id| [id_field, explicit_id] })
             # A required nested model id can't be null (a null token resolves the model to nil at runtime).
             # Done after the loop so it survives an explicit id subfield declared after the model: subfield.
             required_model_ids.each { |id_field| reject_null!(prop[:properties][id_field]) if prop[:properties][id_field] }
+          end
+
+          # The children with a `model:` route first, each group in declaration order. A dotted child reaching a
+          # model's generated `<leaf>_id` (`on: "payload.company_id"`) makes that key an implicit node, which merges
+          # into whatever the key already holds; visited first, it wrote the key itself and the model's own id
+          # property — its "ID of the … record." description and its `id_type:` — was never built. The model
+          # route writes the key first whichever was declared first, so the document is the same either way.
+          def model_routes_first(children)
+            modelled, rest = children.partition { |_key, node| !node.implicit? && node.configs.any? { |c| c.validations[:model] } }
+            modelled.empty? ? children : modelled + rest
           end
 
           # A child is required when its routes require it with every gate closed — the routes a gate can relax
@@ -434,18 +444,17 @@ module Axn
             prop[:required] << required_key(key) if ann[node].required
           end
 
-          # Each nested model id's lookup, named once the id's property is final, whichever declaration wrote it.
-          def name_model_lookups!(prop, children, ann)
+          # Each nested model route's residues, named once the id's property is final, whichever declaration wrote it.
+          # `explicit_ids` maps an id key to the declaration that owns it (`apply_model_id_child!`'s `explicit_id`).
+          def name_model_lookups!(prop, children, ann, explicit_ids)
             children.each do |key, node|
               next if node.implicit?
 
               model_configs = node.configs.select { |c| c.validations[:model] }
               next if model_configs.empty?
 
-              id_field = Internal::FieldConfig.model_id_key(key)
-              descendants = descendants_reject_nil_ancestor(node.children, ann)
-              prop[:properties][id_field] = with_model_lookup_residue(prop[:properties][id_field], model_configs, descendants:)
-              prop[:properties][key] = with_model_raw_key_residue(prop[:properties][key], model_configs) if prop[:properties].key?(key)
+              explicit_id = explicit_ids[Internal::FieldConfig.model_id_key(key)]
+              name_model_routes!(prop[:properties], key, model_configs, descendants: descendants_reject_nil_ancestor(node.children, ann), explicit_id:)
             end
           end
         end

@@ -46,9 +46,9 @@ module Axn
             # answer it — measured, one that raises took the whole reflection down), and its bytes are RENDERED,
             # because a constant may hold non-UTF-8 ones that cannot be joined to axn's prose at all. The
             # declaration guard has already refused a non-Module `model:` token, so the receiver is always a
-            # Module here; `Module#to_s` also names an ANONYMOUS class, where the `name` this replaces answered
-            # nil and left the description reading "ID of the  record".
-            klass_name = Axn::Internal::Text.renderable(Axn::Internal::ClassName.of_module(klass))
+            # Module here; an ANONYMOUS class, which `name` answers nil for, reads as a stable placeholder rather
+            # than the object address `Module#to_s` gives it (`Rendering.stable_module_name`).
+            klass_name = Axn::Internal::Rendering.stable_module_name(klass)
             id_field = Axn::Internal::FieldConfig.model_id_key(config.field)
             prop = { description: config.description || "ID of the #{klass_name} record" }
 
@@ -137,7 +137,7 @@ module Axn
           end
 
           def unstated_id_type_residue(id_type)
-            "its `id_type:` (#{Axn::Internal::Rendering.module_name(id_type)}) has no JSON type a lookup token " \
+            "its `id_type:` (#{Axn::Internal::Rendering.stable_module_name(id_type)}) has no JSON type a lookup token " \
               "can take, so the id's type is not stated"
           end
 
@@ -191,11 +191,7 @@ module Axn
             # `usable_default?` rescue just past it.
             explicit_id = field_configs.find { |c| c.field == id_field && !c.validations[:model] }
             merge_model_id_type_into_sibling!(properties[id_field], [config], explicit_id) if properties[id_field]
-            if properties[id_field]
-              properties[id_field] =
-                with_model_lookup_residue(properties[id_field], [config], descendants: descendants_reject_nil_ancestor(children, ann))
-            end
-            properties[config.field] = with_model_raw_key_residue(properties[config.field], [config]) if properties[config.field]
+            name_model_routes!(properties, config.field, [config], descendants: descendants_reject_nil_ancestor(children, ann), explicit_id:)
             # A default at ANY depth under the model applies at read time (value-level defaults,
             # PRO-2889) — no synthesis is involved — so descendant omittability is the ordinary
             # annotation-derived rule, same as every other parent.

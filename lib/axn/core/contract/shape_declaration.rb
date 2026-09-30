@@ -229,6 +229,14 @@ module Axn
         # Hash — a non-Hash `shape:` has nothing here to read, and is `_reject_unshaped_shape!`'s defect to report,
         # so this stands down rather than raising a less specific error first. Identity with the receiver, as every
         # other read of this key is: a raw shape may put any object in that slot.
+        #
+        # The two halves are different kinds of rule. Beside `type: Array` the shape is folded into the elements at
+        # declaration, whether or not the `type:` entry runs on a given call, so the skipped element is the shape
+        # entry's own reading and a gate on the type never rescues it (`type: { klass: Array, if: :x }` still passes
+        # `["abc"]` with its members unread). `container: Array` beside another type weighs TWO entries — the value
+        # the type admits against the container that distributes — so it holds only where the type runs whenever
+        # the shape does (`_type_runs_whenever_shape_does?`); where the type carries a gate the shape does not, an
+        # Array reaches the shape on the calls that gate closes, and its elements' members are checked there.
         def _reject_distributing_shape!(carrier, where)
           return unless Internal::ShapeGraph.carries_key?(carrier, :shape)
 
@@ -240,7 +248,7 @@ module Axn
 
           if _distributing_shape?(carrier)
             raise ArgumentError, _distributing_element_container_message(where, container) unless ::Array.equal?(container)
-          elsif ::Array.equal?(container)
+          elsif ::Array.equal?(container) && _type_runs_whenever_shape_does?(carrier)
             raise ArgumentError, _distributing_container_message(where)
           end
         end
