@@ -7,7 +7,7 @@ name: Gem CI
 #
 # CHECK NAMES — the job names below are HALF of each gem's required-status-check context. GitHub
 # prefixes a reusable workflow's jobs with the CALLER's job name, which the ci*.yml.tmpl callers pin
-# to `CI`, so a gem's branch-protection ruleset must require "CI / Specs (Ruby 3.2)" (etc.), not the
+# to `CI`, so a gem's branch-protection ruleset must require "CI / Specs (Ruby 3.3)" (etc.), not the
 # bare job name. Renaming a job here silently invalidates every consuming gem's required checks —
 # their PRs then block forever on a context that never reports. Rename only in lockstep with a
 # ruleset update in each gem (`gh api repos/teamshares/<gem>/rulesets/<id>`).
@@ -24,9 +24,9 @@ name: Gem CI
 # Observed on teamshares/axn-ruby_llm#7 (head dd74c50), a pure-Ruby caller passing no
 # `rails-specs-job`: three `ci / Specs (Ruby X)` runs succeeded, beside one
 # `ci / Rails Specs (Ruby ${{ matrix.ruby }})` concluding `skipped`. A non-dual gem therefore never
-# produces `CI / Rails Specs (Ruby 3.2)` in any form, and that literal is the only string GitHub
+# produces `CI / Rails Specs (Ruby 3.3)` in any form, and that literal is the only string GitHub
 # emits. Neither is requirable, for opposite reasons:
-#   - `CI / Rails Specs (Ruby 3.2)` on a pure-Ruby or rails-only gem blocks every PR forever, since
+#   - `CI / Rails Specs (Ruby 3.3)` on a pure-Ruby or rails-only gem blocks every PR forever, since
 #     nothing ever reports that context.
 #   - the literal `CI / Rails Specs (Ruby ${{ matrix.ruby }})` is worse than useless: GitHub counts a
 #     `skipped` conclusion as satisfying a required check, so it would pass unconditionally while
@@ -37,7 +37,7 @@ on:
       ruby-versions:
         description: JSON array of Ruby versions for the test matrix.
         type: string
-        default: '["3.2", "3.3", "3.4"]'
+        default: '["3.3", "3.4", "4.0"]'
       main-needs-dummy-app:
         description: Install the dummy-app bundle (see dummy-app-path) before the main task (rails-only gems, whose default rake runs spec_rails).
         type: boolean

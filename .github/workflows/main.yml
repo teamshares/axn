@@ -14,9 +14,9 @@ jobs:
     strategy:
       matrix:
         ruby:
-          - '3.2'
           - '3.3'
           - '3.4'
+          - '4.0'
 
     steps:
     - uses: actions/checkout@v7
@@ -48,9 +48,9 @@ jobs:
     strategy:
       matrix:
         ruby:
-          - '3.2'
           - '3.3'
           - '3.4'
+          - '4.0'
 
     steps:
     - uses: actions/checkout@v7
@@ -68,9 +68,9 @@ jobs:
     strategy:
       matrix:
         ruby:
-          - '3.2'
           - '3.3'
           - '3.4'
+          - '4.0'
 
     steps:
     - uses: actions/checkout@v7
@@ -99,6 +99,28 @@ jobs:
         bundle install
     - name: Run Rails specs
       run: bundle exec rake spec_rails
+
+  # The other end of the ActiveModel range. Every job above resolves the NEWEST ActiveModel (the
+  # committed Gemfile.lock, kept current by Renovate), so the gemspec's floor would go untested. One
+  # job rather than a version matrix: the floor is the only end the lock doesn't cover, and each
+  # matrix entry would be another required-status-check context. The name carries no version so
+  # raising the floor (and the pin in gemfiles/activemodel_floor.gemfile) needs no ruleset update.
+  # Runs on the oldest supported Ruby, the realistic pairing for an old ActiveModel. RuboCop and the
+  # Rails dummy app are covered above and don't depend on which ActiveModel the main bundle holds.
+  activemodel_floor_specs:
+    runs-on: ubuntu-latest
+    name: ActiveModel Floor Specs
+    env:
+      BUNDLE_GEMFILE: gemfiles/activemodel_floor.gemfile
+    steps:
+    - uses: actions/checkout@v7
+    - name: Set up Ruby
+      uses: ruby/setup-ruby@v1
+      with:
+        ruby-version: '3.3'
+        bundler-cache: true
+    - name: Run main specs against the ActiveModel floor
+      run: bundle exec rake spec_full
 
   docs_links:
     runs-on: ubuntu-latest

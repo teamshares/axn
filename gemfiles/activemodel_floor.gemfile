@@ -1,0 +1,11 @@
+# frozen_string_literal: true
+
+# The root Gemfile, with ActiveModel/ActiveSupport pinned to the gemspec's floor. The root lockfile
+# resolves the NEWEST release (Renovate keeps it current), so the floor is the end CI would otherwise
+# never exercise. axn derives guards from ActiveModel internals (`_validates_default_keys`,
+# `_parse_validates_options`), which change between versions. Keep these pins equal to the floor in
+# axn.gemspec. Used by the "ActiveModel Floor Specs" job in .github/workflows/main.yml.
+eval_gemfile "../Gemfile"
+
+gem "activemodel", "8.1.0"
+gem "activesupport", "8.1.0"

@@ -27,6 +27,8 @@ yarn-error.log
 # As a library we don't need to publish Gemfile.lock
 Gemfile.lock
 /spec_rails/dummy_app/log/*.log
+# Lockfiles of the alternate-dependency Gemfiles in gemfiles/ (resolved fresh; only the pinned gems matter)
+/gemfiles/*.lock
 
 # Ignore all .gem files
 *.gem
