@@ -116,6 +116,7 @@ RSpec.describe "standalone require completeness" do
       ["axn/internal/reflection/schema/gates.rb", "Axn::Validation::Base"],
       ["axn/internal/reflection/schema/contents.rb", "Axn::Validation::Base"],
       ["axn/internal/reflection/schema/sizing.rb", "Axn::Validation::Base"],
+      ["axn/internal/reflection/schema/merge.rb", "Axn::Validation::Base"],
       ["axn/internal/reflection/schema/model_id.rb", "::ActiveRecord::Base"],
     ]
   end
