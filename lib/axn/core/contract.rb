@@ -2361,6 +2361,12 @@ module Axn
             method.source_location&.first == GENERATED_READER_SOURCE_PATH
         end
 
+        # Whether the method answering to `name` is a reader axn generated as a COMPANION of another declaration —
+        # a `model:` field's `<field>_id` — rather than one a declaration of that name owns. Every declaration's
+        # own reader is indexed by `_reader_owners`, so a generated reader missing from that index can only be
+        # a companion, and a companion yields to an explicit declaration of its name.
+        def _derived_companion_reader?(name) = _axn_generated_reader?(name) && !_reader_owners.key?(name.to_sym)
+
         # Whether the method answering to a config's reader name belongs to something OTHER than the config:
         # an INFERRED reader that yielded (a confirmation companion deferring to a method the author wrote or
         # to an explicit declaration's reader). Such a config has no reader of its own, so dispatching the
