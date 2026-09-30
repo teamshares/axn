@@ -151,12 +151,15 @@ module RelaxedRefusalProduct
              # Where the gate sits — [declaration, the `type:` entry's own, the shape entry's own] — since a refusal
              # weighing the type against the container stands down only where the two can part.
              gate: { "ungated" => ["", "", ""], "closed" => [", if: -> { false }", "", ""], "type closed" => ["", ", if: -> { false }", ""],
-                     "type open" => ["", ", if: -> { true }", ""], "shape closed" => ["", "", ", if: -> { false }"] },
+                     "type open" => ["", ", if: -> { true }", ""], "shape closed" => ["", "", ", if: -> { false }"],
+                     # An entry's blank key drops the declaration's gate for that key (ActiveModel's per-key merge).
+                     "closed shape-dropped" => [", if: -> { false }", "", ", if: nil"],
+                     "closed type-dropped" => [", if: -> { false }", ", if: nil", ""] },
              of: { "no of" => "", "of Hash" => ", of: Hash", "of String" => ", of: String" } }
     out = []
     combos(axes) do |l, v|
       decl_gate, type_gate, shape_gate = v[:gate]
-      next if l[:gate].start_with?("type") && v[:type].nil?
+      next if !type_gate.empty? && v[:type].nil?
 
       shape = v[:container] ? "{ container: #{v[:container]}, members: [#{P}::SKU]#{shape_gate} }" : "{ members: [#{P}::SKU]#{shape_gate} }"
       type = v[:type] ? "type: { klass: #{v[:type]}#{type_gate} }, " : ""
@@ -166,7 +169,7 @@ module RelaxedRefusalProduct
       raw_tol = l[:req] == "optional" ? ", allow_blank: true" : ""
       out << cell("G5", "raw member #{id}", "expects :o, type: Hash, shape: { members: [#{P}.member(:val, #{type}shape: #{shape}" \
                                             "#{v[:of]}#{raw_tol}#{decl_gate})] }", %i[o val])
-      next unless l[:of] == "no of" && !l[:gate].start_with?("type")
+      next unless l[:of] == "no of" && type_gate.empty?
 
       klass = v[:type] ? "klass: #{v[:type]}, " : ""
       out << cell("G5", "bag #{id}", "expects :val, type: Array#{v[:req]}, of: { #{klass}shape: #{shape}#{decl_gate} }", %i[val], array: true)
@@ -206,9 +209,18 @@ module RelaxedRefusalProduct
     gated = ["field :sku, type: String, if: -> { false }", "#{P}.member(:sku, type: { klass: String }, if: -> { false })"]
     callable = ["field :to_s, method_call: true, presence: false, validate: ->(v) { \"bad\" unless v.nil? }",
                 "#{P}.member(:to_s, method_call: true, validate: { with: ->(v) { \"bad\" unless v.nil? } })"]
+    # Gate overrides, merged per key as ActiveModel does: an entry's blank key drops the member's gate, a non-blank
+    # one replaces it, and `unless:` beside `if:` gates on both.
+    dropped = ["field :sku, type: { klass: String, if: nil }, if: -> { false }",
+               "#{P}.member(:sku, type: { klass: String, if: nil }, if: -> { false })"]
+    both_keys = ["field :sku, type: String, if: -> { true }, unless: -> { true }",
+                 "#{P}.member(:sku, type: { klass: String }, if: -> { true }, unless: -> { true })"]
+    replaced = ["field :sku, type: { klass: String, if: -> { false } }, if: -> { true }",
+                "#{P}.member(:sku, type: { klass: String, if: -> { false } }, presence: true, if: -> { true })"]
     members = { "required" => [req], "optional" => [opt], "nil-name required" => [nil_name_req], "nil-name opt" => [nil_name_opt],
                 "nil-name plain" => [nil_name_plain], "gated" => [gated], "callable" => [callable],
-                "mixed" => [nil_name_opt, req], "mixed tolerant" => [nil_name_opt, gated] }
+                "mixed" => [nil_name_opt, req], "mixed tolerant" => [nil_name_opt, gated],
+                "gate dropped" => [dropped], "if and unless" => [both_keys], "gate replaced" => [replaced] }
     axes = { container: { "reads nil" => "Object", "skips nil" => "Hash" },
              presence: { "presence false" => ", presence: false", "allow_nil" => ", allow_nil: true", "required" => "" } }
     out = []

@@ -11041,6 +11041,27 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(klass.input_schema[:required]).to eq(["value"])
     end
 
+    # Gates merge per key as ActiveModel merges them: an entry's blank `if:` drops the member's, so that entry runs on
+    # every call and the member reads the nil whatever the member's own gate says.
+    it "requires a field whose member's gate an entry's blank key drops" do
+      klass = build_axn { expects(:value, type: Object, presence: false) { field :sku, type: { klass: String, if: nil }, if: -> { false } } }
+
+      expect(klass.call).not_to be_ok
+      expect(klass.input_schema[:required]).to eq(["value"])
+    end
+
+    it "makes an untyped element an object for a plain-key member whose gate an entry's blank key drops" do
+      klass = build_axn do
+        expects :rows, type: Array do
+          field :length, type: Integer, method_call: true
+          field :sku, type: { klass: String, if: nil }, if: -> { false }
+        end
+      end
+
+      expect(klass.call(rows: ["abc"])).not_to be_ok
+      expect(klass.input_schema.dig(:properties, :rows, :items, :type)).to eq("object")
+    end
+
     it "still requires a field whose member rejects the nil it reads" do
       klass = build_axn { expects(:value, type: Object, presence: false) { field :to_s, type: String, method_call: true } }
 

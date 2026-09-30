@@ -245,7 +245,7 @@ module Axn
       # nil does not answer is "could not be read" whenever one of the member's entries runs; a name nil does answer
       # (`to_s`, `inspect`, …) reads as nil (`Extract` returns nil off a nil source, method call or not), which the
       # member's own entries then judge. An entry certain to run and certain to reject rejects; one that may be
-      # skipped (the member gated wholesale, or the entry gated on its own), or whose verdict turns on the caller's
+      # skipped (its effective gate, the member's merged with its own), or whose verdict turns on the caller's
       # code (`validate:`, a callable set or pattern), can only make the member conditional.
       def self.shape_member_nil_verdict(member, depth)
         validations = Internal::ShapeGraph.hash_or_nil(Internal::ShapeGraph.read(member, :validations)) || {}
@@ -253,13 +253,15 @@ module Axn
         return :admits if entries.empty?
 
         shared = shared_validation_options(validations)
-        member_gated = Internal::FieldConfig::CONDITIONAL_GATE_KEYS.any? { |key| validations.key?(key) }
+        # Each entry's EFFECTIVE gate — the member's own `if:`/`unless:` merged per key with the entry's, a blank
+        # entry key dropping the member's — decides whether it can be skipped (`entry_effectively_gated?`).
+        member_gates = validations.slice(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
         name = Internal::ShapeGraph.read(member, :field)
         readable = Internal::Identity.kind?(name, ::Symbol) && Internal::NativeMethods.public_instance_method?(::NilClass, name)
 
         verdicts = entries.map do |key, opt|
           verdict = readable ? entry_nil_verdict(key, opt, shared, depth) : :rejects
-          verdict == :rejects && (member_gated || entry_self_gated?(opt)) ? :conditional : verdict
+          verdict == :rejects && entry_effectively_gated?(opt, member_gates) ? :conditional : verdict
         end
         combine_nil_verdicts(verdicts)
       end

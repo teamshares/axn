@@ -2,6 +2,7 @@
 
 require "axn/internal/reflection/schema/vocabulary"
 require "axn/internal/cycle_guard"
+require "axn/internal/field_config"
 require "axn/internal/shape_graph"
 
 module Axn
@@ -456,10 +457,11 @@ module Axn
 
           def member_reads_method?(member) = !!Axn::Internal::ShapeGraph.read(member, :method_call)
 
+          # Read on every call where some entry's EFFECTIVE gate — the member's `if:`/`unless:` merged per key with
+          # the entry's own, a blank entry key dropping the member's — is empty.
           def member_always_read?(member)
-            return false if gated_validations?(member_validations(member))
-
-            member_active_entries(member).any? { |_key, opt| !entry_self_gated?(opt) }
+            gates = member_validations(member).slice(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
+            member_active_entries(member).any? { |_key, opt| !Axn::Validation::Base.entry_effectively_gated?(opt, gates) }
           end
 
           def member_active_entries(member)

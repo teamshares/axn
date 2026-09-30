@@ -271,12 +271,13 @@ module Axn
         # proves nothing, and falls to "narrows".
         #
         # The rule weighs TWO entries — the declared class and the shape's container — so it holds only on a call where
-        # both run. The shape runs wherever the position's class check does, bar a gate of the shape's own, which only
-        # narrows it to calls where the class check runs too; and a declaration-level `if:`/`unless:` opens and closes
-        # both together. A `type:` entry carrying its own gate is the one case that parts them: on a call it closes,
-        # the shape runs with no class check beside it (`type: { klass: Hash, if: :hash_mode? }` beside
-        # `container: String` checks a String's members whenever `hash_mode?` is false). So the field-and-member
-        # caller stands down there. A bag's `klass:` cannot carry a gate of its own, so the bag caller never has to.
+        # both run. Whether they do is read off each entry's effective gate (`_type_runs_whenever_shape_does?`): a
+        # declaration-level `if:`/`unless:` both inherit opens and closes them together, and a gate of the shape's own
+        # only narrows it to calls where the class check runs too. What parts them is a gate the type carries and the
+        # shape does not — the type's own (`type: { klass: Hash, if: :hash_mode? }` beside `container: String` checks
+        # a String's members whenever `hash_mode?` is false), or the declaration's, where the shape drops it with a
+        # blank key of its own (`if: nil`). So the field-and-member caller stands down there. A bag's `klass:` cannot
+        # carry a gate of its own, so the bag caller never has to.
         #
         # `Array` is `_reject_distributing_shape!`'s, where it is the distributing marker rather than a gate, and a
         # non-class is `_reject_non_class_container!`'s; so is a type token the runtime cannot hold a value to, which
@@ -295,8 +296,8 @@ module Axn
         end
 
         # The same guard at a field or a shape member, whose declared class is its `type:`. Stands down beside
-        # `type: Array`, where the shape distributes and `_reject_distributing_shape!` judges the container, and beside
-        # a `type:` entry gated on its own, which cannot be proved to run on the calls the shape does.
+        # `type: Array`, where the shape distributes and `_reject_distributing_shape!` judges the container, and where
+        # the `type:` entry cannot be proved to run on the calls the shape does.
         def _reject_uncovered_raw_container!(carrier, where)
           return unless Internal::ShapeGraph.carries_key?(carrier, :shape)
           return if _distributing_shape?(carrier)
@@ -304,9 +305,24 @@ module Axn
           shape = Internal::ShapeGraph.hash_or_nil(carrier[:shape])
           return if nil.equal?(shape)
 
-          return if Axn::Validation::Base.entry_self_gated?(carrier[:type])
+          return unless _type_runs_whenever_shape_does?(carrier)
 
           _reject_uncovered_container!(shape[:container], _declared_type_tokens(_declared_type_klass(carrier)), where:, option: "type:")
+        end
+
+        # Whether the `type:` entry runs on every call the `shape:` entry does, from each entry's EFFECTIVE gate: the
+        # declaration's `if:`/`unless:` merged per key with the entry's own, a blank entry key dropping the
+        # declaration's (ActiveModel's per-key merge). It does where every gate the type carries also gates the shape,
+        # by the same condition — a type ungated, or gated only by what the shape inherits too. Conditions are compared
+        # by identity, never evaluated, so two distinct conditions count as able to part.
+        def _type_runs_whenever_shape_does?(carrier)
+          declaration = carrier.slice(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS)
+          Internal::FieldConfig::CONDITIONAL_GATE_KEYS.all? do |key|
+            type_gate = Axn::Validation::Base.entry_effective_option(carrier[:type], declaration, key)
+            next true if type_gate.blank?
+
+            Internal::Identity.same?(type_gate, Axn::Validation::Base.entry_effective_option(carrier[:shape], declaration, key))
+          end
         end
 
         # How one declared type token stands to the container: `:covered` when every value of it is the container,
@@ -1150,6 +1166,7 @@ module Axn
                 :_reject_unshaped_shape!, :_reject_unknown_shape_keys!, :_reject_distributing_shape!,
                 :_reject_raw_shape_beside_block!, :_distributing_container_message, :_distributing_element_container_message,
                 :_reject_uncovered_container!, :_reject_uncovered_raw_container!, :_container_relation, :_class_container_relation,
+                :_type_runs_whenever_shape_does?,
                 :_uncovered_container_message, :_uncovered_container_fix,
                 :_inner_shape_position_label,
                 :_walk_inner_contracts!, :_walk_declared_inner_contracts!, :_new_path_allowance,

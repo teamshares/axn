@@ -1378,6 +1378,18 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
         expect(klass.input_schema.dig(:properties, :value)).not_to have_key(:properties)
       end
 
+      # A shape that drops the declaration's gate with a blank key of its own runs where the class check it inherits
+      # does not, which parts the two just as a gate of the type's own does.
+      it "stands down where the shape drops a declaration gate the type keeps" do
+        length = Axn::Core::Contract::ShapeConfig.new(field: :length, validations: { type: { klass: Integer } }, method_call: true)
+        klass = build_axn do
+          def hash_mode? = false
+          expects :value, type: Hash, if: :hash_mode?, shape: { container: String, members: [length], if: nil }
+        end
+
+        expect(klass.call(value: "abc")).to be_ok
+      end
+
       # A declaration-level gate opens and closes both entries together, and a gate of the shape's own only narrows it
       # to calls the class check also runs on, so both still refuse; so do the single-entry refusals under any gate.
       it "still refuses under a declaration gate, a gate of the shape's own, and at the single-entry refusals" do
