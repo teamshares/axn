@@ -12,9 +12,10 @@ module Axn
 
     # The class ivar holding, per adapter module, the `_enqueue_async_job` that class's own declaration installed.
     INSTALLED_ENQUEUE_HOOKS = :@_axn_async_installed_enqueue_hooks
-    # The class ivar holding, per adapter module, the class-side modules that class's own inclusion of it added.
-    ADAPTER_CLASS_SIDE_MODULES = :@_axn_async_adapter_class_side_modules
-    private_constant :INSTALLED_ENQUEUE_HOOKS, :ADAPTER_CLASS_SIDE_MODULES
+    # The class ivar holding, per adapter module, the names of the class-side helpers that class's own inclusions of
+    # it added (see `_class_side_helpers_added`).
+    ADAPTER_HELPER_NAMES = :@_axn_async_adapter_helper_names
+    private_constant :INSTALLED_ENQUEUE_HOOKS, :ADAPTER_HELPER_NAMES
 
     included do
       class_attribute :_async_adapter, :_async_config, :_async_config_block, instance_accessor: false, default: nil
@@ -211,23 +212,43 @@ module Axn
       # module's `included` runs on every `include`, so it can still install a hook when the module was already
       # in the ancestry, and that hook is recorded for this class alone.
       #
-      # Returns whether the inclusion changed the reachable hook. It also records the class-side modules the
-      # inclusion added, which `_warn_on_colliding_adapter_helpers` compares against other adapters' modules.
+      # Returns whether the inclusion changed the reachable hook. It also records the names of the class-side
+      # helpers the inclusion added, which `_warn_on_colliding_adapter_helpers` compares against other adapters'.
       def _include_async_adapter(adapter_module)
         singleton = Axn::Internal::NativeMethods.module_singleton_class(self)
         before_ancestors = Axn::Internal::NativeMethods.module_ancestors(singleton)
+        before_own = _own_class_side_methods(singleton)
         before = _reachable_enqueue_hook
         include adapter_module
         after = _reachable_enqueue_hook
-        added = Axn::Internal::NativeMethods.module_ancestors(singleton) - before_ancestors
-        unless added.empty?
-          _warn_on_colliding_adapter_helpers(adapter_module, added)
-          _async_class_record(ADAPTER_CLASS_SIDE_MODULES)[adapter_module] = added
+        helpers = _class_side_helpers_added(singleton, before_ancestors, before_own)
+        unless helpers.empty?
+          _warn_on_colliding_adapter_helpers(adapter_module, helpers)
+          record = _async_class_record(ADAPTER_HELPER_NAMES)
+          record[adapter_module] = (record[adapter_module] || []) | helpers
         end
         return false if after.nil? || after == before
 
         _async_class_record(INSTALLED_ENQUEUE_HOOKS)[adapter_module] = after
         true
+      end
+
+      # The names of the class-side helpers an inclusion added, other than the hook. An adapter adds them two ways:
+      # as modules in the singleton ancestry (a Concern's ClassMethods, a module its `included` extends), or straight
+      # into the singleton class's own table (`define_singleton_method` in its `included`). An own-table entry counts
+      # when it is new or now resolves to a different definition than before, so a helper that replaces another
+      # adapter's under the same name is counted, and a class method the class defined itself is not.
+      def _class_side_helpers_added(singleton, before_ancestors, before_own)
+        added_modules = Axn::Internal::NativeMethods.module_ancestors(singleton) - before_ancestors
+        from_modules = added_modules.flat_map { |mod| Axn::Internal::NativeMethods.own_instance_method_names(mod) }
+        from_own_table = _own_class_side_methods(singleton).filter_map { |name, method| name unless before_own[name] == method }
+        (from_modules | from_own_table) - [:_enqueue_async_job]
+      end
+
+      def _own_class_side_methods(singleton)
+        Axn::Internal::NativeMethods.own_instance_method_names(singleton).to_h do |name|
+          [name, Axn::Internal::NativeMethods.declared_instance_method(singleton, name)]
+        end
       end
 
       def _async_class_record(ivar)
@@ -284,6 +305,19 @@ module Axn
         nil
       end
 
+      # Per adapter module, every helper name its inclusions added on this class and its superclasses.
+      def _adapter_helper_names_in_chain
+        names = {}.compare_by_identity
+        klass = self
+        while klass
+          (Axn::Internal::NativeMethods.ivar_get(klass, ADAPTER_HELPER_NAMES) || {}).each do |mod, added|
+            names[mod] = (names[mod] || []) | added
+          end
+          klass = klass.superclass
+        end
+        names
+      end
+
       # Per adapter module, the nearest record (this class first, then each superclass) held in `ivar`.
       def _async_chain_records(ivar)
         records = {}.compare_by_identity
@@ -295,17 +329,14 @@ module Axn
         records
       end
 
-      # A class-side helper the new adapter adds under a name another adapter on this class already defines: the
-      # adapter included later wins for both, so the other one silently calls the wrong implementation. The hook
-      # itself is excluded; it is meant to be shared by name and is dispatched by adapter.
-      def _warn_on_colliding_adapter_helpers(adapter_module, added)
-        names = added.flat_map { |mod| Axn::Internal::NativeMethods.own_instance_method_names(mod) }.uniq - [:_enqueue_async_job]
-        return if names.empty?
-
-        _async_chain_records(ADAPTER_CLASS_SIDE_MODULES).each do |other, modules|
+      # A class-side helper the new adapter adds under a name another adapter on this class (or an ancestor)
+      # already added: the adapter included later wins for both, so the other one silently calls the wrong
+      # implementation. The hook itself is excluded; it is meant to be shared by name and is dispatched by adapter.
+      def _warn_on_colliding_adapter_helpers(adapter_module, names)
+        _adapter_helper_names_in_chain.each do |other, other_names|
           next if other.equal?(adapter_module)
 
-          shared = names & modules.flat_map { |mod| Axn::Internal::NativeMethods.own_instance_method_names(mod) }
+          shared = names & other_names
           next if shared.empty?
 
           Axn::Extensions.best_effort("warning about colliding async adapter helpers", action: self) do

@@ -281,6 +281,51 @@ RSpec.describe "call_async adapter dispatch grid" do
                              ])
     end
 
+    # An adapter adds class-side helpers either as modules in the singleton ancestry or straight into the singleton
+    # class's own table (`define_singleton_method` in its `included` hook). Both kinds are compared, both ways.
+    def helper_adapter(key, helper_via:)
+      log = self.log
+      class_methods = Module.new { private define_method(:_enqueue_async_job) { |_kwargs| log << [key.to_s] } }
+      class_methods.define_method(:build_payload) { key.to_s } if helper_via == :module
+      adapter = concern_with(class_methods)
+      adapter.included { define_singleton_method(:build_payload) { key.to_s } } if helper_via == :singleton
+      Axn::Async::Adapters.register(key, adapter)
+    end
+
+    def collision_warning(declared, other)
+      "[Axn] GridReport: the #{declared.inspect} and #{other.inspect} async adapters both define `build_payload` as " \
+        "class-side methods, so the one included later answers for both. Prefix each adapter's helper names so they cannot collide."
+    end
+
+    {
+      "singleton vs singleton" => %i[singleton singleton],
+      "singleton vs module" => %i[module singleton],
+      "module vs singleton" => %i[singleton module],
+    }.each do |label, (first_via, second_via)|
+      it "warns on a helper collision, #{label} (the later adapter's helper vs the earlier one's)" do
+        helper_adapter(:first, helper_via: first_via)
+        helper_adapter(:second, helper_via: second_via)
+        report = stub_const("GridReport", build_axn { expects :name })
+        report.async :first
+        report.async :second
+        report.async :first
+
+        expect(warnings).to eq([collision_warning(:second, :first)])
+        expect(outcome { report.call_async(name: "x") }).to eq(["first"])
+      end
+    end
+
+    it "does not count a class method the class defines itself as an adapter helper" do
+      helper_adapter(:second, helper_via: :module)
+      Axn::Async::Adapters.register(:first, concern_with(Module.new { private define_method(:_enqueue_async_job) { |_kwargs| nil } }))
+      report = stub_const("GridReport", build_axn { expects :name })
+      report.define_singleton_method(:build_payload) { "own" }
+      report.async :first
+      report.async :second
+
+      expect(warnings).to be_empty
+    end
+
     it "neither refuses nor warns for any built-in re-declaration" do
       a = action("GridA") { async :sidekiq, queue: "a" }
       a.async(:active_job) { queue_as "b" }
