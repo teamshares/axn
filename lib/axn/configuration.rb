@@ -217,16 +217,19 @@ module Axn
       Axn::Async::Adapters::Sidekiq.configure_default_worker!(config: @default_async_config, block: @default_async_config_block)
     end
 
-    # Async configuration for EnqueueAllOrchestrator (used by enqueue_all_async)
-    # Defaults to the default async config if not explicitly set
-    def _enqueue_all_async_adapter = @enqueue_all_async_adapter || _default_async_adapter
-    def _enqueue_all_async_config = @enqueue_all_async_config || _default_async_config
-    def _enqueue_all_async_config_block = @enqueue_all_async_config_block || _default_async_config_block
+    # Async configuration for EnqueueAllOrchestrator (used by enqueue_all_async), defaulting to the default async
+    # config when no adapter is set here. The adapter, config and block come from ONE source, never mixed: a
+    # default block is written for the default's adapter, so an explicit `set_enqueue_all_async(:sidekiq)` must
+    # not pick up, say, an Active Job default's `self.priority =` just because it passed no block of its own.
+    def _enqueue_all_async_adapter = _enqueue_all_async_set? ? @enqueue_all_async_adapter : _default_async_adapter
+    def _enqueue_all_async_config = _enqueue_all_async_set? ? @enqueue_all_async_config : _default_async_config
+    def _enqueue_all_async_config_block = _enqueue_all_async_set? ? @enqueue_all_async_config_block : _default_async_config_block
+    def _enqueue_all_async_set? = @enqueue_all_async_adapter.present?
 
     # Read only by `_apply_async_to_enqueue_all_orchestrator` below. The `_default_async_*` trio above
     # is public for the opposite reason: `Axn.async` and the Sidekiq adapter read it off `Axn.config`
     # across files, so it cannot be private. A gem asking only "is async on?" uses `default_async?`.
-    private :_enqueue_all_async_adapter, :_enqueue_all_async_config, :_enqueue_all_async_config_block
+    private :_enqueue_all_async_adapter, :_enqueue_all_async_config, :_enqueue_all_async_config_block, :_enqueue_all_async_set?
 
     def set_enqueue_all_async(adapter, **config, &block)
       @enqueue_all_async_adapter = adapter

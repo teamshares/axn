@@ -227,6 +227,43 @@ RSpec.describe Axn::Configuration do
     end
   end
 
+  # The orchestrator's adapter, config and block come from one source. A default block is written for the
+  # default's adapter, so an explicit enqueue-all adapter given no block of its own must not inherit it: an
+  # Active Job default's `self.priority =` applied to a Sidekiq worker is a NoMethodError at configuration time.
+  describe "the adapter, config and block applied to EnqueueAllOrchestrator" do
+    let(:applied) { [] }
+
+    before do
+      allow(config).to receive(:_ensure_async_exception_reporting_registered_for_adapter)
+      allow(Axn::Async::EnqueueAllOrchestrator).to receive(:async) do |adapter, **options, &block|
+        applied << [adapter, options, block]
+      end
+    end
+
+    let(:default_block) { proc { self.priority = 1 } }
+
+    it "does not mix the default's block into an explicit enqueue-all adapter" do
+      config.set_enqueue_all_async(:sidekiq)
+      config.set_default_async(:active_job, queue: "default_queue", &default_block)
+
+      expect(applied.last).to eq([:sidekiq, {}, nil])
+    end
+
+    it "takes all three from the default when no enqueue-all adapter is set" do
+      config.set_default_async(:active_job, queue: "default_queue", &default_block)
+
+      expect(applied.last).to eq([:active_job, { queue: "default_queue" }, default_block])
+    end
+
+    it "returns to the default, all three together, once the enqueue-all adapter is cleared" do
+      config.set_enqueue_all_async(:sidekiq, queue: "batch")
+      config.set_default_async(:active_job, queue: "default_queue", &default_block)
+      config.set_enqueue_all_async(false)
+
+      expect(applied.last).to eq([:active_job, { queue: "default_queue" }, default_block])
+    end
+  end
+
   describe "#rails" do
     it "returns a RailsConfiguration instance" do
       expect(config.rails).to be_a(Axn::RailsConfiguration)
