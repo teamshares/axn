@@ -165,8 +165,10 @@ end
 
 # Rails specs (separate from main specs to avoid loading Rails unnecessarily)
 task :spec_rails do
+  # Unbundled: Bundler 4's `bundle exec` exports BUNDLE_LOCKFILE (and a RUBYOPT) pointing at THIS
+  # bundle, which the dummy app's own `bundle exec` would otherwise inherit and resolve the wrong lock.
   Dir.chdir("spec_rails/dummy_app") do
-    sh "BUNDLE_GEMFILE=Gemfile bundle exec rspec spec/"
+    Bundler.with_unbundled_env { sh "BUNDLE_GEMFILE=Gemfile bundle exec rspec spec/" }
   end
 end
 
@@ -189,7 +191,7 @@ task specs: %i[all_specs]
 # Integration verification for async adapters (requires Redis for Sidekiq)
 task :verify_async do
   Dir.chdir("spec_rails/dummy_app") do
-    sh "BUNDLE_GEMFILE=Gemfile bundle exec rake async:verify:all"
+    Bundler.with_unbundled_env { sh "BUNDLE_GEMFILE=Gemfile bundle exec rake async:verify:all" }
   end
 end
 
