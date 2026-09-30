@@ -46,7 +46,7 @@ module Axn
           # `Module#===`, which is `is_a?`-based and matches a SUBCLASS too, so a Hash/Array/String subclass
           # here reached its own overridden `#transform_values`/`#map`/`#initialize_copy` — reflection
           # executing caller code, confirmed directly (a `Hash` subclass's overridden `#transform_values`
-          # ran). Mirrors `normalize_schema_literal`'s own EXACT-class check just below in this file, for the
+          # ran). Mirrors `normalize_schema_literal`'s own EXACT-class check in `schema.rb`, for the
           # identical reason it already states: "an Array/Hash/String SUBCLASS could override map/each_with_
           # object/dup with user code, and reflection must stay side-effect-free." A subclass instance in an
           # otherwise-flat schema never actually reaches here: `axis_leaf_payload_size` (below) charges it
@@ -96,8 +96,8 @@ module Axn
 
           # The cost of duplicating a schema, estimated WITHOUT serializing it. PRO-3441 round 6 (PR #285):
           # `JSON.generate` is not safe here — it can RAISE on a legal Ruby literal JSON cannot encode
-          # (`Float::INFINITY` in an `inclusion:` set, which `normalize_schema_literal` elsewhere in this
-          # file deliberately PRESERVES rather than rejects, precisely so reflection doesn't fail on caller
+          # (`Float::INFINITY` in an `inclusion:` set, which `normalize_schema_literal` in `schema.rb`
+          # deliberately PRESERVES rather than rejects, precisely so reflection doesn't fail on caller
           # data), and on an opaque literal with its own `#to_json` it EXECUTES caller code — the one thing
           # reflection may never do. `Integer`/`Float`/`Symbol`/`true`/`false`/`nil` cannot be subclassed at
           # all (Ruby raises TypeError attempting it) — so `#to_s` there always resolves to the CLASS's own,
@@ -138,7 +138,7 @@ module Axn
           # ones included, which over-counts rather than risks under-charging a genuinely expensive axis. A
           # flat MEMBER-LEVEL bound distinct from `MAX_EMITTED_PROPERTIES` (a document-wide, name-counting
           # budget in a different unit — bytes here, names there — so borrowing its number would compare two
-          # different things) but the same order-of-magnitude reasoning: a schema this file would otherwise
+          # different things) but the same order-of-magnitude reasoning: a schema the emitter would otherwise
           # happily emit whole should not become unreasonable once duplicated a handful of times.
           MAX_AXIS_CONJUNCTION_BYTES = 1_000_000
 
@@ -178,7 +178,7 @@ module Axn
           # ONCE (beneath `additionalProperties`, from the configs that declared them) with no way to see it
           # multiplied by however many OTHER declarations collide with it. Standing either case down and
           # reporting a residue (the same "cannot state this here, name what's missing" trade every other
-          # inexpressible case in this file already takes) closes both: nothing is ever duplicated past what
+          # inexpressible case in the emitter already takes) closes both: nothing is ever duplicated past what
           # `MAX_AXIS_CONJUNCTION_BYTES` bounds, so nothing is ever uncounted — and what still gets embedded
           # is fully detached by `detach_flat_axis_schema`, not merely the outer Hash a bare `.dup` would
           # reach.
@@ -410,7 +410,7 @@ module Axn
               # SAME per-child config lookup `merge_emitted_maps` already does for an ordinary object, and
               # without `:shape` on the view it found nothing, so a child typed `Object` in one axis's shape
               # collided with `Hash` in the other's as though BOTH were exact. Threading both through is what
-              # lets every recursive lookup this file already has (`shape_members_at`, `axis_configs_for`
+              # lets every recursive lookup the emitter already has (`shape_members_at`, `axis_configs_for`
               # itself) keep working exactly as it does for an ordinary field's configs.
               # The axis's OWN validators come across too, derived by subtracting the three bag keys this
               # view maps itself rather than by naming Core's positional-validator list — a view that carried
@@ -648,7 +648,7 @@ module Axn
           # The one thing a projection can lose that is NOT conditional. `minLength`/`minItems`/`minProperties`
           # are derived from the TYPE, so when the gated entry is the `type:` itself, stripping it also strips
           # the JSON spelling of an UNGATED `presence:` — the node comes back admitting `""`/`[]`/`{}` on every
-          # call, which the runtime rejects on every call. That is this file's own rule that a missing bound is
+          # call, which the runtime rejects on every call. That is the emitter's own rule that a missing bound is
           # a missing EMISSION first, so the floor is restated as a value-level one, the only spelling left
           # once no type survives to hang a size keyword on.
           def restore_blank_floor(projected, ungated, original)
