@@ -223,49 +223,43 @@ RSpec.describe Axn::Internal::Reflection::Values do
         .to eq("d" => { "name" => "a", "internal_notes" => "x" })
     end
 
-    # KNOWN GAP, deliberately left open (see the CHANGELOG entry and PRO-3547, the follow-up ticket):
-    # ANYTHING nested inside a Data/Struct value, at any depth, is rendered by ActiveSupport's own
-    # `Data#as_json` (`to_h.as_json`) in ONE step, so a displacing override anywhere in that subtree is
-    # never reached by `serialize_value` at all — the walker only ever sees the plain Hash/Array
-    # `to_h.as_json` produces. This is WIDER than "Data directly inside Data": a Hash or an Array a
-    # further-nested member holds is inside the same one-shot rendering too (see the second example
-    # below). A Hash or an Array AT THE TOP LEVEL of an exposure (never inside a Data/Struct value first)
-    # IS covered in both environments (see the non-Rails suite's nested and array-element examples).
-    it "does NOT catch a displacing subclass nested directly inside another Data value (pinned gap)" do
-      outer = Data.define(:inner)
-      inner_type = s
-      subclass = Class.new(inner_type) { def as_json(*) = { name: } }
-      klass = Class.new do
-        include Axn
-        auto_log false
-        expects :value
-        exposes :w, type: outer do
+    # ActiveSupport's Data#as_json/Struct#as_json is `to_h.as_json`, which would render everything nested
+    # inside a Data/Struct value in ONE call. `serialize_value` routes such a value through `to_h` itself,
+    # so the guard and the leaf rules apply at every depth, exactly as they do without the core_ext.
+    describe "a Data/Struct value renders member by member, not through ActiveSupport's one-shot as_json" do
+      let(:outer) { Data.define(:inner) }
+
+      def exposing(type, &)
+        Class.new do
+          include Axn
+          auto_log false
+          expects :value
+          exposes(:w, type:, &)
+          def call = expose(w: value)
+        end
+      end
+
+      it "refuses a displacing subclass nested directly inside another Data value" do
+        inner_type = s
+        subclass = Class.new(inner_type) { def as_json(*) = { name: } }
+        klass = exposing(outer) do
           field :inner, type: inner_type do
             field :name, type: String
             field :internal_notes, type: String
           end
         end
-        def call = expose(w: value)
+        value = outer.new(inner: subclass.new(name: "a", internal_notes: "x"))
+
+        expect { Axn::Extensions::Serialization.render(klass.call(value:)) }
+          .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /w\.inner/)
       end
-      value = outer.new(inner: subclass.new(name: "a", internal_notes: "x"))
 
-      expect(value.as_json).to eq("inner" => { name: "a" }) # confirms ActiveSupport renders it in one step, symbol-keyed
-      expect(Axn::Extensions::Serialization.render(klass.call(value:))).to eq("w" => { "inner" => { "name" => "a" } })
-    end
-
-    it "does NOT catch a displacing subclass inside a Hash or an Array MEMBER of a Data value either " \
-       "(the same one-shot rendering swallows those too, not just a directly-nested Data member)" do
-      outer = Data.define(:items, :meta)
-      inner_type = s
-      subclass = Class.new(inner_type) { def as_json(*) = { name: } }
-      klass = Class.new do
-        include Axn
-        auto_log false
-        expects :value
-        exposes :w, type: outer do
-          field :items, type: Array do
-            field :name, type: String
-          end
+      it "refuses a displacing subclass inside a Struct, and inside a Hash or an Array member of a Data value" do
+        inner_type = s
+        subclass = Class.new(inner_type) { def as_json(*) = { name: } }
+        container = Data.define(:items, :meta)
+        klass = exposing(container) do
+          field :items, type: Array, of: inner_type
           field :meta, type: Hash do
             field :inner, type: inner_type do
               field :name, type: String
@@ -273,16 +267,113 @@ RSpec.describe Axn::Internal::Reflection::Values do
             end
           end
         end
-        def call = expose(w: value)
-      end
-      value = outer.new(
-        items: [subclass.new(name: "a", internal_notes: "x")],
-        meta: { inner: subclass.new(name: "b", internal_notes: "y") },
-      )
 
-      expect(Axn::Extensions::Serialization.render(klass.call(value:))).to eq(
-        "w" => { "items" => [{ "name" => "a" }], "meta" => { "inner" => { "name" => "b" } } },
-      )
+        in_array = container.new(items: [subclass.new(name: "a", internal_notes: "x")], meta: {})
+        expect { Axn::Extensions::Serialization.render(klass.call(value: in_array)) }
+          .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /w\.items\[0\]/)
+
+        in_hash = container.new(items: [], meta: { inner: subclass.new(name: "b", internal_notes: "y") })
+        expect { Axn::Extensions::Serialization.render(klass.call(value: in_hash)) }
+          .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /w\.meta\.inner/)
+
+        struct_outer = Struct.new(:inner)
+        struct_inner = Struct.new(:name, :internal_notes)
+        struct_sub = Class.new(struct_inner) { def as_json(*) = { name: } }
+        struct_klass = exposing(struct_outer) do
+          field :inner, type: struct_inner do
+            field :name, type: String
+            field :internal_notes, type: String
+          end
+        end
+        expect { Axn::Extensions::Serialization.render(struct_klass.call(value: struct_outer.new(struct_sub.new("a", "x")))) }
+          .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /w\.inner/)
+      end
+
+      it "renders a well-behaved nested Data exactly as before" do
+        inner_type = s
+        klass = exposing(outer) do
+          field :inner, type: inner_type do
+            field :name, type: String
+            field :internal_notes, type: String
+          end
+        end
+
+        expect(Axn::Extensions::Serialization.render(klass.call(value: outer.new(inner: inner_type.new(name: "a", internal_notes: "x")))))
+          .to eq("w" => { "inner" => { "name" => "a", "internal_notes" => "x" } })
+      end
+
+      describe "leaf rules inside a Data value match the rest of the output" do
+        let(:leafy) { Data.define(:amount, :at, :ratio, :note) }
+
+        def render_leafy(**members)
+          klass = Class.new do
+            include Axn
+            auto_log false
+            expects :value
+            exposes :w
+            def call = expose(w: value)
+          end
+          Axn::Extensions::Serialization.render(klass.call(value: leafy.new(amount: 1, at: nil, ratio: 1.0, note: "n", **members)), reject_opaque: true)
+        end
+
+        it "renders a BigDecimal as a number, not a String" do
+          expect(render_leafy(amount: BigDecimal("3.14")).dig("w", "amount")).to eq(3.14)
+        end
+
+        it "renders a Time with the same RFC3339 form as a top-level Time" do
+          time = Time.utc(2026, 1, 1, 0, 0, 0.5r)
+
+          expect(render_leafy(at: time).dig("w", "at")).to eq(time.iso8601)
+        end
+
+        it "refuses a non-finite Float instead of rendering null" do
+          expect { render_leafy(ratio: Float::NAN) }
+            .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /w\.ratio/)
+        end
+
+        it "refuses an opaque object under reject_opaque instead of dumping its instance variables" do
+          expect { render_leafy(note: Object.new) }
+            .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /w\.note/)
+        end
+      end
+
+      describe "the other one-shot renderers (Enumerable#as_json, the generic Object#as_json via to_hash) unroll the same way" do
+        let(:hashy) { Class.new { def to_hash = { amount: BigDecimal("3.14") } } }
+
+        it "renders a Set's members by the leaf rules an Array's get" do
+          expect(described_class.serialize_value(Set[BigDecimal("3.14")])).to eq([3.14])
+          expect { described_class.serialize_value(Set[Float::NAN]) }
+            .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /\[0\]/)
+        end
+
+        it "renders a to_hash-only value's entries by the same rules" do
+          expect(described_class.serialize_value(hashy.new)).to eq("amount" => 3.14)
+          expect { described_class.serialize_value(Class.new { def to_hash = { ratio: Float::INFINITY } }.new) }
+            .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /ratio/)
+        end
+
+        it "applies the same rules when they sit inside a Data value" do
+          holder = Data.define(:tags, :meta)
+
+          expect(described_class.serialize_value(holder.new(tags: Set[BigDecimal("1.5")], meta: hashy.new)))
+            .to eq("tags" => [1.5], "meta" => { "amount" => 3.14 })
+        end
+
+        it "refuses an opaque member inside a Set under reject_opaque" do
+          expect { described_class.serialize_value(Set[Object.new], reject_opaque: true) }
+            .to raise_error(Axn::Extensions::Serialization::UnserializableValue, /\[0\]/)
+        end
+      end
+
+      it "still reaches a private to_h, as ActiveSupport's own implicit-receiver call does" do
+        priv = Struct.new(:a) do
+          private
+
+          def to_h = { via: "private to_h" }
+        end
+
+        expect(described_class.serialize_value(priv.new(1))).to eq("via" => "private to_h")
+      end
     end
   end
 end

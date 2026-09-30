@@ -401,11 +401,9 @@ RSpec.describe Axn::Extensions::Serialization do
         displacing_inner = Class.new(inner_type) { def as_json(*) = { x: "redacted" } }
         value = [outer_type.new(inner: displacing_inner.new(x: 1))]
 
-        # Wrapped in `without_activesupport_json_core_ext`: outside this, ActiveSupport's own contaminated
-        # `Data#as_json` (`to_h.as_json`) would render the ARRAY ELEMENT itself in ONE step, recursing into
-        # `displacing_inner`'s `as_json` internally before our own guard ever sees it -- the SAME already-
-        # pinned "Rails one-shot rendering" gap the file-level comments and PRO-3547 already document, not a
-        # new failure mode this fix introduces.
+        # Wrapped in `without_activesupport_json_core_ext` so this pins the non-core_ext route
+        # deterministically rather than depending on whether some OTHER spec in this process loaded it first;
+        # spec_rails/dummy_app pins the same raise with the core_ext loaded.
         without_activesupport_json_core_ext do
           expect { described_class.render(klass.call(value:)) }
             .to raise_error(Axn::Extensions::Serialization::UnserializableValue)
@@ -894,12 +892,10 @@ RSpec.describe Axn::Extensions::Serialization do
       end
 
       # Data-in-Data (not through a Hash/Array): the OUTER value is rendered via `to_h` (`Values.projection_for`
-      # prefers it over any incidentally-present generic `Object#as_json`, since `Data` always answers
-      # `to_h`), and that recursion is what has to carry `guard` into the inner value — the one path
-      # ActiveSupport's own `Data#as_json` (`to_h.as_json`, one step — present in a Rails app, or wherever
-      # else that core_ext got loaded) shortcuts around instead (see spec_rails/dummy_app's pinned-gap
-      # example, PRO-3547). Wrapped in `without_activesupport_json_core_ext` so this pins the `to_h` route
-      # deterministically rather than depending on whether some OTHER spec in this process loaded it first.
+      # routes a Data/Struct there even when ActiveSupport's `Data#as_json` is present), and that recursion is
+      # what carries `guard` into the inner value. Wrapped in `without_activesupport_json_core_ext` so this
+      # pins the plain `to_h` route deterministically rather than depending on whether some OTHER spec in
+      # this process loaded the core_ext first; spec_rails/dummy_app pins the same raise with it loaded.
       it "raises for a Data value nested directly inside another Data value, via the to_h route" do
         outer_type = Data.define(:inner)
         inner_type = s
