@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+* [FIX] `input_schema` no longer tells callers that an optional `model:` field (`optional:`, `allow_nil:` or `allow_blank:`) rejects an id that finds no record. At runtime that id resolves to `nil`, the same as omitting it, and the `<field>_id` property no longer carries the "must name a record" residue. A required field is unchanged: it rejects a miss and its schema says so.
+
 * [FEAT] `Axn::Extensions::Auth` holds shared request-authentication primitives for gems that accept inbound requests on axn's behalf; axn-openapi and axn-webhooks both use it. It is Rack-free: a "request" is any object answering `#header(name)`.
   * `Auth.secure_compare` is constant-time and length-independent, because it SHA256-hashes both sides first. False (never raises) on nil.
   * `Auth.require_secret!` rejects a blank or non-String secret, since a blank secret is a weak key and not merely a failed match. It returns a frozen copy, so later mutation of the caller's String cannot change the secret. Its message names the value's type (or emptiness) and never its bytes.

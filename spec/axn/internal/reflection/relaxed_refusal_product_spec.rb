@@ -281,6 +281,10 @@ RSpec.describe "the declarations the precision-only refusals used to refuse, aga
   # allows so a regression beside one still fails.
   def stated_exception?(cell, value, direction, satisfiable:)
     return true if direction == :looser && value == " " # a String presence's whitespace
+    # An untyped `<field>_id, default:` sibling's blank refusal, which the schema does not state on any declaration
+    # (PRO-3615, "An untyped required field emits `{}`"). An optional `model:` beside it no longer carries a lookup
+    # residue that happened to cover it, since a miss there resolves to nil.
+    return true if direction == :looser && cell.group == "G7" && cell.id.include?("sib:untyped default") && non_nil_blank?(value)
     return false unless direction == :stricter
     return true if value.nil? && cell.id.include?("default") # an explicit nil a `default:` fills
     # The model id's narrower type: a scalar `id_type:` states a type the lookup never checks.

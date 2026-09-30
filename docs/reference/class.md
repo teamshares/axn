@@ -224,6 +224,27 @@ In addition to the [standard ActiveModel validations](https://guides.rubyonrails
 
     The message never includes the id. It reaches an external caller verbatim under `user_facing_input_errors:`, and a custom finder's lookup token can be a credential where a primary key would have been harmless — the caller already knows what they sent, and a dev-facing report carries it in `context[:inputs]`.
 
+    **On an optional field, a miss is `nil`.** `optional:` (or `allow_nil:`/`allow_blank:`) tolerates a missing record, and an id that finds no record is a missing record: it resolves to `nil` exactly as no id at all does, with no error and no report. A required field rejects both. The schema states the lookup constraint (`the id must name a record the model lookup finds`) only where it is enforced, so an optional field's `<field>_id` does not carry it.
+
+    ```ruby
+    expects :company, model: true, optional: true
+
+    call                   # company = nil  (no id given)
+    call(company_id: 999)  # company = nil  (the finder found no record: it returned nil, or raised a not_found_on: class)
+    call(company_id: 1)    # company = the record
+
+    expects :company, model: true
+    call                   # fails "Company can't be blank"
+    call(company_id: 999)  # fails "Company not found"
+    ```
+
+    Anything else the finder raises is a fault, not a miss, on a required and an optional field alike: it is swallowed to `nil` and reported through `on_ignored_exception`. To allow the id to be omitted but require that one you send names a record, check it in the action:
+
+    ```ruby
+    expects :company_id, optional: true
+    def company = Company.find_by(id: company_id)
+    ```
+
     ```ruby
     expects :user, model: true                                        # ActiveRecord::RecordNotFound
     expects :account, model: { finder: :find_by_slug! }               # ...also RecordNotFound
