@@ -79,6 +79,9 @@
 
 * [BUGFIX] Schema collisions conjoin overlapping declarations without losing their constraints. Conditional checks are reported separately from unconditional checks; transformed subtrees retain their own descendants and readable nested reports. Unknown or conditional types retain numeric, size, pattern, and blankness constraints. Unconditional `absence:` preserves every non-string JSON blank (`false`, `null`, empty arrays and objects); string blankness keeps Ruby's whitespace semantics and is reported as a runtime-only check. Other unexpressible checks are reported with their gate and transformation context. Schema-warning state uses reserved framework ivars.
 
+* [BUGFIX] `call_async` now enqueues through the adapter the class declares. A subclass that declared a different adapter than an ancestor could still enqueue through an adapter included earlier in its hierarchy: a grandchild returning to `async :sidekiq` under an `async :active_job` child enqueued through Active Job, and a subclass declaring `async :sidekiq` under an `async false` parent still raised `NotImplementedError`.
+* [BUGFIX] `set_enqueue_all_async` with an adapter but no block no longer picks up the `set_default_async` block. The orchestrator used the explicit adapter with the default's block, which is written for the default's adapter, so an Active Job default block (`self.priority = 1`) raised `NoMethodError` when applied to a Sidekiq orchestrator. With an enqueue-all adapter set, its adapter, options and block are used together; without one, all three come from the default.
+
 ## 0.1.0-alpha.6.1
 
 ### Added
