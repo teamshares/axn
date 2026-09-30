@@ -1299,9 +1299,28 @@ module Axn
 
         # A null-only id never reaches the lookup, so it has nothing to name. The lookup is conditional when every
         # model route's lookup is gated; one ungated route looks up on every call.
-        def with_model_lookup_residue(prop, model_configs)
+        #
+        # A route that accepts nil states no lookup constraint: a miss reads as nil, so `optional:`/`allow_nil:`
+        # resolve an id that names no record exactly as they resolve no id at all. Asked through `nil_accepted?`,
+        # the judgment the runtime's own nil verdict turns on, so the two cannot disagree. The call is rejected
+        # when ANY route rejects a miss, so the residue stays as long as one does.
+        #
+        # A nil record is also rejected by what hangs beneath it: a required descendant reads absent under a nil
+        # parent (PRO-2857). `descendants:` is what `descendants_reject_nil_ancestor` answered for the model's
+        # subtree. `:always` keeps the residue whatever the model's own validators say; `:conditional` (a descendant
+        # only a gate makes required) states it as conditional, since the gate's state is not knowable here. The
+        # explicit `<field>_id` sibling's default rescues an OMITTED id only, never one the caller supplied.
+        def with_model_lookup_residue(prop, model_configs, descendants:)
           return prop if prop.nil? || projected_types(prop) == ["null"]
-          return record_residue(prop, MODEL_LOOKUP_RESIDUE) unless model_configs.all? { |config| model_lookup_gated?(config) }
+
+          rejecting = descendants == :always ? model_configs : model_configs.reject { |config| nil_accepted?(config) }
+          if rejecting.empty?
+            return prop unless descendants == :conditional
+
+            return record_residue(prop, "#{GATED_RESIDUE}; #{MODEL_LOOKUP_RESIDUE}", kind: :conditional)
+          end
+
+          return record_residue(prop, MODEL_LOOKUP_RESIDUE) unless rejecting.all? { |config| model_lookup_gated?(config) }
 
           record_residue(prop, "#{GATED_RESIDUE}; #{MODEL_LOOKUP_RESIDUE}", kind: :conditional)
         end

@@ -191,7 +191,10 @@ module Axn
             # `usable_default?` rescue just past it.
             explicit_id = field_configs.find { |c| c.field == id_field && !c.validations[:model] }
             merge_model_id_type_into_sibling!(properties[id_field], [config], explicit_id) if properties[id_field]
-            properties[id_field] = with_model_lookup_residue(properties[id_field], [config]) if properties[id_field]
+            if properties[id_field]
+              properties[id_field] =
+                with_model_lookup_residue(properties[id_field], [config], descendants: descendants_reject_nil_ancestor(children, ann))
+            end
             properties[config.field] = with_model_raw_key_residue(properties[config.field], [config]) if properties[config.field]
             # A default at ANY depth under the model applies at read time (value-level defaults,
             # PRO-2889) — no synthesis is involved — so descendant omittability is the ordinary

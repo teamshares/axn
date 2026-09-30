@@ -245,12 +245,110 @@ RSpec.describe "a model: finder that finds no record" do
 
       expect(action.call(widget_id: 7).exception.message).to eq("Widget pick a widget")
     end
+  end
 
-    it "says nothing at all when the field declared that no record is acceptable" do
+  # A nil-tolerant field treats an id that finds no record as it treats no id: the record is nil and the call
+  # succeeds. A required field rejects both. A finder FAULT is neither, and reports whoever the field is.
+  describe "a nil-tolerant field" do
+    # The record has to be an instance of the model class, or the type check rejects a hit too.
+    let(:registry) do
+      miss = missing_error
+      Class.new do
+        define_singleton_method(:find_by_id) { |id| id == 7 ? new : nil }
+        define_singleton_method(:fetch!) { |id| id == 7 ? new : raise(miss, "no widget #{id}") }
+        define_singleton_method(:explode) { |_id| raise ArgumentError, "the registry is down" }
+      end
+    end
+
+    def declare(tolerance, finder_options)
       klass = registry
-      action = build_axn { expects :widget, model: { klass:, finder: :find_by_id }, allow_nil: true }
+      build_axn { expects :widget, model: { klass: }.merge(finder_options), **tolerance }
+    end
 
-      expect(action.call(widget_id: 7)).to be_ok
+    {
+      "optional: true" => { optional: true },
+      "allow_nil: true" => { allow_nil: true },
+      "allow_blank: true" => { allow_blank: true },
+      "allow_nil: true beside presence: true" => { allow_nil: true, presence: true },
+    }.each do |label, tolerance|
+      describe label do
+        [
+          ["a nil-returning finder", ->(_miss) { { finder: :find_by_id } }],
+          ["a finder raising its not_found_on: class", ->(miss) { { finder: :fetch!, not_found_on: miss } }],
+        ].each do |finder_label, options|
+          context "with #{finder_label}" do
+            subject(:action) { declare(tolerance, options.call(missing_error)) }
+
+            it "resolves an id that finds no record to nil, silently" do
+              result = action.call(widget_id: 8)
+
+              expect(result).to be_ok
+              expect(result.exception).to be_nil
+              expect(reported).to be_empty
+            end
+
+            it "resolves no id, a nil id and a blank id to nil" do
+              expect(action.call).to be_ok
+              expect(action.call(widget_id: nil)).to be_ok
+              expect(action.call(widget_id: "")).to be_ok
+            end
+
+            it "still resolves an id that names a record" do
+              expect(action.call(widget_id: 7)).to be_ok
+            end
+          end
+        end
+
+        it "still reports a finder fault, and still resolves it to nil" do
+          result = declare(tolerance, finder: :explode).call(widget_id: 8)
+
+          expect(result).to be_ok
+          expect(reported.map { |(e, _ctx)| e.class }).to eq([ArgumentError])
+        end
+
+        it "states no lookup constraint in the schema, because none is enforced" do
+          action = declare(tolerance, finder: :find_by_id)
+
+          expect(action.input_schema_residues.map(&:summary)).not_to include(a_string_including("model lookup finds"))
+        end
+      end
+    end
+
+    it "keeps the lookup constraint in the schema of a required field, which rejects the miss it states" do
+      action = declare({}, finder: :find_by_id)
+
+      expect(action.call(widget_id: 8).exception.message).to eq("Widget not found")
+      expect(action.input_schema_residues.map(&:summary)).to include(a_string_including("model lookup finds"))
+    end
+
+    # Tolerance on the declaration reaches the presence check too, but a presence entry's own tolerance does
+    # not reach the model check — so this field still rejects a miss, and the schema still says so.
+    it "keeps the constraint where only the presence check is nil-tolerant, since the record check still rejects the miss" do
+      action = declare({ presence: { allow_nil: true } }, finder: :find_by_id)
+
+      expect(action.call(widget_id: 8).exception.message).to eq("Widget not found")
+      expect(action.input_schema_residues.map(&:summary)).to include(a_string_including("model lookup finds"))
+    end
+
+    it "keeps the constraint at a subfield whose own route is required" do
+      klass = registry
+      action = build_axn do
+        expects :data
+        expects :widget, model: { klass:, finder: :find_by_id }, on: :data
+      end
+
+      expect(action.call(data: { widget_id: 8 }).exception.message).to eq("Widget not found")
+    end
+
+    it "states no constraint at a nil-tolerant subfield" do
+      klass = registry
+      action = build_axn do
+        expects :data
+        expects :widget, model: { klass:, finder: :find_by_id }, on: :data, optional: true
+      end
+
+      expect(action.call(data: { widget_id: 8 })).to be_ok
+      expect(action.input_schema_residues.map(&:summary)).not_to include(a_string_including("model lookup finds"))
     end
   end
 
