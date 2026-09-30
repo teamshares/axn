@@ -10,6 +10,19 @@ module Axn
   module Async
     extend ActiveSupport::Concern
 
+    # The modules each adapter's inclusion added to a class's singleton ancestry, recorded the first time that
+    # inclusion adds any: an adapter's class-side surface, whatever the adapter's style (a Concern's
+    # `ClassMethods`, or a module its own `included` hook extends). A later class that inherits the adapter
+    # module gains nothing from re-including it, so this record is how `call_async` still reaches the declared
+    # adapter's hook from there.
+    @adapter_class_side = {}.compare_by_identity
+
+    def self._record_adapter_class_side(adapter_module, modules)
+      @adapter_class_side[adapter_module] ||= modules.freeze
+    end
+
+    def self._adapter_class_side(adapter_module) = @adapter_class_side.fetch(adapter_module, [])
+
     included do
       class_attribute :_async_adapter, :_async_config, :_async_config_block, instance_accessor: false, default: nil
       # True when the adapter was applied via the global default (call_async/worker hook)
@@ -74,7 +87,7 @@ module Axn
         else
           # Look up adapter in registry
           adapter_module = Adapters.find(adapter)
-          include adapter_module
+          _include_async_adapter(adapter_module)
           # Per-action setup that must run on EVERY `async <adapter>` declaration — including a
           # subclass re-declaring it, where `include` is a no-op (module already inherited) so the
           # adapter's `included do` won't fire. The Sidekiq adapter uses this to (re)build the
@@ -166,16 +179,37 @@ module Axn
       # A class keeps every adapter module it or an ancestor ever included, and re-including one is a no-op that
       # leaves it where it was in the chain. So lookup finds the adapter included most recently, which is not
       # necessarily `_async_adapter`. For example, a subclass returning to `:sidekiq` under an `:active_job`
-      # parent would otherwise enqueue through ActiveJob. An adapter without a `ClassMethods#_enqueue_async_job`
-      # falls back to plain lookup.
+      # parent would otherwise enqueue through ActiveJob.
+      #
+      # The hook is looked for in the adapter's `ClassMethods`, then in the modules its inclusion added to a class's
+      # singleton ancestry (see `Axn::Async._record_adapter_class_side`). Each is resolved across its own ancestry,
+      # the way that module would itself, so a hook it defines, includes or prepends is found alike. Only an adapter
+      # none of whose modules reaches a hook, such as one defining it straight onto the including class, falls back
+      # to plain lookup.
       def _enqueue_with_declared_adapter(kwargs)
-        adapter_module = Adapters.find(_async_adapter == false ? :disabled : _async_adapter)
-        class_methods = adapter_module.const_defined?(:ClassMethods, false) && adapter_module::ClassMethods
-        implemented = Axn::Internal::Identity.kind?(class_methods, ::Module) &&
-                      Axn::Internal::NativeMethods.declares_own_instance_method?(class_methods, :_enqueue_async_job)
-        return _enqueue_async_job(kwargs) unless implemented
+        hook = _declared_adapter_hook(Adapters.find(_async_adapter == false ? :disabled : _async_adapter))
+        return _enqueue_async_job(kwargs) unless hook
 
-        Axn::Internal::NativeMethods.declared_instance_method(class_methods, :_enqueue_async_job).bind_call(self, kwargs)
+        hook.bind_call(self, kwargs)
+      end
+
+      def _declared_adapter_hook(adapter_module)
+        class_methods = adapter_module.const_defined?(:ClassMethods, false) && adapter_module::ClassMethods
+        [class_methods, *Axn::Async._adapter_class_side(adapter_module)].each do |mod|
+          next unless Axn::Internal::Identity.kind?(mod, ::Module)
+
+          hook = Axn::Internal::NativeMethods.declared_instance_method(mod, :_enqueue_async_job)
+          return hook if hook
+        end
+        nil
+      end
+
+      def _include_async_adapter(adapter_module)
+        singleton = Axn::Internal::NativeMethods.module_singleton_class(self)
+        before = Axn::Internal::NativeMethods.module_ancestors(singleton)
+        include adapter_module
+        added = Axn::Internal::NativeMethods.module_ancestors(singleton) - before
+        Axn::Async._record_adapter_class_side(adapter_module, added) unless added.empty?
       end
 
       def _async_adapter_name
