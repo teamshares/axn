@@ -8,31 +8,23 @@ module Axn
           false
         end
 
+        # Validation only. The raise lives in ClassMethods, which `call_async` dispatches to by the declared
+        # adapter and without a notification or log line. Nothing is defined on the class itself, so a subclass
+        # that re-declares `async :sidekiq` under a disabled parent really is enabled.
         def self.included(base)
           base.class_eval do
-            # Validate that kwargs are not provided for Disabled adapter
             raise ArgumentError, "Disabled adapter does not accept configuration options." if _async_config&.any?
             raise ArgumentError, "Disabled adapter does not accept configuration block." if _async_config_block
+          end
+        end
 
-            # Exception to the adapter pattern: Disabled adapter overrides call_async directly
-            # to raise immediately without emitting notifications or logging.
-            # Other adapters must NOT override call_async and should only implement _enqueue_async_job.
-            def self.call_async(**kwargs)
-              # Remove _async parameter to avoid confusion in error message
-              kwargs.delete(:_async)
+        module ClassMethods
+          private
 
-              # Don't emit notification or log - just raise immediately
-              raise NotImplementedError,
-                    "Async execution is explicitly disabled for #{name}. " \
-                    "Use `async :sidekiq` or `async :active_job` to enable background processing."
-            end
-
-            def self._enqueue_async_job(kwargs)
-              # This should never be called since call_async raises, but define it for completeness
-              raise NotImplementedError,
-                    "Async execution is explicitly disabled for #{name}. " \
-                    "Use `async :sidekiq` or `async :active_job` to enable background processing."
-            end
+          def _enqueue_async_job(_kwargs)
+            raise NotImplementedError,
+                  "Async execution is explicitly disabled for #{name}. " \
+                  "Use `async :sidekiq` or `async :active_job` to enable background processing."
           end
         end
       end

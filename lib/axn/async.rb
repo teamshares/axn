@@ -92,7 +92,7 @@ module Axn
         end
 
         # Skip notification and logging for disabled adapter (it will raise immediately)
-        return _enqueue_async_job(kwargs) if _async_adapter == false
+        return _enqueue_with_declared_adapter(kwargs) if _async_adapter == false
 
         # Emit notification for async call
         _emit_call_async_notification(kwargs)
@@ -101,8 +101,7 @@ module Axn
         adapter_name = _async_adapter_name_for_logging
         _log_async_invocation(kwargs, adapter_name:) if adapter_name && _auto_log_before_level
 
-        # Delegate to adapter-specific enqueueing logic
-        _enqueue_async_job(kwargs)
+        _enqueue_with_declared_adapter(kwargs)
       end
 
       # Ensure default async is applied when the class is first instantiated
@@ -154,14 +153,29 @@ module Axn
       # - Implement this method with adapter-specific enqueueing logic
       # - NOT override `call_async` (the base implementation handles notifications, logging, and delegates here)
       #
-      # The only exception is the Disabled adapter, which overrides `call_async` to raise immediately
-      # without emitting notifications.
+      # `call_async` reaches it through `_enqueue_with_declared_adapter`, never by plain method lookup.
       #
       # @param kwargs [Hash] The keyword arguments to pass to the action when it executes
       # @return The result of enqueueing (typically a job ID or similar, adapter-specific)
       def _enqueue_async_job(kwargs)
         # This will be overridden by the included adapter module
         raise NotImplementedError, "No async adapter configured. Use e.g. `async :sidekiq` or `async :active_job` to enable background processing."
+      end
+
+      # Runs the `_enqueue_async_job` of the adapter this class DECLARED, not whichever one method lookup finds.
+      # A class keeps every adapter module it or an ancestor ever included, and re-including one is a no-op that
+      # leaves it where it was in the chain. So lookup finds the adapter included most recently, which is not
+      # necessarily `_async_adapter`. For example, a subclass returning to `:sidekiq` under an `:active_job`
+      # parent would otherwise enqueue through ActiveJob. An adapter without a `ClassMethods#_enqueue_async_job`
+      # falls back to plain lookup.
+      def _enqueue_with_declared_adapter(kwargs)
+        adapter_module = Adapters.find(_async_adapter == false ? :disabled : _async_adapter)
+        class_methods = adapter_module.const_defined?(:ClassMethods, false) && adapter_module::ClassMethods
+        implemented = Axn::Internal::Identity.kind?(class_methods, ::Module) &&
+                      Axn::Internal::NativeMethods.declares_own_instance_method?(class_methods, :_enqueue_async_job)
+        return _enqueue_async_job(kwargs) unless implemented
+
+        Axn::Internal::NativeMethods.declared_instance_method(class_methods, :_enqueue_async_job).bind_call(self, kwargs)
       end
 
       def _async_adapter_name

@@ -420,4 +420,47 @@ RSpec.describe "Axn::Async inheritance" do
       expect(child_with_override.const_get(:AxnSidekiqWorker).get_sidekiq_options["queue"]).to eq("override_queue")
     end
   end
+
+  # An adapter is included into the class, and a class keeps every adapter module it or an ancestor ever included.
+  # What `call_async` does must follow the adapter the class declares, not the one included most recently.
+  context "when a subclass declares a different adapter than an ancestor" do
+    before do
+      Sidekiq::Testing.fake!
+      Sidekiq::Queues.clear_all
+      ActiveJob::Base.queue_adapter.enqueued_jobs.clear
+    end
+
+    let(:sidekiq_jobs) { Sidekiq::Queues.jobs_by_queue.values.sum(&:size) }
+    let(:active_job_jobs) { ActiveJob::Base.queue_adapter.enqueued_jobs.size }
+
+    it "enqueues through Sidekiq when a grandchild returns to :sidekiq under an :active_job child" do
+      parent = stub_const("AdapterFlipParent", Class.new do
+        include Axn
+        async :sidekiq
+        expects :name
+        def call; end
+      end)
+      child = stub_const("AdapterFlipChild", Class.new(parent) { async(:active_job) {} })
+      grandchild = stub_const("AdapterFlipGrandchild", Class.new(child) { async :sidekiq })
+
+      grandchild.call_async(name: "World")
+
+      expect(sidekiq_jobs).to eq(1)
+      expect(active_job_jobs).to eq(0)
+    end
+
+    it "enables async for a subclass that declares :sidekiq under a disabled parent" do
+      parent = stub_const("AdapterDisabledParent", Class.new do
+        include Axn
+        async false
+        expects :name
+        def call; end
+      end)
+      child = stub_const("AdapterEnabledChild", Class.new(parent) { async :sidekiq })
+
+      expect { child.call_async(name: "World") }.not_to raise_error
+      expect(sidekiq_jobs).to eq(1)
+      expect { parent.call_async(name: "World") }.to raise_error(NotImplementedError, /explicitly disabled for AdapterDisabledParent/)
+    end
+  end
 end
