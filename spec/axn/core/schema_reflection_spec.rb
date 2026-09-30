@@ -644,8 +644,55 @@ RSpec.describe "Axn class-level schema reflection" do
 
       expect(generated.call(company_id: 2)).not_to be_ok
       [generated, sibling].each do |action|
-        expect(action.input_schema_residues.map { |r| [r.path, r.kind] }).to eq([[[:company_id], :inherent]])
+        lookup = action.input_schema_residues.select { |r| r.summary.include?("model lookup") }
+        expect(lookup.map { |r| [r.path, r.kind] }).to eq([[[:company_id], :inherent]])
       end
+    end
+
+    # The record's own key is read as the record, which no JSON value is, and nothing puts it in the document —
+    # so the id says not to send it, whichever declaration wrote the id's property.
+    it "names the model's own key on the id, at the top level and nested" do
+      stub_const("LookupCo", Struct.new(:id) { def self.find(id) = new(id) })
+      top = build_axn { expects :company, model: { klass: LookupCo, finder: :find } }
+      optional = build_axn { expects :company, model: { klass: LookupCo, finder: :find }, optional: true }
+      nested = build_axn do
+        expects :payload, type: Hash
+        expects :company, on: :payload, model: { klass: LookupCo, finder: :find }
+      end
+      note = "don't send `company` itself, which is read as the record and rejected unless it is blank; send this id"
+
+      expect(top.call(company_id: 1, company: "x")).not_to be_ok
+      expect(optional.call(company: "x")).not_to be_ok
+      expect(nested.call(payload: { company_id: 1, company: "x" })).not_to be_ok
+      expect(top.call(company_id: 1, company: "")).to be_ok
+      [[top, [:company_id]], [optional, [:company_id]], [nested, %i[payload company_id]]].each do |action, path|
+        expect(action.input_schema_residues.select { |r| r.summary == note }.map { |r| [r.path, r.kind] }).to eq([[path, :inherent]])
+      end
+    end
+
+    # Declaration-gated, the model reads its key only on the calls the gate opens.
+    it "names the model's own key as conditional under a declaration gate" do
+      stub_const("LookupCo", Struct.new(:id) { def self.find(id) = new(id) })
+      action = build_axn { expects :company, model: { klass: LookupCo, finder: :find }, if: -> { false } }
+
+      expect(action.call(company_id: 1, company: "x")).to be_ok
+      raw = action.input_schema_residues.select { |r| r.summary.include?("don't send `company` itself") }
+      expect(raw.map(&:kind)).to eq([:conditional])
+    end
+
+    # A `<field>_id` that admits only null names no record, so a required `model:` rejects every wire call —
+    # only a Ruby caller passing the record itself passes, which is why the declaration is not refused.
+    it "names a null-only id beside a required model" do
+      stub_const("LookupCo", Struct.new(:id) { def self.find(id) = id.nil? ? nil : new(id) })
+      action = build_axn do
+        expects :company, model: { klass: LookupCo, finder: :find }
+        expects :company_id, type: NilClass, optional: true
+      end
+
+      expect(action.call(company_id: nil)).not_to be_ok
+      expect(action.call(company: LookupCo.new(1))).to be_ok
+      expect(action.input_schema_residues.map(&:summary))
+        .to include("this id admits only null, which names no record, so the `model:` route rejects every call that sends it")
     end
 
     # A declaration-gated `model:` looks up only on the calls its gate opens.

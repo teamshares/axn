@@ -48,6 +48,24 @@ module Axn
         # `axn/exceptions` name owners too and cannot reach this file.
         def module_name(mod) = RenderedModuleName.of(mod)
 
+        # The same two names for text that is PUBLISHED rather than read once — a reflected schema's prose, which
+        # an adapter hands to a model and a prompt cache keys on. An anonymous class or module renders as its
+        # object address (`#<Class:0x…>`, and `#<Class:0x…>::Inner` for a constant set under one), which changes
+        # on every boot, so the address gives way to a placeholder: `(anonymous class)`, `(anonymous module)`,
+        # and a bare `#<Name>` for any other address a rendering carries (a singleton class's object).
+        def stable_module_name(mod) = without_addresses(module_name(mod))
+        def stable_class_name(value) = without_addresses(class_name(value))
+
+        ANONYMOUS_MODULE_ADDRESS = /#<(?:Class|Module):0x\h+>/
+        OBJECT_ADDRESS = /:0x\h+>/
+        private_constant :ANONYMOUS_MODULE_ADDRESS, :OBJECT_ADDRESS
+
+        def without_addresses(rendered)
+          stable = rendered.gsub(ANONYMOUS_MODULE_ADDRESS) { |address| address.start_with?("#<Class") ? "(anonymous class)" : "(anonymous module)" }
+          stable.gsub(OBJECT_ADDRESS, ">").freeze
+        end
+        private :without_addresses
+
         # A DECLARED type written into a runtime validation message — a class, or one of the pseudo-types
         # (`:boolean`/`:uuid`/`:params`) a contract may name instead of one. Interpolating the token ran its own
         # `to_s`, and a declared class whose `to_s` raises replaced the validation failure with its exception:

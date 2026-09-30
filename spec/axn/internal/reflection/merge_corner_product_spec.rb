@@ -262,19 +262,6 @@ module MergeCornerProduct
     longer.first(shorter.size) == shorter
   end
 
-  # Single-declaration divergences this product meets on its way to the merges, deferred to PRO-3582 by name.
-  def deferred?(cell, value, schema)
-    # An untyped required field states neither its blank refusal nor, as a member or at the top level, its null one.
-    return true if (value.nil? || non_nil_blank?(value)) && cell.routes.any? { |r| r.match?(/\A[EAB]\(untyped (required|default|procdefault|open)\)/) }
-
-    # A `model:` route's own raw key, which nothing else declares, is absent from the document.
-    cell.routes.any? { |r| r.start_with?("Mraw(") } && !node_declared?(schema, cell.path)
-  end
-
-  def node_declared?(schema, path)
-    path.reduce(schema) { |node, key| node.is_a?(Hash) ? node.dig(:properties, key) : nil }.is_a?(Hash)
-  end
-
   def non_nil_blank?(value) = !value.nil? && !OMITTED.equal?(value) && (value == false || (value.respond_to?(:empty?) && value.empty?))
 
   # The doctrine's stated exceptions (AGENTS.md, "exact at its core"), asked as narrowly as the payload allows.
@@ -305,7 +292,7 @@ module MergeCornerProduct
       verdicts.each do |value, payload, runtime_ok, doc_ok|
         if runtime_ok && !doc_ok
           yield cell, :stricter, payload unless stated_exception?(cell, value, satisfiable)
-        elsif doc_ok && !runtime_ok && residues.none? { |r| explains?(r, cell.path, value) } && !deferred?(cell, value, schema)
+        elsif doc_ok && !runtime_ok && residues.none? { |r| explains?(r, cell.path, value) }
           yield cell, :looser, payload
         end
       end
