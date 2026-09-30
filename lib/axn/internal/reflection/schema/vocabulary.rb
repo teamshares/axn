@@ -75,6 +75,15 @@ module Axn
           # that puts a property at that key admits values the route rejects.
           MODEL_RAW_KEY_RESIDUE = "a `model:` route also reads this key as the record itself, so a value sent here " \
                                   "is rejected unless it is blank; the record is looked up by its id"
+
+          # What `shape_members_at` answers for a key no `shape:` member names, and what the drop pass and the
+          # nesting walk carry when nothing is carried. One frozen instance, so neither allocates for it.
+          NO_SHAPE_MEMBERS = [].freeze
+
+          # Named on a node whose descendants read by `method_call:` off a value that need not be an object. The
+          # nesting walk writes it; here so `Schema::METHOD_READ_RESIDUE` still names it for the specs.
+          METHOD_READ_RESIDUE = "a value that is not an object is read with `method_call:`, and what the method returns " \
+                                "must pass the checks beneath it"
         end
       end
     end

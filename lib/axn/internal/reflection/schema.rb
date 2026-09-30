@@ -62,6 +62,10 @@ require "axn/internal/reflection/schema/merge"
 # Requiredness decides whether a position may be omitted or be null — the `required` list and every nullability.
 require "axn/internal/reflection/schema/requiredness"
 
+# Nesting walks a subfield tree into its parent's property, reading Requiredness's annotations and handing each
+# collision to Merge.
+require "axn/internal/reflection/schema/nesting"
+
 # RenderGuards builds the render-time position map (PRO-3284) — reuses this module's own emission
 # predicates rather than re-deriving them, so it must load after everything it calls.
 require "axn/internal/reflection/schema/render_guards"
@@ -126,9 +130,6 @@ module Axn
         HASH_TO_A = ::Hash.instance_method(:to_a)
         private_constant :MENTIONABLE_MAP, :MENTIONABLE_EACH_PAIR
 
-        METHOD_READ_RESIDUE = "a value that is not an object is read with `method_call:`, and what the method returns " \
-                              "must pass the checks beneath it"
-
         # PRO-3441. A map's `of: { values: }` axis governs every key `properties` does NOT itself name
         # (`additionalProperties`'s own JSON Schema meaning) — except the keys the axis's OWN `shape:`
         # names, which `_derive_shaped_keys!` exempts because the runtime does (`of_validator.rb`'s
@@ -186,6 +187,7 @@ module Axn
         extend Nestability
         extend Merge
         extend Requiredness
+        extend Nesting
         extend RenderGuards
 
         module_function
@@ -521,8 +523,6 @@ module Axn
           members.all? { |m| nestable_as_object?(m) } ? members : NO_SHAPE_MEMBERS
         end
 
-        NO_SHAPE_MEMBERS = [].freeze
-
         # Every `shape:` member declared at `key` across the node's own configs AND the members carried from
         # a shallower hop — via shape_members_at, the same locator emission uses, so the two sides can't
         # disagree on which members collide with the implicit child at `key`.
@@ -534,30 +534,6 @@ module Axn
 
         private_class_method :compute_dropped, :blocking_ancestor?, :merged_shape_members, :colliding_shape_members,
                              :merged_explicit_members
-
-        # Whether a declaration beneath `node` resolves its path with `method_call:`, and so reads a method off
-        # this node's value where that value is not a Hash rather than settling absent.
-        def subtree_reads_methods?(node)
-          node.children.each_value.any? { |child| child.configs.any?(&:method_call) || subtree_reads_methods?(child) }
-        end
-
-        # Whether something beneath `node` that reads by plain KEY is required on every call — which is what rejects a
-        # value at `node` that is not an object, since a key read off anything else settles absent. A `method_call:`
-        # declaration proves nothing about that: it reads a method off whatever is there (`"abc".size`), so its own
-        # requiredness is left out, and so is everything reached only through it. The same own-level rule
-        # `node_optional?` applies, asked of a child's plain-key, ungated routes alone.
-        def subtree_requires_object?(node, ann)
-          node.children.each_value.any? do |child|
-            next subtree_requires_object?(child, ann) if child.implicit?
-
-            child.configs.any? do |config|
-              next false if config.method_call || requiredness_conditionally_relaxable?(config)
-
-              !usable_default?(config, subfield: true) &&
-                (!nil_tolerance_rescues_absence?(config) || subtree_requires_object?(child, ann))
-            end
-          end
-        end
 
         # Whether an active `presence:` check here rejects every blank value: one is declared and it is not
         # blank-tolerant. THE single definition, read by the blank-default judgment and by the size-floor
@@ -579,398 +555,6 @@ module Axn
           return true if validations.key?(Axn::Internal::FieldConfig::NON_EMPTINESS_KEY)
 
           presence_rejects_blank?(validations)
-        end
-
-        # Mutates `prop` to nest the node's children as `prop[:properties]`/`prop[:required]`, recursing
-        # through the whole subtree. Forces the parent to `type: object` (it now has structure). The parent
-        # is nullable only when it tolerates nil AND strands no required descendant: runtime treats a nil
-        # parent as "subfields absent" (PRO-2857), so a nil-accepting parent with an all-optional subtree
-        # accepts `null`, while a required descendant (which a nil parent can't yield) keeps it object-only.
-        # Only applies when EVERY admissible parent type is object-shaped (Hash/`:params`/untyped) — a
-        # non-object parent (`type: Array`) or a mixed union (`type: [Hash, Array]`) keeps its declared
-        # type(s) and its subfields' shape is omitted, since object properties can't represent a non-object
-        # branch (deep descendants there are in dropped_deep_subfields; its children still shape
-        # requiredness via required_child?, matching runtime).
-        # `node`'s own representative config (the FIRST non-model config at a merged node) decides the
-        # annotation's nullability — see NodeAnnotation — and every route's own check is conjoined onto the
-        # property by `apply_explicit_child!`. `node.configs` is EVERY config at the
-        # node: it decides both whether to nest at all (node_configs_block_nesting?, the same predicate the
-        # drop pass uses, so a route the tree drops from is never re-nested) and, threaded on as parent
-        # configs, which `shape:` members might collide with an implicit child.
-        def apply_nested_subfields!(prop, node, ann, carried: NO_SHAPE_MEMBERS)
-          children = node.children
-          return if children.empty?
-
-          node_configs = node.configs
-          if node_configs_block_nesting?(node_configs)
-            # A non-nestable parent (non-object type, mixed union, or model route) omits its children's
-            # SHAPE but NOT their OBLIGATION: field_optional? still forces the parent required when a child
-            # requires presence, so its nullability must agree. A nil parent yields every descendant absent
-            # (PRO-2857), stranding the required descendant, so strip the parent's `null` admission
-            # (reject_null! handles both a type array and an anyOf union) — mirroring the nested-child guard
-            # in apply_children!. Predicate: children_require_presence?(children), the same transitive
-            # presence test as the nested analog's subtree_requires_presence?(node); required_child?'s
-            # shape-synthesis clause is inert for a non-object parent, so the plain presence test is exact
-            # and keeps the two sites' reasoning identical.
-            reject_null!(prop) if children_require_presence?(children, ann)
-            return
-          end
-
-          prop.delete(:format)
-          prop[:properties] ||= {}
-          prop[:required] ||= []
-
-          apply_children!(prop, children, node_configs, ann, carried:)
-
-          prop[:required] = prop[:required].uniq
-          # A nil parent yields its subfields as absent, so `null` is admissible exactly when the parent
-          # accepts nil and no required nested obligation is stranded (required_child? — which counts a
-          # required shape member only when the parent's OWN default materializes it). Read from the
-          # precomputed annotation (derive_annotations already applied this same rule to `node`), NOT
-          # `prop[:required]`, which also carries shape members that a bare nil parent never triggers.
-          #
-          # The node is typed `object` only where the runtime rejects every other value too: a type check that
-          # runs on every call, or a required child read by key, which a non-object value leaves absent. Otherwise
-          # — an untyped parent, or one whose type check is gated — a String or Array reaches the children as
-          # nothing and passes, and `properties` (which JSON Schema applies to objects alone) says all there is to
-          # say; a child read by `method_call:` reads a method off it instead, which is named, exactly as at an
-          # implicit intermediate (`apply_implicit_node!`).
-          object_only = nested_node_object_only?(node, node_configs, ann)
-          prop.replace(record_residue(prop, METHOD_READ_RESIDUE)) if !object_only && subtree_reads_methods?(node)
-          if object_only
-            prop[:type] = ann[node].nullable ? %w[object null] : "object"
-          elsif !preprocessed?(node_configs) &&
-                node_configs.any? { |c| presence_rejects_blank?(gate_closed_validations(c, c.validations)) }
-            # Untyped, a presence check still rejects every blank — nil among them — as a value set.
-            prop[:not] = { enum: BLANK_WIRE_VALUES }
-          elsif !ann[node].nullable
-            reject_null!(prop)
-          end
-          prop[:required] = nil if prop[:required].empty?
-        end
-
-        # Never for a node that preprocesses its value: its children read the Proc's output, so the wire value
-        # may be anything that becomes an object (a JSON String the Proc parses).
-        def nested_node_object_only?(node, node_configs, ann)
-          return false if preprocessed?(node_configs)
-
-          node_configs.any? { |c| gate_closed_validations(c, c.validations).key?(:type) } || subtree_requires_object?(node, ann)
-        end
-
-        def preprocessed?(configs) = configs.any? { |c| c.respond_to?(:preprocess) && c.preprocess }
-
-        # Emits one level of children into `prop` (which must already have :properties/:required arrays),
-        # recursing into each child's own subtree. `parent_configs` are the configs whose subfields these
-        # children are — used to decide, by the same predicate as the drop pass, whether an implicit child
-        # may merge into a colliding shape member. They are the top-level/subfield configs at an explicit
-        # parent (ALL of them at a merged node, mirroring SubfieldTree), or the shape members an implicit
-        # intermediate merged into (so nested members block at depth), or empty for a fresh implicit
-        # intermediate that claimed no shape member.
-        #
-        # A single wire path can be declared via two routes (Node#configs size > 1), and the routes can
-        # disagree on kind: a `model:` route emits the generated `<leaf>_id` while a plain route emits the
-        # object property. Both are enforced at runtime, so both are emitted, each required per its OWN
-        # route's configs — not the node as a whole.
-        #
-        # At a merged model+non-model node the non-model route's raw-key property admits values the runtime
-        # always rejects — the model resolver reads the raw key as the record, and a JSON value is never a model
-        # instance, so only a blank passes. That looseness is named on the property (`name_model_lookups!`), and
-        # the generated `<leaf>_id` advertises the working path.
-        def apply_children!(prop, children, parent_configs, ann, carried: NO_SHAPE_MEMBERS)
-          required_model_ids = []
-          model_id_siblings = []
-          # Hoisted: every child asks the same question of the same two lists, and this is a hot loop.
-          ancestor_configs = carried.empty? ? parent_configs : parent_configs + carried
-          # Asked ONCE rather than per child, and it is the difference between this costing nothing and costing
-          # a discarded list per child: a contract declaring no `shape:` at this node — the common case by far —
-          # has no member to collide with at any key, so the per-key lookup below is skipped outright. Measured
-          # at +15% allocations for a shape-free action with 21 subfield children before this guard, ~0 after.
-          ancestor_shapes = ancestor_configs.any? { |c| c.validations[:shape] }
-          # What the ancestor actually EMITTED at a child's key is named through `property_routes`, the one owner
-          # of which routes a property is built from, so the member a child is conjoined with is judged by the
-          # configs that produced it.
-          emitted_ancestor_configs = property_routes(parent_configs) + carried
-          children.each do |key, node|
-            if node.implicit?
-              apply_implicit_node!(prop, key, node, ancestor_configs, ann)
-              next
-            end
-
-            model_configs = node.configs.select { |c| c.validations[:model] }
-            non_model_configs = node.configs.reject { |c| c.validations[:model] }
-            # The object property is built from the representative and conjoined with every other non-model route
-            # (`conjoined_route_property`); `property_routes` names them for every layer that must.
-
-            unless model_configs.empty?
-              apply_model_id_child!(prop, key, node, model_configs, children, parent_configs, ann, required_model_ids,
-                                    model_id_siblings, carried)
-            end
-
-            representative = property_representative(node.configs)
-            next unless representative
-
-            members = ancestor_shapes ? shape_members_at(ancestor_configs, key) : NO_SHAPE_MEMBERS
-            emitted_members = ancestor_shapes ? shape_members_at(emitted_ancestor_configs, key) : NO_SHAPE_MEMBERS
-            apply_explicit_child!(prop, key, node, representative, non_model_configs, members, emitted_members, ann)
-            apply_child_requiredness!(prop, key, node, non_model_configs, ann)
-          end
-          # The sibling's OWN entry (a plain child of this same loop) always wins the property outright
-          # regardless of visitation order, so `prop[:properties][id_field]` is only guaranteed to hold
-          # the sibling's FINAL emission once every key has been visited — merging mid-loop risked
-          # reading a not-yet-overwritten model placeholder.
-          #
-          # Ordered BEFORE the required-null pass just below, not after: merging the declared `id_type:`
-          # in uses the SIBLING's OWN `allow_nil:`/`allow_blank:` to decide whether `"null"` joins the
-          # merged type (an untyped `company_id, allow_nil: true` sibling beside a REQUIRED model
-          # reconstructed `type: ["integer", "null"]`) — but requiredness here is decided by the MODEL,
-          # not the sibling, and a required model id can never actually resolve from `nil` at runtime.
-          # Merging first and then letting the null pass strip `"null"` from whatever type it finds lets
-          # that pass win regardless of which ran the type in; the reverse order let the sibling's own
-          # nullability reintroduce a null branch the null pass had already correctly removed, silently
-          # admitting a value runtime always rejects for a required id (top-level
-          # `apply_model_id_requiredness!` never had this bug — its merge already ran before its own
-          # `reject_null!`, being a single sequential method rather than two loops here).
-          model_id_siblings.each do |id_field, model_configs, explicit_id|
-            merge_model_id_type_into_sibling!(prop[:properties][id_field], model_configs, explicit_id) if prop[:properties][id_field]
-          end
-          name_model_lookups!(prop, children)
-          # A required nested model id can't be null (a null token resolves the model to nil at runtime).
-          # Done after the loop so it survives an explicit id subfield declared after the model: subfield.
-          required_model_ids.each { |id_field| reject_null!(prop[:properties][id_field]) if prop[:properties][id_field] }
-        end
-
-        # A child is required when its routes require it with every gate closed — the routes a gate can relax
-        # are left out, exactly as the ancestor-propagation annotation leaves them out — and a requirement
-        # only a gate imposes is named on the child's property instead.
-        def apply_child_requiredness!(prop, key, node, configs, ann)
-          return if node_optional?(node, ann, configs)
-          # Already required unconditionally by something else at this position (an ancestor's shape member).
-          return if prop[:required].include?(required_key(key))
-
-          if node_optional?(node, ann, configs.reject { |c| requiredness_conditionally_relaxable?(c) })
-            prop[:properties][key] = with_gated_requirement(prop[:properties][key], configs)
-          else
-            prop[:required] << required_key(key)
-          end
-        end
-
-        # Builds and writes the property for one EXPLICIT child. Extracted from `apply_children!`'s loop for the
-        # reason `apply_model_id_child!` was: conjoining an ancestor `shape:` member here pushed that single
-        # method back over this file's own complexity budget, and another key folded into one already-large loop
-        # body is what the earlier extraction was avoiding.
-        #
-        # An ancestor `shape:` may describe this very key, and `apply_structured_schema!` has already emitted
-        # its property into `prop[:properties][key]` (from `build_property`, before `apply_children!` ran at
-        # all). Runtime enforces the member and the node alike, so the two are CONJOINED rather than one
-        # replacing the other — the merged (object-shaped) members are carried down so a deeper hop sees a
-        # member-of-a-member, the same thing `apply_implicit_node!` does at an implicit child. Without this
-        # branch advertised a bare object for a position the contract still held to every nested member it
-        # declared: the document was looser than the runtime, and the same contract spelled with a dotted `on:`
-        # emitted it correctly (PRO-3399).
-        #
-        # PRO-3405: the conjoin runs whenever `member_prop` exists, not only when `merged_members` came back
-        # non-empty. `merged_explicit_members`'s gates (the node must nest; every colliding member must be
-        # object-shaped) answer a DIFFERENT question — whether to carry the member down for a deeper hop's
-        # member-of-a-member test — and the conjunction itself needs neither: conjoin_shape_member_property
-        # already knows how to combine two object-shaped properties (the keyword union above) and how to combine
-        # anything else (a sibling `allOf` branch), so a member the node "cannot nest" rides alongside as its
-        # own `allOf` branch rather than being dropped.
-        #
-        # For an untransformed node the merge precedes descent: the nested pass reads `child_prop[:properties]` to
-        # decide whether a generated `<leaf>_id` still needs writing, and `apply_implicit_node!` reads it again
-        # to place a blocked merge's obligation on the member's own property. Merging afterwards left both of
-        # them looking at a property the member's contribution had not reached yet.
-        #
-        # `member_configs`/`own_configs` (the collision's two sides, as ROUTE lists — `emitted_members` and
-        # `[representative]` here) let `conjoin_shape_member_property` judge each side's DECLARED type before
-        # trusting its emitted property as an exact constraint worth conjoining — see that method for the two
-        # separate reasons a side can be untrustworthy (a transform, or an unknown class) and how each is
-        # handled, and for how the same judgment recurses through `merge_emitted_maps` for a name colliding one
-        # level down. `emitted_members` are the members of the routes the parent's property was built from
-        # (`property_routes`), plus the carried ones; `members` (every ancestor config) stays for nullability just
-        # below, an ENFORCED question.
-        #
-        # `null` survives only when every non-model route tolerates nil (runtime enforces all of them), EVERY
-        # colliding shape member tolerates nil
-        # too — merged or not, since a member this node declined to merge is still enforced, and a non-nullable
-        # one forbids nil however permissive the node's own declaration is — and no required descendant is
-        # stranded, a nil node yielding every descendant absent (PRO-2857), so a required one below it forbids
-        # nil even for a non-object node whose subfield shape isn't nested here. The members are read via
-        # nil_allowed?, the predicate `apply_implicit_node!` reads them with, never sniffed off the emitted
-        # property: an untyped nil-tolerant member emits no `type`, leaving no null branch to find.
-        def apply_explicit_child!(prop, key, node, representative, non_model_configs, members, emitted_members, ann)
-          merged_members = merged_explicit_members(node, members)
-          member_prop = prop[:properties][key]
-          child_prop = conjoined_route_property(representative, non_model_configs)
-          # Descendants of a transformed value belong to its post-transform contract. Finish that
-          # subtree before the collision can stand it down; otherwise descent rewrites the retained
-          # wire type and attaches post-transform children to it.
-          if member_prop && transforms_wire_value?([representative])
-            child_prop = conjoin_shape_member_property(member_prop, child_prop, member_configs: emitted_members, own_configs: [representative]) do |projected|
-              apply_nested_subfields!(projected, node, ann)
-            end
-          else
-            child_prop = conjoin_shape_member_property(member_prop, child_prop, member_configs: emitted_members, own_configs: [representative]) if member_prop
-            apply_nested_subfields!(child_prop, node, ann, carried: merged_members)
-            child_prop = emitted_input_property(child_prop, representative) unless member_prop
-          end
-          # A route carrying `preprocess:` is NOT exempted from its own `nil_allowed?` here, though the Proc
-          # runs on a `nil` (and an absent) value too, and a constant `preprocess: ->(_) { "x" }` rescues it. That
-          # is the one stated exception to a transformed value saying less than the runtime: its requiredness and
-          # nullability stay as declared, since reflection cannot tell a nil-rescuing Proc from the far more
-          # common nil-preserving one (`->(v) { v.strip }`) without running it, and dropping both from every
-          # preprocessed field would stop the schema saying a field must be sent at all. A value supplied for a
-          # missing one is `default:`'s job, and that the schema reflects.
-          null_ok = non_model_configs.all? { |c| nil_admitted_with_gates_closed?(c) } &&
-                    members.all? { |m| nil_admitted_with_gates_closed?(m) } &&
-                    !subtree_requires_presence?(node, ann)
-          reject_null!(child_prop) unless null_ok
-          prop[:properties][key] = child_prop.compact
-        end
-
-        # The nested twin of `build_input`'s own model branch — its own method rather than another key
-        # folded into `apply_children!`'s single already-large loop body, which the conflict/reconciliation
-        # logic here had pushed past this file's complexity budget. Mutates `prop`/`required_model_ids` in
-        # place, exactly as the inlined code it replaces did.
-        def apply_model_id_child!(prop, key, node, model_configs, children, parent_configs, ann, required_model_ids,
-                                  model_id_siblings, carried)
-          # The id key derives from the LEAF wire segment (a dotted model name digs `<leaf>_id` off
-          # the same nested parent at runtime). A user may declare an explicit NON-model nested
-          # `<field>_id` subfield — its own entry in `children`, keyed by that same id, visited
-          # independently of this one — and it always wins the property, so `model_id_property` is
-          # skipped rather than built and discarded: for an ActiveRecord model that call dispatches
-          # `primary_key`/`type_for_attribute` (PRO-3384), and there is no reason to pay that (or the
-          # DB/schema access behind it) for a result an explicit sibling is about to replace anyway.
-          #
-          # Gated on `explicit_id`, not merely `sibling_node`'s presence: a sibling node whose OWN
-          # field is itself a `model:` (e.g. `company_id, model: ...` beside `company, model: ...`)
-          # never writes to THIS key at all — it emits its own generated id one level deeper
-          # (`company_id_id`) — so treating its mere existence as "something will write here" skipped
-          # the only thing that would have.
-          id_field = Internal::FieldConfig.model_id_key(key)
-          sibling_node = children[id_field]
-          explicit_id = sibling_node&.configs&.find { |c| !c.validations[:model] }
-          # A `shape:` member on the PARENT (`parent_configs`) can ALSO claim `id_field` by name — a
-          # wire-property source `apply_structured_schema!` merges into `prop[:properties]` BEFORE this
-          # method ever runs (called from `build_property`, ahead of `apply_nested_subfields!`), entirely
-          # outside the subfield tree `children` searches: `field :company_id, type: String` inside a
-          # `do...end` block beside `expects :company, on: ..., model: { id_type: Integer }` left
-          # `explicit_id` nil (no SUBFIELD sibling exists), so the model's own property was built and then lost to
-          # the shape member's, with nothing deciding between them.
-          #
-          # Searched among the routes the parent's property was built FROM (`property_routes`) plus the members
-          # carried from a shallower hop — the ancestor's shape reaches this node's property too (PRO-3399), so a
-          # carried `field :company_id, type: String` claims the key exactly as one on the node's own route does,
-          # and leaving the carry out would discard the declared `id_type:` one level up.
-          explicit_id ||= emitted_shape_member_at(prop, property_routes(parent_configs), carried, id_field)
-          if explicit_id
-            # Deferred rather than merged here directly (see the post-loop pass in `apply_children!`):
-            # this sibling's OWN entry in `children` hasn't necessarily been visited yet, so
-            # `prop[:properties][id_field]` isn't guaranteed to hold its FINAL emission until every key
-            # in this loop has run.
-            model_id_siblings << [id_field, model_configs, explicit_id]
-          elsif !prop[:properties].key?(id_field)
-            id_type = reconciled_model_id_type_token(model_configs)
-            _, subprop = model_id_property(model_configs.first, id_type)
-            prop[:properties][id_field] ||= subprop
-          end
-          return if node_optional?(node, ann, model_configs)
-          # A sibling id whose default supplies the lookup token on the omitted call rescues it, by the one
-          # predicate the annotation credit and the declaration guard share.
-          return if sibling_id_rescued?(children, key, node)
-
-          if node_optional?(node, ann, model_configs.reject { |c| requiredness_conditionally_relaxable?(c) })
-            prop[:properties][id_field] = with_gated_requirement(prop[:properties][id_field], model_configs)
-            return
-          end
-
-          prop[:required] << id_field.to_s
-          required_model_ids << id_field
-        end
-
-        # The `shape:` member claiming `id_field`, but ONLY where that member's property was actually EMITTED
-        # — asked of `prop[:properties]` itself rather than inferred from which route declared it.
-        #
-        # Declaring a member and emitting one are not the same thing, and the gap is what this guards: a member
-        # is found by `shape_members_at` whether or not anything of it reached the document (a gated `shape:`,
-        # or a route whose transform stood it down). Treating such a member as the sibling that claims the key
-        # skipped the generated id property, and the
-        # deferred `merge_model_id_type_into_sibling!` pass then found nothing at that key to merge into:
-        # `id_field` came out `required` with no entry in `properties` at all, which JSON Schema reads as "any
-        # value permitted" — looser than emitting nothing, and the same failure the route restriction here was
-        # originally written to prevent.
-        #
-        # A `prop[:properties]` question rather than a route question, because it is the one the emitter can
-        # actually answer at this point: a shape member's property is written by `build_property` (and the
-        # ancestor merge) strictly before `apply_children!` runs, while a subfield SIBLING at the same key is
-        # found through `children` above and has already set `explicit_id` by the time this is reached.
-        def emitted_shape_member_at(prop, routes, carried, id_field)
-          return nil unless prop[:properties].key?(id_field)
-
-          shape_members_at(carried.empty? ? routes : routes + carried, id_field).first
-        end
-
-        # An implicit node (a dotted-path intermediate with no declaration of its own) emits a bare object
-        # property whose only content is its children. When a `shape:` member of any `parent_configs`
-        # claims the key, merge into it only if EVERY colliding member is `nestable_as_object?` — the SAME
-        # predicate on the SAME member configs that blocking_ancestor? uses (it scans ALL of
-        # the node's configs), so emission and the drop pass agree: a non-nestable member (a scalar, or a
-        # mixed union like `type: [Hash, Array]`) on ANY route blocks and its deep configs stay in
-        # dropped_deep_subfields rather than forcing a self-contradictory property. The block is judged from
-        # the member configs directly, NOT from a pre-seeded property: a member whose property never reached
-        # the document (a gated `shape:`, or a route whose transform stood it down) seeds nothing to collide
-        # with, yet must still block (matching SubfieldTree, which scans every config).
-        #
-        # A blocked merge omits the deep SHAPE but not the deep OBLIGATION: runtime validates the dropped
-        # subfields regardless of representability, so when the dropped subtree requires presence
-        # (subtree_requires_presence? — the same predicate used everywhere) the colliding member's own
-        # property still inherits that obligation. The member is forced required and its `null` admission
-        # stripped (reject_null! handles both `type:` arrays and `anyOf` unions) — because a nil/absent
-        # member strands the required descendant (PRO-2857). Nothing else about the member is touched (no
-        # forced object type, no properties — its shape stays dropped). An all-optional dropped subtree
-        # strands nothing, so the member keeps its declared flags (runtime accepts omission/nil there).
-        def apply_implicit_node!(prop, key, node, parent_configs, ann)
-          members = shape_members_at(parent_configs, key)
-          if members.any? { |member| !nestable_as_object?(member) }
-            if subtree_requires_presence?(node, ann)
-              prop[:required] << required_key(key)
-              reject_null!(prop[:properties][key]) if prop[:properties][key]
-            end
-            return
-          end
-
-          # Carry the (all-nestable) colliding members as the parent configs for this node's own children,
-          # so a deeper implicit hop tests their NESTED shape members (a member-of-a-member). Same members
-          # the drop pass carries, so the two agree at depth.
-          existing = prop[:properties][key]
-          target = existing || {}
-          target.delete(:format)
-          target[:properties] ||= {}
-          target[:required] ||= []
-          apply_children!(target, node.children, members, ann)
-          target[:required] = target[:required].uniq
-          # An implicit intermediate's annotation is nullable exactly when nothing beneath requires presence (a
-          # nil parent digs every descendant to nil, PRO-2857). With no colliding member, that same condition
-          # means nothing at this key rejects a value that is not an object either: a descendant read off a
-          # String or a number settles absent too (PRO-2886) — and so does one whose only required descendants
-          # read by `method_call:`, which accept whatever answers the method (`subtree_requires_object?`). So such
-          # a node adds only its `properties`, which JSON Schema applies to an object alone, and states no `type`
-          # of its own — whatever the key already carries (a `model:` route's generated id, a declared type's
-          # member placeholder) keeps its own. A `method_call:` descendant is the exception to "settles absent":
-          # it reads a method off whatever is there, and what that method returns is checked, so that is named.
-          #
-          # A colliding shape member changes none of that: the property it already emitted states its own type
-          # and nullability, which the member enforces whatever the dotted descendants read. An untyped member, or
-          # one whose type check is gated, admits a String the descendants read as absent, so the node is made an
-          # object only where something beneath it requires one — the same rule as with no member at all.
-          if ann[node].nullable || !subtree_requires_object?(node, ann)
-            target = record_residue(target, METHOD_READ_RESIDUE) if subtree_reads_methods?(node)
-          else
-            target[:type] = "object"
-          end
-          target[:required] = nil if target[:required].empty?
-          prop[:properties][key] = target.compact
-          prop[:required] << required_key(key) if ann[node].required
         end
 
         # Only type assertions are needed here, not a satisfiability prover. Ignoring enum, not,
@@ -1668,20 +1252,6 @@ module Axn
           names = numeric.map { |token| Axn::Internal::Rendering.module_name(token) }.join(", ")
           record_residue(prop, "the runtime checks for a Ruby #{names}, and a JSON number arrives as an Integer (1) or a " \
                                "Float (1.5)")
-        end
-
-        # Each nested model id's lookup, named once the id's property is final, whichever declaration wrote it.
-        def name_model_lookups!(prop, children)
-          children.each do |key, node|
-            next if node.implicit?
-
-            model_configs = node.configs.select { |c| c.validations[:model] }
-            next if model_configs.empty?
-
-            id_field = Internal::FieldConfig.model_id_key(key)
-            prop[:properties][id_field] = with_model_lookup_residue(prop[:properties][id_field], model_configs)
-            prop[:properties][key] = with_model_raw_key_residue(prop[:properties][key], model_configs) if prop[:properties].key?(key)
-          end
         end
 
         # The property another declaration emits at a `model:` route's own key — a non-model route merged onto the
