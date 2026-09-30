@@ -531,7 +531,8 @@ RSpec.describe "conditional validation declarations (if:/unless:)" do
         end
       end.to raise_error(ArgumentError) { |error|
         expect(error.message).to start_with("`if:` isn't allowed inside `model:` on expects :company — put the " \
-                                            "condition on the declaration: `expects :company, model: …, if: …`.")
+                                            "condition on the declaration: `expects :company, model: …, if: …`. Inside the bag a gate " \
+                                            "reaches only the record check")
       }
     end
   end

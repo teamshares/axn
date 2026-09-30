@@ -2226,15 +2226,17 @@ module Axn
 
         # `if:`/`unless:`/`allow_nil:`/`allow_blank:` inside a `model:` bag, refused by key presence (a blank
         # `if: nil` included) at every `expects` and `exposes` position: one rule, gates and tolerances go on the
-        # declaration. Inside the bag they reach only `ModelValidator`, never presence or the lookup.
+        # declaration. Inside the bag they reach only `ModelValidator` (the record's type, and on `expects` the
+        # record/id match and the not-found report), never presence or the lookup, which on `expects` runs
+        # whenever anything reads the field. What the whole declaration then accepts depends on its other options,
+        # so what a bag key looks like it does and what it does part ways: a required `expects` with a bag gate
+        # still looks up and fails "not found", and `allow_blank: false` in the bag makes an `optional:` field
+        # required again. Every bag spelling has a declaration-level one that behaves the same (the declaration's
+        # `if:`/`unless:`, `optional:`, `allow_nil:`, `allow_blank:`, `presence:`), so the refusal removes a spelling,
+        # never a contract.
         #
-        # On `expects`, `FieldResolvers::Model` finds the record whenever anything reads the field, the presence
-        # check on a required field included, so a bag gate skips the record-type check, the record/id match and
-        # the not-found report while a required field still looks up and fails "not found". On `exposes` there is
-        # no lookup, and a bag gate skips only the record-type check while presence is still enforced. In both,
-        # `allow_nil:` and `allow_blank: true` admit nothing the field does not already admit, and
-        # `allow_blank: false` makes an `optional:` field required again. The declaration's own
-        # `if:`/`unless:`/`optional:` are the spellings that do what these look like.
+        # The messages say only what the bag key reaches, which holds whatever else the declaration carries, never
+        # what the field as a whole accepts, which depends on `optional:`/`presence:`.
         #
         # Ahead of the bag's key whitelist (`MODEL_OPTION_KEYS`, which omits the four) and its
         # `on:`/`except_on:`/`strict:` refusals, so the author reads why rather than "unsupported".
@@ -2249,34 +2251,30 @@ module Axn
           raise ArgumentError, _model_bag_refusal(gates, tolerances, _declared_fields_label(fields), direction)
         end
 
-        # The gist first (which keys, where), then the fix, then why. One message whatever mix of keys is present.
+        # The gist first (which keys, where), then the fix, then what the key reaches inside the bag.
         def _model_bag_refusal(gates, tolerances, where, direction)
           keys = gates + tolerances
-          declaration = "#{direction} #{where}, model: …"
+          record_check = direction == :expects ? "the record check" : "the record-type check"
           fixes = []
           reasons = []
           unless gates.empty?
-            fixes << "put the condition on the declaration: `#{declaration}, #{gates.first}: …`"
-            reasons << if direction == :expects
-                         "Inside the bag a gate reaches only the record checks (the record type, the record/id match, " \
-                           "the not-found report), never the lookup, which runs whenever the field is read, including " \
-                           "by a required field's presence check."
-                       else
-                         "Inside the bag a gate reaches only the record-type check, while presence is still enforced, " \
-                           "so a nil exposure fails whatever the condition says."
-                       end
+            fixes << "put the condition on the declaration: `#{direction} #{where}, model: …, #{gates.first}: …`"
+            reasons << "Inside the bag a gate reaches only #{direction == :expects ? MODEL_BAG_EXPECTS_RECORD_CHECK : record_check}, " \
+                       "never #{direction == :expects ? 'the lookup or ' : ''}presence; on the declaration it gates presence too."
           end
           unless tolerances.empty?
-            fixes << "declare the tolerance #{fixes.empty? ? 'on the declaration' : 'there too'}: `#{declaration}, optional: true`"
-            subject = direction == :expects ? "field" : "exposure"
-            reasons << "`allow_nil:` and `allow_blank: true` inside the bag admit nothing the #{subject} does not " \
-                       "already admit, and `allow_blank: false` makes an `optional:` #{subject} required again."
+            fixes << "set the tolerance #{fixes.empty? ? 'on the declaration' : 'there too'}: `optional:`, `allow_nil:` or " \
+                     "`allow_blank:`"
+            reasons << "#{gates.empty? ? 'Inside the bag a tolerance' : 'A tolerance there'} reaches only whether #{record_check} " \
+                       "runs on a nil or blank value, never presence."
           end
-          fixes[0] += " (or `optional: true` if only the requirement should go)" if direction == :exposes && tolerances.empty?
 
           "#{_model_bag_keys_label(keys)} #{keys.one? ? "isn't" : "aren't"} allowed inside `model:` on #{direction} " \
             "#{where} — #{fixes.join('; ')}. #{reasons.join(' ')}"
         end
+
+        MODEL_BAG_EXPECTS_RECORD_CHECK = "the record check (the record's type, the record/id match, the not-found report)"
+        private_constant :MODEL_BAG_EXPECTS_RECORD_CHECK
 
         def _model_bag_keys_label(keys) = keys.map { |key| "`#{key}:`" }.join(" / ")
 

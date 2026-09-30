@@ -141,13 +141,13 @@ RSpec.describe "an unknown key in an axn-owned validator bag" do
       it "refuses if:/unless:/allow_nil:/allow_blank: with the dedicated message, naming every one at once" do
         klass = lead_class
 
-        { expects: "field", exposes: "exposure" }.each do |direction, noun|
+        %i[expects exposes].each do |direction|
           expect do
             build_axn { public_send(direction, :lead, model: { klass:, if: -> { true }, unless: -> { false }, allow_nil: true, allow_blank: true }) }
           end.to raise_error(ArgumentError) { |error|
             expect(error.message).to start_with("`if:` / `unless:` / `allow_nil:` / `allow_blank:` aren't allowed inside " \
                                                 "`model:` on #{direction} :lead — put the condition on the declaration")
-              .and include("admit nothing the #{noun} does not already admit")
+              .and include("set the tolerance there too: `optional:`, `allow_nil:` or `allow_blank:`")
           }
         end
       end
