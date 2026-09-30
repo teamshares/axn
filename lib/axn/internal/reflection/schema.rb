@@ -93,9 +93,6 @@ module Axn
         # validator at best and invalid at worst, so it is not emitted there at all.
         NUMERIC_TYPES = %w[integer number].freeze
 
-        # The two entries that compare a value against a bound, and whether ActiveModel reads an `in:` range for
-        # each — `numericality:` does (`RANGE_CHECKS`), `comparison:` has no range check.
-        NUMERIC_BOUND_ENTRIES = { numericality: true, comparison: false }.freeze
         EXCLUDED_FROM_INPUT_SCHEMA = %i[ambient_context].freeze
 
         # Per-node result of the single bottom-up derivation pass (derive_annotations): `required` means
@@ -122,13 +119,6 @@ module Axn
           def initialize(summary:, kind:, per_type: false) = super
         end
 
-        # Residues ride on the property they belong to under this key while it is being built, and are
-        # rendered into `description` and stripped by `finalize_residues!` before the schema is returned.
-        # A non-emitted key rather than a parallel accumulator threaded through every builder: a property
-        # already travels the whole emission path, and the one place that knows how to render them is then
-        # also the one place that has to know they exist.
-        RESIDUE_KEY = :__axn_residues
-
         RESIDUE_PREFACE = "Additional constraints apply that JSON Schema cannot express: "
 
         # The container reads the residue reduction makes, held UNBOUND. Exact class is not enough on its
@@ -141,8 +131,6 @@ module Axn
         ARRAY_AT = ::Array.instance_method(:[])
         HASH_TO_A = ::Hash.instance_method(:to_a)
         private_constant :MENTIONABLE_MAP, :MENTIONABLE_EACH_PAIR
-
-        TRANSFORM_RESIDUE = "the value is transformed before these are checked, so they cannot be stated on the wire form"
 
         METHOD_READ_RESIDUE = "a value that is not an object is read with `method_call:`, and what the method returns " \
                               "must pass the checks beneath it"
@@ -178,7 +166,7 @@ module Axn
         # Metadata is not a validator contribution. In particular, a default applies independently
         # of validator gates and must never be included in a conditional fragment.
         SIBLING_DEPENDENT_KEYWORDS = %i[additionalProperties].freeze
-        RESIDUE_UNGATEABLE_KEYS = [:description, :default, RESIDUE_KEY, Vocabulary::MAP_VALUE_EXEMPT_KEY].freeze
+        RESIDUE_UNGATEABLE_KEYS = [:description, :default, Vocabulary::RESIDUE_KEY, Vocabulary::MAP_VALUE_EXEMPT_KEY].freeze
 
         PROC_DEFAULT_RESIDUE = "its `default:` is computed on the call when it is omitted, and the computed value must " \
                                "still pass this contract"
@@ -2026,7 +2014,6 @@ module Axn
 
         # Re-emit against the complete JSON domain when the authored type supplies no unconditional
         # wire constraint. Keep type-dependent validator semantics in the normal property builder.
-        WIRE_TYPE_CONTEXTS = [String, Array, Hash, Integer, Float, :boolean, NilClass].freeze
 
         def type_agnostic_property(config, validations)
           validations = validations.except(:type)

@@ -14,6 +14,23 @@ module Axn
 
           NULL_BRANCH = { type: "null" }.freeze
 
+          # Residues ride on the property they belong to under this key while it is being built, and are
+          # rendered into `description` and stripped by `finalize_residues!` before the schema is returned.
+          # A non-emitted key rather than a parallel accumulator threaded through every builder: a property
+          # already travels the whole emission path, and the one place that knows how to render them is then
+          # also the one place that has to know they exist.
+          RESIDUE_KEY = :__axn_residues
+
+          TRANSFORM_RESIDUE = "the value is transformed before these are checked, so they cannot be stated on the wire form"
+
+          # The two entries that compare a value against a bound, and whether ActiveModel reads an `in:` range for
+          # each — `numericality:` does (`RANGE_CHECKS`), `comparison:` has no range check.
+          NUMERIC_BOUND_ENTRIES = { numericality: true, comparison: false }.freeze
+
+          # Every type token a wire value can arrive as, for a projection whose authored type is conditional and
+          # so supplies no unconditional wire constraint of its own.
+          WIRE_TYPE_CONTEXTS = [String, Array, Hash, Integer, Float, :boolean, NilClass].freeze
+
           # PRO-3441. Where a map's `of: { values: }` axis schema and its own exempt key set ride on a
           # property until `Schema#finalize_residues!`'s final tree sweep conjoins them into every
           # colliding key the axis's own `shape:` doesn't name — see that method and
