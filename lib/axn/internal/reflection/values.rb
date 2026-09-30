@@ -1122,6 +1122,7 @@ module Axn
         def projection_for(value)
           as_json_owner = owner_of(value, :as_json) if value.respond_to?(:as_json)
           return :to_h if data_or_struct_owner?(as_json_owner)
+          return :to_h if as_json_owner.nil? && data_or_struct_with_nonpublic_to_h?(value)
 
           enumerable = enumerable_projection(value, as_json_owner)
           return enumerable unless enumerable.nil?
@@ -1136,6 +1137,25 @@ module Axn
           return :to_h if value.respond_to?(:to_h)
 
           value.respond_to?(:to_hash) ? :delegated_as_json : :to_s
+        end
+
+        # A Data/Struct whose `to_h` is protected or private. ActiveSupport's `Data#as_json`/`Struct#as_json` calls
+        # `to_h` with an implicit receiver, so under the core_ext such a value renders through it; without the
+        # core_ext nothing else would reach it (`respond_to?(:to_h)` is false), and it would render as its `to_s`.
+        # Reached for by the method table rather than by `respond_to?`, so a `respond_to?` override that denies a
+        # PUBLIC `to_h` is not mistaken for a non-public one.
+        def data_or_struct_with_nonpublic_to_h?(value)
+          return false unless Axn::Internal::Identity.kind?(value, ::Data) || Axn::Internal::Identity.kind?(value, ::Struct)
+
+          # The class answers for a frozen Data, which provably carries no singleton-level table (see
+          # `displacing_projection_anywhere?`); anything else asks its own table, materializing the singleton.
+          mod = if Axn::Internal::Identity.kind?(value, ::Data) && Axn::Internal::NativeMethods.frozen?(value)
+                  Axn::Internal::Identity.class_of(value)
+                else
+                  Axn::Internal::NativeMethods.method_table(value)
+                end
+          Axn::Internal::NativeMethods.instance_method_reachable?(mod, :to_h) &&
+            !Axn::Internal::NativeMethods.public_instance_method?(mod, :to_h)
         end
 
         # An Enumerable that is not a Hash or an Array (a Set, a Range, an Enumerator): its `to_h` is, unless it
@@ -1204,7 +1224,7 @@ module Axn
                              :method_missing_backed_projection?, :effective_displaced_method, :method_missing_projection_reason,
                              :dynamic_respond_to?, :overridden_beyond_kernel?, :effective_projection_displaces?,
                              :denied_projection_reason, :data_or_struct_owner?, :generic_as_json_projection_reason,
-                             :as_json_projection, :enumerable_projection
+                             :as_json_projection, :enumerable_projection, :data_or_struct_with_nonpublic_to_h?
       end
     end
   end
