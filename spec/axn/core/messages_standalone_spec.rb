@@ -172,6 +172,126 @@ RSpec.describe "Axn standalone message resolution" do
   end
 end
 
+RSpec.describe "Axn error block that interpolates the exception message" do
+  subject(:error) { action.call.error }
+
+  def with_header(header_declaration, body)
+    build_axn do
+      instance_exec(&header_declaration)
+      define_method(:call, &body)
+    end
+  end
+
+  let(:interpolating_header) { proc { error { |e| "W: #{e.message}" } } }
+  let(:plain_header) { proc { error "W" } }
+
+  # The block is the header and the reason is joined onto it, so a header that repeats the reason
+  # prints it twice, and with no reason to join it puts the raw exception text in `result.error`.
+  # docs/usage/writing.md documents both; these pin the claims it makes.
+  describe "a header block reading e.message" do
+    it "repeats a fail! reason" do
+      expect(with_header(interpolating_header, -> { fail!("boom") }).call.error).to eq("W: boom: boom")
+    end
+
+    it "repeats a fails_on reason" do
+      action = build_axn do
+        error { |e| "W: #{e.message}" }
+        fails_on ArgumentError, &:message
+        def call = raise ArgumentError, "bad"
+      end
+      expect(action.call.error).to eq("W: bad: bad")
+    end
+
+    it "repeats a bubbled child's presentation" do
+      child = build_axn { def call = fail!("child") }
+      action = build_axn do
+        error { |e| "W: #{e.message}" }
+        define_method(:call) { child.call! }
+      end
+      expect(action.call.error).to eq("W: child: child")
+    end
+
+    it "leaks the raw text of an unexpected exception" do
+      expect(with_header(interpolating_header, -> { raise "kaboom" }).call.error).to eq("W: kaboom")
+    end
+  end
+
+  describe "a header that does not repeat the reason" do
+    it "attaches a fail! reason once" do
+      expect(with_header(plain_header, -> { fail!("boom") }).call.error).to eq("W: boom")
+    end
+
+    it "attaches a bubbled child's presentation once" do
+      child = build_axn { def call = fail!("child") }
+      action = build_axn do
+        error "W"
+        define_method(:call) { child.call! }
+      end
+      expect(action.call.error).to eq("W: child")
+    end
+
+    it "keeps an unexpected exception's message out of result.error" do
+      expect(with_header(plain_header, -> { raise "kaboom" }).call.error).to eq("W")
+    end
+
+    it "keeps a validation failure's message out of result.error" do
+      action = build_axn do
+        error "W"
+        expects :n, type: String
+        def call = nil
+      end
+      expect(action.call.error).to eq("W")
+    end
+  end
+
+  describe "a per-class message opt-in" do
+    let(:action) do
+      build_axn do
+        error "W"
+        error(if: ArgumentError, &:message)
+        def call = raise(ArgumentError, "x")
+      end
+    end
+
+    it "surfaces the opted-in class's message under the header" do
+      expect(error).to eq("W: x")
+    end
+
+    it "still keeps every other exception's message out" do
+      other = build_axn do
+        error "W"
+        error(if: ArgumentError, &:message)
+        def call = raise("kaboom")
+      end
+      expect(other.call.error).to eq("W")
+    end
+  end
+
+  describe "the documented Customizing messages example" do
+    let(:action) do
+      build_axn do
+        expects :name, type: String
+        exposes :meaning_of_life
+        success { "Revealed to #{name}: #{result.meaning_of_life}" }
+        error "No secret of life for you"
+
+        def call
+          fail! "Douglas already knows the meaning" if name == "Doug"
+
+          expose meaning_of_life: "Hello #{name}, the meaning of life is 42"
+        end
+      end
+    end
+
+    it "matches the outputs shown in docs/usage/writing.md" do
+      expect(action.call.error).to eq("No secret of life for you")
+      expect(action.call(name: "Doug").error).to eq("No secret of life for you: Douglas already knows the meaning")
+      expect(action.call(name: "Adams").success).to eq("Revealed to Adams: Hello Adams, the meaning of life is 42")
+      expect(action.call(name: "Adams").meaning_of_life).to eq("Hello Adams, the meaning of life is 42")
+    end
+  end
+end
+
 RSpec.describe "Axn standalone on fail!" do
   subject(:error) { action.call.error }
 

@@ -218,7 +218,7 @@ BadExample.call(user_id: 123).exception # => Axn::OutboundValidationError
 
 The default `error` and `success` message strings ("Something went wrong" / "Action completed successfully", respectively) _are_ technically safe to show users, but you'll often want to set them to something more useful.
 
-There are `success` and `error` declarations for that -- you can set strings (most common) or a callable (note for the error case, if you give it a callable that expects a single argument, the exception that was raised will be passed in).
+There are `success` and `error` declarations for that -- you can set strings (most common) or a callable (note for the error case, if you give it a callable that expects a single argument, the exception that was raised will be passed in). Use that argument to choose a header (for instance by exception class), not to repeat `e.message`: the failure's reason is attached to your `error` for you, so interpolating it prints it twice (see [Prefixing failure reasons](#prefixing-failure-reasons)).
 
 For instance, configuring the action like this:
 
@@ -230,7 +230,7 @@ class Foo
   exposes :meaning_of_life
 
   success { "Revealed to #{name}: #{result.meaning_of_life}" } # [!code focus:2]
-  error { |e| "No secret of life for you: #{e.message}" }
+  error "No secret of life for you"
 
   def call
     fail! "Douglas already knows the meaning" if name == "Doug"
@@ -244,8 +244,8 @@ end
 Would give us these outputs:
 
 ```ruby
-Foo.call.error # => "No secret of life for you: Name can't be blank"
-Foo.call(name: "Doug").error # => "Douglas already knows the meaning"
+Foo.call.error # => "No secret of life for you"
+Foo.call(name: "Doug").error # => "No secret of life for you: Douglas already knows the meaning"
 Foo.call(name: "Adams").success # => "Revealed to Adams: Hello Adams, the meaning of life is 42"
 Foo.call(name: "Adams").meaning_of_life # => "Hello Adams, the meaning of life is 42"
 ```
@@ -277,6 +277,8 @@ result.error  # => "Couldn't sync user: email already taken"
               # or "Couldn't sync user: missing required field"
               # or "Couldn't sync user"  (base alone, when no reason matched)
 ```
+
+That is the whole idiom for prefixing: the header never needs to repeat the reason, and an unexpected exception renders as the header alone by design, so its technical message stays out of `result.error`.
 
 **Key behaviours:**
 
@@ -415,7 +417,9 @@ error { |e| "#{tool_name} tool failed: #{e.message}" }  # [!code warning]
 error { "#{tool_name} tool failed" }                    # [!code focus]
 ```
 
-The exception message is already appended as the *reason* segment; interpolating it into the header prints it twice — `"MyTool tool failed: card declined: card declined"`.
+When a reason is attached — a `fail!` message, a `fails_on … &:message`, a matched conditional, a nested child's failure — interpolating it into the header prints it twice: `"MyTool tool failed: card declined: card declined"`. When no reason is attached (an unexpected exception, a validation failure), `e.message` is the raw technical text, and the header puts it straight into the user-facing `result.error`, which otherwise stays free of it.
+
+If an exception class's own message really is user-facing, opt that class in on its own: `error(if: SomeError, &:message)` or `fails_on SomeError, &:message`.
 
 The same caution applies to a **reason block** (`error(->(e){ … }, if: …)`) that reads `e.message`: when the failure bubbled up from a nested `call!`, `e.message` is the child's **already-accumulated presentation** (e.g. `"Charge failed: card declined"`), not the raw reason — so interpolating it re-embeds the whole child chain. Read `e.message` in a message block only if you genuinely want the resolved presentation so far.
 :::
