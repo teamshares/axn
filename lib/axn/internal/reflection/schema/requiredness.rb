@@ -170,6 +170,37 @@ module Axn
             children.values.any? { |node| ann[node].required }
           end
 
+          # What a nil at the node above `children` does to what hangs beneath it: `:always` when a descendant is
+          # required whatever the calls (the gate-closed annotation), `:conditional` when one is required only on the
+          # calls a gate opens, `nil` when nothing beneath can reject the absence. The annotation is read with gates
+          # closed, so a descendant a gate makes required is invisible to it; this asks the gate-open question of the
+          # whole subtree. A gate is never evaluated, so it is reported as conditional rather than guessed at.
+          def descendants_reject_nil_ancestor(children, ann)
+            return :always if children_require_presence?(children, ann)
+
+            :conditional if conditionally_requires_below?(children)
+          end
+
+          def conditionally_requires_below?(children)
+            children.values.any? do |node|
+              node.configs.any? { |config| conditionally_requires_presence?(config) } || conditionally_requires_below?(node.children)
+            end
+          end
+
+          # Whether a gate is the only thing standing between this config and rejecting an absent value: it has a
+          # nil-rejecting check (or one reflection cannot judge), every such check is effectively gated, and no
+          # default rescues the omission. A gated config whose checks all tolerate nil is relaxable too, but there is
+          # nothing for its gate to relax, so it is not counted.
+          def conditionally_requires_presence?(config)
+            return false unless requiredness_conditionally_relaxable?(config)
+            return false if usable_default?(config, subfield: true)
+
+            shared = shared_validation_options(config.validations)
+            Axn::Validation::Base.validator_entries(config.validations).any? do |key, opt|
+              nil_verdict_unknowable?(key, opt, shared) || !nil_tolerant_validation?(key, opt, shared)
+            end
+          end
+
           # Whether omitting/nil-ing this node's value strands a required descendant — the transitive
           # extension of the one-level required-child test.
           def subtree_requires_presence?(node, ann)

@@ -6,8 +6,8 @@
 # from the runtime over tolerance x descendant x sibling x position, instead of listing the shapes that happen
 # to matter, so a rejection reached some other way fails here rather than in review.
 RSpec.describe "the model lookup residue against the runtime's verdict on an unknown id" do
-  record_class = Struct.new(:name) do
-    def self.find_by_id(id) = id == 7 ? new("widget") : nil
+  record_class = Struct.new(:name, :address) do
+    def self.find_by_id(id) = id == 7 ? new("widget", { zip: "10001" }) : nil
   end
 
   tolerances = {
@@ -24,6 +24,12 @@ RSpec.describe "the model lookup residue against the runtime's verdict on an unk
     "a required typed descendant" => "expects :name, on: :company, type: String",
     "an optional descendant" => "expects :name, on: :company, optional: true",
     "a defaulted descendant" => "expects :name, on: :company, default: 'x'",
+    "a descendant required when an open gate lets it" => "expects :name, on: :company, if: -> { true }",
+    "a descendant whose gate is closed" => "expects :name, on: :company, if: -> { false }",
+    "an optional descendant behind an open gate" => "expects :name, on: :company, optional: true, if: -> { true }",
+    "a descendant whose presence check is gated open" => "expects :name, on: :company, presence: { if: -> { true } }",
+    "a required descendant below an optional one" => "expects :address, on: :company, optional: true\nexpects :zip, on: :address",
+    "a gated descendant below an optional one" => "expects :address, on: :company, optional: true\nexpects :zip, on: :address, if: -> { true }",
   }
   siblings = {
     "no id sibling" => nil,
@@ -38,8 +44,10 @@ RSpec.describe "the model lookup residue against the runtime's verdict on an unk
     nil # refused at declaration: no call can reach it
   end
 
-  def lookup_residue?(action)
-    action.input_schema_residues.any? { |residue| residue.summary.include?("model lookup finds") }
+  # :inherent, :conditional or nil. A conditional one is a hedge about a gate's state, which reflection cannot
+  # evaluate, so it may stand where this call happens to close the gate; an inherent one may not.
+  def lookup_residue_kind(action)
+    action.input_schema_residues.find { |residue| residue.summary.include?("model lookup finds") }&.kind
   end
 
   cells = []
@@ -75,13 +83,13 @@ RSpec.describe "the model lookup residue against the runtime's verdict on an unk
       declared << label
       result = action.call(**miss)
       rejects = !result.ok? && result.exception.is_a?(Axn::InboundValidationError)
-      residue = lookup_residue?(action)
+      residue = lookup_residue_kind(action)
       tolerant_rejecting += 1 if rejects && !label.include?("| required |")
-      missing << "#{label}: rejected (#{result.exception.message}) but the schema states no lookup" if rejects && !residue
-      over_claimed << label if residue && !rejects
+      missing << "#{label}: rejected (#{result.exception.message}) but the schema states no lookup" if rejects && residue.nil?
+      over_claimed << "#{label}: accepted but the schema states an unconditional lookup" if residue == :inherent && !rejects
     end
 
-    expect(declared.size).to be > 100
+    expect(declared.size).to be > 150
     expect(tolerant_rejecting).to be > 10 # the descendant-stranded shapes this exists to catch are present
     expect(missing).to be_empty, "runtime rejects, schema silent:\n  #{missing.first(20).join("\n  ")}"
     expect(over_claimed).to be_empty, "schema states a lookup the runtime does not enforce:\n  #{over_claimed.first(20).join("\n  ")}"

@@ -443,8 +443,8 @@ module Axn
               next if model_configs.empty?
 
               id_field = Internal::FieldConfig.model_id_key(key)
-              stranded = children_require_presence?(node.children, ann)
-              prop[:properties][id_field] = with_model_lookup_residue(prop[:properties][id_field], model_configs, strands_descendant: stranded)
+              descendants = descendants_reject_nil_ancestor(node.children, ann)
+              prop[:properties][id_field] = with_model_lookup_residue(prop[:properties][id_field], model_configs, descendants:)
               prop[:properties][key] = with_model_raw_key_residue(prop[:properties][key], model_configs) if prop[:properties].key?(key)
             end
           end
