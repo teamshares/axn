@@ -69,6 +69,49 @@ RSpec.describe "Values.serialize_value with and without ActiveSupport's json cor
         ["#{name} (reject_opaque: #{opaque})", out]
       end
     end.to_h
+    product_rendered = begin
+      out = {}
+    AMT = BigDecimal("1.5")
+    ITEMS = [AMT, 2]
+    kinds = {
+      "data" => ->(&b) { Class.new(Data.define(:a), &b) },
+      "struct" => ->(&b) { Class.new(Struct.new(:a), &b) },
+      "enumerable" => ->(&b) { Class.new { include Enumerable; def each(&) = ITEMS.each(&); class_exec(&b) } },
+      "data+enumerable" => ->(&b) { Class.new(Data.define(:a)) { include Enumerable; def each(&) = ITEMS.each(&); class_exec(&b) } },
+      "set subclass" => ->(&b) { Class.new(Set, &b) },
+      "plain" => ->(&b) { Class.new(&b) },
+      "plain+to_hash" => ->(&b) { Class.new { def to_hash = { amt: AMT }; class_exec(&b) } },
+    }
+    build = { "data" => ->(k) { k.new(AMT) }, "struct" => ->(k) { k.new(AMT) }, "data+enumerable" => ->(k) { k.new(AMT) },
+              "set subclass" => ->(k) { k.new(ITEMS) } }
+    to_h_variants = {
+      "inherited" => ->(_) {}, "public" => ->(k) { k.send(:define_method, :to_h) { { via: "to_h" } } },
+      "protected" => ->(k) { k.send(:define_method, :to_h) { { via: "to_h" } }; k.send(:protected, :to_h) },
+      "private" => ->(k) { k.send(:define_method, :to_h) { { via: "to_h" } }; k.send(:private, :to_h) },
+    }
+    as_json_variants = { "no as_json" => ->(_) {}, "own as_json" => ->(k) { k.send(:define_method, :as_json) { |*| { via: "as_json" } } } }
+    kinds.each do |kname, mk|
+      to_h_variants.each do |tname, tv|
+        as_json_variants.each do |aname, av|
+          # A value with no public shape of its own (a plain object, even with a non-public `to_h`) is the documented
+          # `reject_opaque` case, not a routing disagreement.
+          next if kname == "plain" && aname == "no as_json" && tname != "public"
+
+          klass = mk.call { }
+          tv.call(klass); av.call(klass)
+          value = (build[kname] || ->(k) { k.new }).call(klass)
+          [false, true].each do |opaque|
+            r = begin; JSON.generate(values.serialize_value(value, reject_opaque: opaque)); rescue StandardError => e; "raised #{e.class}"; end
+            out["#{kname} | to_h #{tname} | #{aname} | opaque=#{opaque}"] = r
+          end
+        end
+      end
+    end
+
+      out
+    end
+
+    rendered.merge!(product_rendered)
     puts JSON.generate(rendered)
   RUBY
 
@@ -86,6 +129,7 @@ RSpec.describe "Values.serialize_value with and without ActiveSupport's json cor
     with = render_cases(core_ext: true)
 
     expect(without.keys).to eq(with.keys)
+    expect(with.size).to be > 150 # the generated product plus the hand-written cases, not an empty comparison
     differing = without.keys.reject { |k| without[k] == with[k] }.to_h { |k| [k, { without: without[k], with: with[k] }] }
     expect(differing).to eq({})
   end

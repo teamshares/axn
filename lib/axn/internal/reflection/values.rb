@@ -1122,10 +1122,10 @@ module Axn
         def projection_for(value)
           as_json_owner = owner_of(value, :as_json) if value.respond_to?(:as_json)
           return :to_h if data_or_struct_owner?(as_json_owner)
-          return :to_h if as_json_owner.nil? && data_or_struct_with_nonpublic_to_h?(value)
 
           enumerable = enumerable_projection(value, as_json_owner)
           return enumerable unless enumerable.nil?
+          return :to_h if as_json_owner.nil? && data_or_struct_with_nonpublic_to_h?(value)
 
           if value.respond_to?(:as_json)
             generic = ::Object.equal?(as_json_owner)
@@ -1158,25 +1158,32 @@ module Axn
             !Axn::Internal::NativeMethods.public_instance_method?(mod, :to_h)
         end
 
-        # An Enumerable that is not a Hash or an Array (a Set, a Range, an Enumerator): its `to_h` is, unless it
-        # defines one, `Enumerable#to_h`, which reads the elements as key/value PAIRS — it raises on a
-        # `Set[3.14]` and silently turns `Set[[1, 2]]` into `{1 => 2}`. The elements are what it holds, so
-        # `to_a` is its projection, with or without ActiveSupport's `Enumerable#as_json` (`to_a.as_json`).
-        # A class that defines its OWN `to_h` declared a shape, which wins in both environments, as it does
-        # for any other value; one with its own `as_json` (an ActiveRecord::Relation, say) follows it.
-        # Answers nil when the value is none of those, leaving `projection_for` to route it.
+        # An Enumerable that is not a Hash or an Array (a Set, an Enumerator): its `to_h` is, unless it defines
+        # one, `Enumerable#to_h`, which reads the elements as key/value PAIRS — it raises on a `Set[3.14]` and
+        # silently turns `Set[[1, 2]]` into `{1 => 2}`. The elements are what it holds, so `to_a` is its
+        # projection, with or without ActiveSupport's `Enumerable#as_json` (`to_a.as_json`). A class that
+        # defines its OWN PUBLIC `to_h` declared a shape, which wins in both environments, as it does for any
+        # other value; a protected or private one is a helper, which ActiveSupport's `to_a` never reaches, so
+        # it does not count. One with its own `as_json` (an ActiveRecord::Relation, say) follows it.
+        # Answers nil when the value is none of those, leaving `projection_for` to route it. A Struct is an
+        # Enumerable whose own projection is its members by name, and a Range is a value rather than a
+        # collection: ActiveSupport renders it through its own `as_json` (`to_s`), and expanding an endless or
+        # very large one would never finish.
         def enumerable_projection(value, as_json_owner)
           return unless Axn::Internal::Identity.kind?(value, ::Enumerable)
           return unless as_json_owner.nil? || Axn::Internal::Identity.same?(as_json_owner, ::Enumerable)
-          # A Range is a value, not a collection of its members: ActiveSupport renders it through its own `as_json`
-          # (`to_s`), and expanding an endless or very large one would never finish.
-          return if Axn::Internal::Identity.kind?(value, ::Range)
+          return if Axn::Internal::Identity.kind?(value, ::Range) || Axn::Internal::Identity.kind?(value, ::Struct)
+          return :enumerable_as_json unless own_public_to_h?(value)
 
-          if Axn::Internal::Identity.same?(owner_of(value, :to_h), ::Enumerable)
-            :enumerable_as_json
-          elsif !as_json_owner.nil?
-            :to_h
-          end
+          :to_h unless as_json_owner.nil?
+        end
+
+        # Whether `value` defines a `to_h` of its own (not `Enumerable#to_h`) that a caller can dispatch.
+        def own_public_to_h?(value)
+          owner = owner_of(value, :to_h)
+          return false if owner.nil? || Axn::Internal::Identity.same?(owner, ::Enumerable)
+
+          Axn::Internal::NativeMethods.public_instance_method?(Axn::Internal::NativeMethods.method_table(value), :to_h)
         end
 
         # The plain Hash/Array `serialize_value` walks for an `as_json` route. ActiveSupport's `Enumerable#as_json`
@@ -1224,7 +1231,7 @@ module Axn
                              :method_missing_backed_projection?, :effective_displaced_method, :method_missing_projection_reason,
                              :dynamic_respond_to?, :overridden_beyond_kernel?, :effective_projection_displaces?,
                              :denied_projection_reason, :data_or_struct_owner?, :generic_as_json_projection_reason,
-                             :as_json_projection, :enumerable_projection, :data_or_struct_with_nonpublic_to_h?
+                             :as_json_projection, :enumerable_projection, :own_public_to_h?, :data_or_struct_with_nonpublic_to_h?
       end
     end
   end
