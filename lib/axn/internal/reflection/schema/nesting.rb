@@ -53,8 +53,8 @@ module Axn
           # branch (deep descendants there are in dropped_deep_subfields; its children still shape
           # requiredness via required_child?, matching runtime).
           # `node`'s own representative config (the FIRST non-model config at a merged node) decides the
-          # annotation's nullability — see NodeAnnotation — and every route's own check is conjoined onto the
-          # property by `apply_explicit_child!`. `node.configs` is EVERY config at the
+          # annotation's nullability — see Requiredness::NodeAnnotation — and every route's own check is
+          # conjoined onto the property by `apply_explicit_child!`. `node.configs` is EVERY config at the
           # node: it decides both whether to nest at all (node_configs_block_nesting?, the same predicate the
           # drop pass uses, so a route the tree drops from is never re-nested) and, threaded on as parent
           # configs, which `shape:` members might collide with an implicit child.
@@ -233,7 +233,7 @@ module Axn
           # non-empty. `merged_explicit_members`'s gates (the node must nest; every colliding member must be
           # object-shaped) answer a DIFFERENT question — whether to carry the member down for a deeper hop's
           # member-of-a-member test — and the conjunction itself needs neither: conjoin_shape_member_property
-          # already knows how to combine two object-shaped properties (the keyword union above) and how to combine
+          # already knows how to combine two object-shaped properties (a keyword union) and how to combine
           # anything else (a sibling `allOf` branch), so a member the node "cannot nest" rides alongside as its
           # own `allOf` branch rather than being dropped.
           #

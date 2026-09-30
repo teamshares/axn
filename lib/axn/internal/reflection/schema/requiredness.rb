@@ -35,7 +35,7 @@ module Axn
 
           # One bottom-up pass over the whole subfield tree, computed once from build_input and threaded
           # through every emission site (apply_nested_subfields!/apply_children!/apply_implicit_node! in
-          # `schema.rb`, apply_model_id_requiredness! in `ModelId`) instead of each of them independently
+          # `Nesting`, apply_model_id_requiredness! in `ModelId`) instead of each of them independently
           # re-walking the subtree via subtree_requires_presence?/required_child? — the repeated-recomputation
           # pattern that let a dropped/blocked deep shape agree at some sites but not others.
           # `compare_by_identity`: SubfieldTree::Node is a plain Data value, so identity (not #==/#hash on its
