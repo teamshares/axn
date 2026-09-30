@@ -519,49 +519,21 @@ RSpec.describe "conditional validation declarations (if:/unless:)" do
       expect(result.exception.message).to match(/conflicts with company_id=9/)
     end
 
-    # The gate can also live NESTED inside the model: hash (a per-validator gate, the other blessed
-    # tier) rather than at the declaration level. AM skips the ModelValidator when that nested gate is
-    # closed, so the outside-AM model-consistency pass must skip too (Codex round 11).
-    it "skips the mismatch when the model:'s OWN nested gate is CLOSED, keeps it when OPEN" do
+    # The declaration gate is the only one a model field has: a gate inside the `model:` bag would skip the
+    # record checks while the lookup still ran, so it is refused at declaration.
+    it "refuses a gate inside the model: bag, pointing at the declaration gate" do
       klass = co_class
-      action = build_axn do
-        expects :flag, type: :boolean
-        expects :company, model: { klass:, finder: :find, if: :flag }
-        def call; end
-      end
 
-      expect(action.call(flag: false, company: klass.new(5), company_id: 9)).to be_ok
-
-      opened = action.call(flag: true, company: klass.new(5), company_id: 9)
-      expect(opened).not_to be_ok
-      expect(opened.exception).to be_a(Axn::InboundValidationError)
-      expect(opened.exception.message).to match(/conflicts with company_id=9/)
-    end
-
-    # BOTH tiers present on one model field: a declaration-level shared gate AND a nested gate on the
-    # model: hash. AM's real precedence decides which runs — don't hardcode a winner. Instead pin that
-    # our outside-AM skip AGREES with whether the MODEL validator actually ran, observed on the SAME
-    # declaration. The signal isolates the ModelValidator (not the auto-injected presence, which the
-    # consistency check is orthogonal to): a PRESENT-but-invalid value (`company: Object.new`) passes
-    # presence and fails IFF the ModelValidator runs ("is not a Co"). Our record/id conflict must then
-    # raise IFF that same ModelValidator ran.
-    it "agrees with AM's real tier precedence when BOTH a shared and a nested gate are present" do
-      klass = co_class
-      # Distinct flags so the two tiers can disagree; AM's merge (nested key overrides shared key)
-      # then decides, and both the ModelValidator run and our mismatch skip must follow the SAME call.
-      [[false, false], [false, true], [true, false], [true, true]].each do |shared_on, nested_on|
-        action = build_axn do
-          expects :shared_flag, :nested_flag, type: :boolean
-          expects :company, model: { klass:, finder: :find, if: :nested_flag }, if: :shared_flag
-          def call; end
+      expect do
+        build_axn do
+          expects :flag, type: :boolean
+          expects :company, model: { klass:, finder: :find, if: :flag }
         end
-
-        model_ran = !action.call(shared_flag: shared_on, nested_flag: nested_on, company: Object.new).ok?
-
-        conflict = action.call(shared_flag: shared_on, nested_flag: nested_on, company: klass.new(5), company_id: 9)
-        expect(conflict.ok?).to eq(!model_ran),
-                                "shared=#{shared_on} nested=#{nested_on}: model_ran=#{model_ran} but conflict.ok?=#{conflict.ok?}"
-      end
+      end.to raise_error(ArgumentError) { |error|
+        expect(error.message).to start_with("`if:` isn't allowed inside `model:` on expects :company — put the " \
+                                            "condition on the declaration: `expects :company, model: …, if: …`. Inside the bag a gate " \
+                                            "reaches only the record check")
+      }
     end
   end
 

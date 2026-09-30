@@ -1736,14 +1736,10 @@ module Axn
           record_residue(prop, "#{GATED_RESIDUE}; #{MODEL_LOOKUP_RESIDUE}", kind: :conditional)
         end
 
-        # Measured: the lookup is skipped only by a DECLARATION gate key the `model:` entry does not itself mention.
-        # A key the entry mentions — blank or not — replaces the declaration's for that key, and an entry's own gate
-        # never skips the lookup (`model: { …, if: nil }, if: -> { false }` looks up on every call).
+        # Only the declaration's own gate skips the lookup: an inbound `model:` bag never carries one
+        # (`Contract#_reject_model_bag_gates_and_tolerances!` refuses it).
         def model_lookup_gated?(config)
-          entry = config.validations[:model]
-          config.validations.slice(*Internal::FieldConfig::CONDITIONAL_GATE_KEYS).each_key.any? do |key|
-            !Axn::Validation::Base.entry_carries_option?(entry, key)
-          end
+          Internal::FieldConfig::CONDITIONAL_GATE_KEYS.any? { |key| config.validations.key?(key) }
         end
 
         # A callable is named rather than rendered: its only rendering is an object address, and asking it for

@@ -535,6 +535,7 @@ module Axn
           _validate_reader_names!(reader_names)
 
           validations, metadata = _partition_field_options(fields, **)
+          _reject_model_bag_gates_and_tolerances!(validations, fields, direction: :expects)
           # Ahead of the block form's own write to this slot — reads the caller's own `shape:`, not what a block
           # would replace it with (see `_reject_raw_shape_before_block_overwrite!`).
           _reject_raw_shape_before_block_overwrite!(validations, "`shape:` on #{_declared_fields_label(fields)}", _declared_fields_label(fields),
@@ -624,6 +625,7 @@ module Axn
           _reject_dotted_field_name!(fields, on: nil, kind: "exposes")
 
           validations, metadata = _partition_field_options(fields, **)
+          _reject_model_bag_gates_and_tolerances!(validations, fields, direction: :exposes)
 
           # `exposes` takes no `on:` parameter, so the key arrives in the validations bag and would then be
           # absorbed by `_parse_field_configs`' subfield-parent parameter — stored as `config.on` on an outbound
@@ -1403,8 +1405,15 @@ module Axn
         # by the dedicated context/strict guards (`_reject_validator_context_scope!` et al.), which name the
         # real problem, and `_reject_unknown_bag_keys!` holds them out of what it advertises via
         # `UNADVERTISED_BAG_KEYS`.
-        MODEL_OPTION_KEYS = (Set.new(%i[klass finder not_found_on id_type message except_on]) |
-                             Axn::Validation::Base.shared_validation_option_keys).freeze
+        #
+        # `if:`/`unless:`/`allow_nil:`/`allow_blank:` are subtracted from the shared-option union: they belong on
+        # the declaration, and `_reject_model_bag_gates_and_tolerances!` refuses them inside the bag first, in
+        # both directions, with a message naming the declaration spelling.
+        MODEL_BAG_GATE_KEYS = %i[if unless].freeze
+        MODEL_BAG_TOLERANCE_KEYS = %i[allow_nil allow_blank].freeze
+        MODEL_OPTION_KEYS = ((Set.new(%i[klass finder not_found_on id_type message except_on]) |
+                              Axn::Validation::Base.shared_validation_option_keys) -
+                             MODEL_BAG_GATE_KEYS - MODEL_BAG_TOLERANCE_KEYS).freeze
 
         # What a `type:` bag may carry. `klass:` is the type check itself; `coerce:` opts into coercion
         # (`_expand_coerce_sugar!` writes it, and an author may write it directly inside the bag —
@@ -2214,6 +2223,60 @@ module Axn
                 "rather than the raw id. The model: field :#{model_field} already generates a " \
                 ":#{id_key} reader for the raw id; drop the explicit :#{id_key}."
         end
+
+        # `if:`/`unless:`/`allow_nil:`/`allow_blank:` inside a `model:` bag, refused by key presence (a blank
+        # `if: nil` included) at every `expects` and `exposes` position: one rule, gates and tolerances go on the
+        # declaration. Inside the bag they reach only `ModelValidator` (the record's type, and on `expects` the
+        # record/id match and the not-found report), never presence or the lookup, which on `expects` runs
+        # whenever anything reads the field. What the whole declaration then accepts depends on its other options,
+        # so what a bag key looks like it does and what it does part ways: a required `expects` with a bag gate
+        # still looks up and fails "not found", and `allow_blank: false` in the bag makes an `optional:` field
+        # required again. Every bag spelling has a declaration-level one that behaves the same (the declaration's
+        # `if:`/`unless:`, `optional:`, `allow_nil:`, `allow_blank:`, `presence:`), so the refusal removes a spelling,
+        # never a contract.
+        #
+        # The messages say only what the bag key reaches, which holds whatever else the declaration carries, never
+        # what the field as a whole accepts, which depends on `optional:`/`presence:`.
+        #
+        # Ahead of the bag's key whitelist (`MODEL_OPTION_KEYS`, which omits the four) and its
+        # `on:`/`except_on:`/`strict:` refusals, so the author reads why rather than "unsupported".
+        def _reject_model_bag_gates_and_tolerances!(validations, fields, direction:)
+          bag = Internal::ShapeGraph.hash_or_nil(validations[:model])
+          return if nil.equal?(bag)
+
+          gates = MODEL_BAG_GATE_KEYS.select { |key| Internal::ShapeGraph.carries_key?(bag, key) }
+          tolerances = MODEL_BAG_TOLERANCE_KEYS.select { |key| Internal::ShapeGraph.carries_key?(bag, key) }
+          return if gates.empty? && tolerances.empty?
+
+          raise ArgumentError, _model_bag_refusal(gates, tolerances, _declared_fields_label(fields), direction)
+        end
+
+        # The gist first (which keys, where), then the fix, then what the key reaches inside the bag.
+        def _model_bag_refusal(gates, tolerances, where, direction)
+          keys = gates + tolerances
+          record_check = direction == :expects ? "the record check" : "the record-type check"
+          fixes = []
+          reasons = []
+          unless gates.empty?
+            fixes << "put the condition on the declaration: `#{direction} #{where}, model: …, #{gates.first}: …`"
+            reasons << "Inside the bag a gate reaches only #{direction == :expects ? MODEL_BAG_EXPECTS_RECORD_CHECK : record_check}, " \
+                       "never #{direction == :expects ? 'the lookup or ' : ''}presence; on the declaration it gates presence too."
+          end
+          unless tolerances.empty?
+            fixes << "set the tolerance #{fixes.empty? ? 'on the declaration' : 'there too'}: `optional:`, `allow_nil:` or " \
+                     "`allow_blank:`"
+            reasons << "#{gates.empty? ? 'Inside the bag a tolerance' : 'A tolerance there'} reaches only whether #{record_check} " \
+                       "runs on a nil or blank value, never presence."
+          end
+
+          "#{_model_bag_keys_label(keys)} #{keys.one? ? "isn't" : "aren't"} allowed inside `model:` on #{direction} " \
+            "#{where} — #{fixes.join('; ')}. #{reasons.join(' ')}"
+        end
+
+        MODEL_BAG_EXPECTS_RECORD_CHECK = "the record check (the record's type, the record/id match, the not-found report)"
+        private_constant :MODEL_BAG_EXPECTS_RECORD_CHECK
+
+        def _model_bag_keys_label(keys) = keys.map { |key| "`#{key}:`" }.join(" / ")
 
         # Generate the readers for an already-validated, already-committed batch of top-level inbound
         # configs. Two passes, matching _define_subfield_readers!: every EXPLICIT declaration's primary

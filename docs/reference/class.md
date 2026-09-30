@@ -247,7 +247,14 @@ In addition to the [standard ActiveModel validations](https://guides.rubyonrails
     * Absent both, the property stays untyped (just a description, and `not: { type: "null" }` when required) — the same schema this always emitted.
     * An explicit `<field>_id` sibling with a `type:` of its own is what the runtime checks, so its type is what the schema states whatever `id_type:` says; two `model:` routes at one node that declare different `id_type:`s leave the id untyped.
 
-    **The `model:` bag only accepts the keys above** — `klass:`, `finder:`, `not_found_on:`, `id_type:`, `message:`, plus the shared ActiveModel options (`if:`/`unless:`/`allow_nil:`/`allow_blank:`) — anything else, a misspelled `finder:` or a `class:` written for `klass:` included, raises `ArgumentError` at declaration rather than declaring cleanly and being ignored.
+    **The `model:` bag only accepts the keys above** — `klass:`, `finder:`, `not_found_on:`, `id_type:`, `message:` — and anything else, a misspelled `finder:` or a `class:` written for `klass:` included, raises `ArgumentError` at declaration rather than declaring cleanly and being ignored.
+
+    **`if:`/`unless:`/`allow_nil:`/`allow_blank:` belong on the declaration, never inside the bag.** On both `expects` and `exposes`, all four raise `ArgumentError` inside `model:`, even with a blank value like `if: nil`. Inside the bag they reach only the record check (the record's type, and on `expects` the record/id match and the not-found report), never presence or the lookup, so what they look like they do and what the declaration then does part ways. On `expects` the lookup runs whenever the field is read, including by a required field's presence check, so `model: { klass: Company, if: -> { … } }` on a required field still looks up and fails "Company not found". And `allow_blank: false` in the bag makes an `optional:` field required again. Every such bag spelling has a declaration-level one that does the same thing, so write the condition or the tolerance on the declaration instead:
+    ```ruby
+    expects :company, model: { klass: Company }, if: -> { billing_enabled? }
+    expects :company, model: { klass: Company }, optional: true
+    exposes :company, model: { klass: Company }, optional: true
+    ```
 
 * `confirmation: true` - declares a companion input, `<field>_confirmation`, and fails unless it matches the field's actual value
   * Note this departs from ActiveModel, which lets an omitted confirmation pass. See [Confirmation pairs](#confirmation) for the details.
