@@ -1,16 +1,7 @@
 # frozen_string_literal: true
 
 RSpec.describe "Axn tool registry under Rails" do
-  around do |example|
-    original_adapters = Axn::Tools::Registry.adapters.dup
-
-    Axn::Tools::Registry.reset_adapters!
-
-    example.run
-  ensure
-    Axn::Tools::Registry.reset_adapters!
-    original_adapters.each { |adapter| Axn::Tools.register_adapter(adapter) }
-  end
+  include_context "with an isolated tool adapter registry"
 
   # Registers `:mcp` with a real config source (an anonymous module carrying a validated
   # `tool_roots` list), so the spec exercises the production read path
