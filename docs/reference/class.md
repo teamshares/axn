@@ -748,8 +748,8 @@ In callables and symbol-backed methods, you can access:
 
 ```ruby
 success { "Hello #{name}, your greeting: #{result.greeting}" }
-error { |e| "Bad news: #{e.message}" }
-error { |exception:| "Bad news: #{exception.message}" }
+error { |e| e.is_a?(Timeout::Error) ? "Timed out" : "Bad news" }
+error { |exception:| exception.is_a?(Timeout::Error) ? "Timed out" : "Bad news" }
 
 # Using symbol method names
 success :build_success_message
@@ -760,13 +760,15 @@ def build_success_message
 end
 
 def build_error_message(e)
-  "Bad news: #{e.message}"
+  e.is_a?(Timeout::Error) ? "Timed out" : "Bad news"
 end
 
 def build_error_message(exception:)
-  "Bad news: #{exception.message}"
+  exception.is_a?(Timeout::Error) ? "Timed out" : "Bad news"
 end
 ```
+
+Use the exception to choose the header, not to repeat its message: the failure's reason is attached to the header for you, so interpolating `e.message` either prints it twice or puts raw exception text into `result.error`. See [Prefixing failure reasons](/usage/writing#prefixing-failure-reasons).
 
 ## Message Matching Order {#message-matching-order}
 

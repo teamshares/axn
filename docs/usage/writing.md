@@ -218,7 +218,7 @@ BadExample.call(user_id: 123).exception # => Axn::OutboundValidationError
 
 The default `error` and `success` message strings ("Something went wrong" / "Action completed successfully", respectively) _are_ technically safe to show users, but you'll often want to set them to something more useful.
 
-There are `success` and `error` declarations for that -- you can set strings (most common) or a callable (note for the error case, if you give it a callable that expects a single argument, the exception that was raised will be passed in).
+There are `success` and `error` declarations for that -- you can set strings (most common) or a callable (note for the error case, if you give it a callable that expects a single argument, the exception that was raised will be passed in). Use that argument to choose a header (for instance by exception class), not to repeat `e.message`: the failure's reason is attached to your `error` for you, so interpolating the message either prints it twice or puts raw exception text into `result.error` (see [Prefixing failure reasons](#prefixing-failure-reasons)).
 
 For instance, configuring the action like this:
 
@@ -230,7 +230,7 @@ class Foo
   exposes :meaning_of_life
 
   success { "Revealed to #{name}: #{result.meaning_of_life}" } # [!code focus:2]
-  error { |e| "No secret of life for you: #{e.message}" }
+  error "No secret of life for you"
 
   def call
     fail! "Douglas already knows the meaning" if name == "Doug"
@@ -244,8 +244,8 @@ end
 Would give us these outputs:
 
 ```ruby
-Foo.call.error # => "No secret of life for you: Name can't be blank"
-Foo.call(name: "Doug").error # => "Douglas already knows the meaning"
+Foo.call.error # => "No secret of life for you"
+Foo.call(name: "Doug").error # => "No secret of life for you: Douglas already knows the meaning"
 Foo.call(name: "Adams").success # => "Revealed to Adams: Hello Adams, the meaning of life is 42"
 Foo.call(name: "Adams").meaning_of_life # => "Hello Adams, the meaning of life is 42"
 ```
@@ -278,6 +278,8 @@ result.error  # => "Couldn't sync user: email already taken"
               # or "Couldn't sync user"  (base alone, when no reason matched)
 ```
 
+That is the whole idiom for prefixing: the header never needs to repeat the reason, and an unexpected exception renders as the header alone by design, so its technical message stays out of `result.error`.
+
 **Key behaviours:**
 
 | | |
@@ -286,7 +288,7 @@ result.error  # => "Couldn't sync user: email already taken"
 | **`standalone: true` opt-out** | `error "Vendor not found", if: ArgumentError, standalone: true` — or `fail!("msg", standalone: true)` — renders the reason on its own, without the base. Scoped to the action: a bubbled child `fail!(..., standalone: true)` still receives the *caller's* base |
 | **Custom join** | `error "Headline", join: " — "` changes the separator string (default is `": "`); or pass a Proc `join: ->(base, reason) { … }` for full control (wrapping, recasing). Only valid on the base — `join:` on a reason raises at declaration |
 | **Literal vs block** | No semantic difference — `error "x"` and `error { "x" }` are both headlines. A block is just a headline whose text is computed at runtime |
-| **Attach to base (`standalone: false`)** | `error(standalone: false, &:message)` (or `error "detail", standalone: false`) — `standalone: false` attaches an otherwise-headline entry to the base as a reason, e.g. an always-on detail rendered under the base |
+| **Attach to base (`standalone: false`)** | `error "detail", standalone: false` — `standalone: false` attaches an otherwise-headline entry to the base as a reason, e.g. an always-on detail rendered under the base |
 
 ```ruby
 # Reasons are checked last-declared-first.
@@ -294,7 +296,7 @@ class SyncUser
   include Axn
 
   error "Couldn't sync user", join: " — "              # base (custom separator)
-  error(standalone: false, &:message)                     # dynamic detail — declared 2nd
+  error "check the vendor status page", standalone: false  # always-on detail — declared 2nd
   error "vendor not found", if: ArgumentError, standalone: true  # opt-out — declared last → highest priority
 
   def call
@@ -305,9 +307,8 @@ end
 # ArgumentError raised — standalone: true entry wins (declared last → checked first):
 SyncUser.call.error  # => "vendor not found"
 
-# If a non-ArgumentError is raised instead — conditional doesn't match; dynamic detail wins:
-# SyncUser.call.error  # => "Couldn't sync user — <exception.message>"
-# e.g. RuntimeError "timeout" → "Couldn't sync user — timeout"
+# If a non-ArgumentError is raised instead — conditional doesn't match; the always-on detail attaches to the base:
+# SyncUser.call.error  # => "Couldn't sync user — check the vendor status page"
 ```
 
 ::: tip result.error vs Axn::Failure#message
@@ -415,7 +416,9 @@ error { |e| "#{tool_name} tool failed: #{e.message}" }  # [!code warning]
 error { "#{tool_name} tool failed" }                    # [!code focus]
 ```
 
-The exception message is already appended as the *reason* segment; interpolating it into the header prints it twice — `"MyTool tool failed: card declined: card declined"`.
+The reason is attached after the header, so interpolating `e.message` prints it twice whenever the reason *is* the exception's own message — a `fail!` message, a `fails_on … &:message`, a nested child's failure: `"MyTool tool failed: card declined: card declined"`. Beside an authored reason (`error "friendly", if: ArgumentError`) it puts the raw text next to the authored one: `"MyTool tool failed: <raw message>: friendly"`. And when no reason is attached (an unexpected exception, a validation failure), `e.message` is the raw technical text, and the header puts it straight into the user-facing `result.error`, which otherwise stays free of it.
+
+If an exception class's own message really is user-facing, opt that class in on its own: `error(if: SomeError, &:message)` or `fails_on SomeError, &:message`.
 
 The same caution applies to a **reason block** (`error(->(e){ … }, if: …)`) that reads `e.message`: when the failure bubbled up from a nested `call!`, `e.message` is the child's **already-accumulated presentation** (e.g. `"Charge failed: card declined"`), not the raw reason — so interpolating it re-embeds the whole child chain. Read `e.message` in a message block only if you genuinely want the resolved presentation so far.
 :::
