@@ -113,7 +113,7 @@ Prefix helper names with the adapter's name (`_durable_queue_options`, not `_opt
 
 axn checks both rules when a class declares an adapter:
 
-- **An `ArgumentError` saying a declaration "can't take effect"** means the class re-declared its adapter, the `_enqueue_async_job` it reaches belongs to another adapter, and nothing the new adapter added replaces it. Either that hook is defined directly on the class, or the new adapter's hook is a module another adapter already added. An adapter whose module was already present (included by hand, or through an ancestor) is not refused: its own hook serves the declaration. Move the adapter's class-side methods into a module it owns.
+- **An `ArgumentError` saying a declaration "can't take effect"** means the class re-declared its adapter, the `_enqueue_async_job` it reaches provably belongs to another adapter, and nothing the new adapter added replaces it. That happens when another adapter defined its hook directly on the class, or when the class reaches another adapter's own `ClassMethods` hook. Where the check cannot tell, it lets the declaration through: an adapter whose module was already present (included by hand, or through an ancestor) is served by its own hook, and two adapters that extend the same free-standing hook module both run that shared hook. Move the adapter's class-side methods into a module it owns.
 - **A warning that two adapters "both define" a method** means a newly declared adapter adds a class-side helper whose name another adapter on the class already uses. Prefix each adapter's helper names.
 
 ## Argument Serialization

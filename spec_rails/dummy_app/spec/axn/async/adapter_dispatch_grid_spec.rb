@@ -268,21 +268,34 @@ RSpec.describe "call_async adapter dispatch grid" do
       expect(outcome { child.call_async(name: "x") }).to eq(%w[sidekiq c])
     end
 
-    # Both adapters here extend the same module, so it is arguably :second's hook too. Nothing :second's inclusion
-    # changed shows that (its extend is a no-op), and it has no ClassMethods to read, so the module reads as :first's
-    # alone and the switch is refused. An adapter whose ClassMethods reaches the shared module is allowed (above).
-    it "refuses switching to an adapter whose hook is a module another adapter already added" do
+    # Both adapters extend the same free-standing module, so it may well be :second's hook too; nothing readable
+    # without running code says otherwise, so the guard stands down and the switch runs the shared hook.
+    it "allows switching between adapters that both extend the same free-standing hook module" do
+      log = self.log
+      shared = stub_const("GridSharedHook", Module.new { private define_method(:_enqueue_async_job) { |_kwargs| log << ["shared", _async_adapter] } })
+      register_adapter(:first) { |base| base.extend(shared) }
+      register_adapter(:second) { |base| base.extend(shared) }
+      report = action("GridReport") { async :first }
+      report.async :second
+      expect(outcome { report.call_async(name: "x") }).to eq(["shared", :second])
+    end
+
+    # Returning to :second after :active_job: the class reaches Active Job's own ClassMethods hook, which is provably
+    # not :second's, and :second adds nothing above it.
+    it "refuses returning to such an adapter once another adapter's ClassMethods hook sits above the shared module" do
       log = self.log
       shared = stub_const("GridSharedHook", Module.new { private define_method(:_enqueue_async_job) { |_kwargs| log << ["shared"] } })
       register_adapter(:first) { |base| base.extend(shared) }
       register_adapter(:second) { |base| base.extend(shared) }
       report = action("GridReport") { async :first }
+      report.async :second
+      report.async(:active_job) {}
 
       expect { report.async :second }.to raise_error(
         ArgumentError,
         "`async :second` on GridReport can't take effect — GridReport already reaches `_enqueue_async_job` through " \
-        "GridSharedHook (by the :first adapter), and the :second adapter adds nothing that replaces it. Give each " \
-        "adapter its own class-side module that defines its hook, so a later declaration can replace it.",
+        "Axn::Async::Adapters::ActiveJob::ClassMethods (by the :active_job adapter), and the :second adapter adds nothing " \
+        "that replaces it. Give each adapter its own class-side module that defines its hook, so a later declaration can replace it.",
       )
     end
 

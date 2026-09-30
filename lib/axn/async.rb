@@ -264,11 +264,12 @@ module Axn
 
       # A declaration that installed no hook, where no class in the chain recorded one for the declared adapter, runs
       # whatever the class already reaches (see `_enqueue_with_declared_adapter`). That is refused only when the
-      # reachable hook is provably ANOTHER adapter's and not this one's: see `_hook_owned_by?` and
-      # `_hook_owned_by_another_adapter?`. A hook that belongs to the declared adapter (its module was already
-      # present, included by hand or through an ancestor) serves the declaration; a hook whose ownership cannot
-      # be read is given the benefit of the doubt. Checked only for a re-declaration that asks for something
-      # different: a first declaration, or one repeating the previous adapter and config, is left alone.
+      # reachable hook is provably ANOTHER adapter's and provably not this one's: see `_hook_owned_by?` and
+      # `_hook_exclusively_another_adapters?`. A hook that belongs to the declared adapter (its module was already
+      # present, included by hand or through an ancestor) serves the declaration. A hook the guard cannot weigh,
+      # such as a free-standing module both adapters may extend, makes it stand down, the direction a guard may
+      # always err in. Checked only for a re-declaration that asks for something different: a first declaration,
+      # or one repeating the previous adapter and config, is left alone.
       def _refuse_inert_redeclaration!(adapter, adapter_module, prior)
         prior_adapter, prior_config, prior_block, prior_via_default = prior
         return if prior_adapter.nil?
@@ -276,7 +277,7 @@ module Axn
         return if _installed_enqueue_hook(adapter_module)
 
         hook = _reachable_enqueue_hook
-        return if hook.nil? || _hook_owned_by?(hook, adapter_module) || !_hook_owned_by_another_adapter?(hook, adapter_module)
+        return if hook.nil? || _hook_owned_by?(hook, adapter_module) || !_hook_exclusively_another_adapters?(hook, adapter_module)
 
         message = _inert_redeclaration_message(adapter)
         self._async_adapter = prior_adapter
@@ -296,14 +297,33 @@ module Axn
         _adapter_class_side_modules(adapter_module).any? { |mod| mod.equal?(owner) }
       end
 
-      # Whether `hook` provably belongs to an adapter other than `adapter_module`, by the same reading.
-      def _hook_owned_by_another_adapter?(hook, adapter_module)
-        _async_chain_records(INSTALLED_ENQUEUE_HOOKS).each do |other, recorded|
-          return true if !other.equal?(adapter_module) && recorded == hook
+      # Whether `hook` provably belongs to an adapter other than `adapter_module`, in a way the declared adapter
+      # cannot also be supplying it: it is defined in another registered adapter's own `ClassMethods`, or it is
+      # defined directly on a class in this chain and recorded as another adapter's installed hook. Anything else,
+      # notably a free-standing module another adapter extended, which the declared adapter may extend too without
+      # that being observable, cannot be weighed, so the guard stands down on it rather than refusing.
+      def _hook_exclusively_another_adapters?(hook, adapter_module)
+        owner = hook.owner
+        if _async_chain_singletons.any? { |singleton| singleton.equal?(owner) }
+          installed_elsewhere = _async_chain_records(INSTALLED_ENQUEUE_HOOKS).any? { |other, recorded| !other.equal?(adapter_module) && recorded == hook }
+          return installed_elsewhere
         end
+
         Adapters.all.each_value.any? do |other|
-          !other.equal?(adapter_module) && Axn::Internal::Identity.kind?(other, ::Module) && _hook_owned_by?(hook, other)
+          next false if other.equal?(adapter_module) || !Axn::Internal::Identity.kind?(other, ::Module)
+
+          other.const_defined?(:ClassMethods, false) && other::ClassMethods.equal?(owner)
         end
+      end
+
+      def _async_chain_singletons
+        singletons = []
+        klass = self
+        while klass
+          singletons << Axn::Internal::NativeMethods.module_singleton_class(klass)
+          klass = klass.superclass
+        end
+        singletons
       end
 
       def _adapter_class_side_modules(adapter_module)
