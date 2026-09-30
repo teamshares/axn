@@ -267,6 +267,31 @@ RSpec.describe "Axn error block that interpolates the exception message" do
     end
   end
 
+  describe "the documented always-on detail example (standalone: false with authored text)" do
+    let(:raised) { RuntimeError }
+    let(:action_class) do
+      exception_class = raised
+      build_axn do
+        error "Couldn't sync user", join: " — "
+        error "check the vendor status page", standalone: false
+        error "vendor not found", if: ArgumentError, standalone: true
+        define_method(:call) { raise exception_class, "lookup failed" }
+      end
+    end
+
+    context "when the standalone reason's class is raised" do
+      let(:raised) { ArgumentError }
+
+      it "lets the standalone reason win" do
+        expect(action_class.call.error).to eq("vendor not found")
+      end
+    end
+
+    it "attaches the authored detail to the base for any other exception, never its raw message" do
+      expect(action_class.call.error).to eq("Couldn't sync user — check the vendor status page")
+    end
+  end
+
   describe "the documented Customizing messages example" do
     let(:action) do
       build_axn do

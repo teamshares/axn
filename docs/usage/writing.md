@@ -288,7 +288,7 @@ That is the whole idiom for prefixing: the header never needs to repeat the reas
 | **`standalone: true` opt-out** | `error "Vendor not found", if: ArgumentError, standalone: true` — or `fail!("msg", standalone: true)` — renders the reason on its own, without the base. Scoped to the action: a bubbled child `fail!(..., standalone: true)` still receives the *caller's* base |
 | **Custom join** | `error "Headline", join: " — "` changes the separator string (default is `": "`); or pass a Proc `join: ->(base, reason) { … }` for full control (wrapping, recasing). Only valid on the base — `join:` on a reason raises at declaration |
 | **Literal vs block** | No semantic difference — `error "x"` and `error { "x" }` are both headlines. A block is just a headline whose text is computed at runtime |
-| **Attach to base (`standalone: false`)** | `error(standalone: false, &:message)` (or `error "detail", standalone: false`) — `standalone: false` attaches an otherwise-headline entry to the base as a reason, e.g. an always-on detail rendered under the base |
+| **Attach to base (`standalone: false`)** | `error "detail", standalone: false` — `standalone: false` attaches an otherwise-headline entry to the base as a reason, e.g. an always-on detail rendered under the base |
 
 ```ruby
 # Reasons are checked last-declared-first.
@@ -296,7 +296,7 @@ class SyncUser
   include Axn
 
   error "Couldn't sync user", join: " — "              # base (custom separator)
-  error(standalone: false, &:message)                     # dynamic detail — declared 2nd
+  error "check the vendor status page", standalone: false  # always-on detail — declared 2nd
   error "vendor not found", if: ArgumentError, standalone: true  # opt-out — declared last → highest priority
 
   def call
@@ -307,9 +307,8 @@ end
 # ArgumentError raised — standalone: true entry wins (declared last → checked first):
 SyncUser.call.error  # => "vendor not found"
 
-# If a non-ArgumentError is raised instead — conditional doesn't match; dynamic detail wins:
-# SyncUser.call.error  # => "Couldn't sync user — <exception.message>"
-# e.g. RuntimeError "timeout" → "Couldn't sync user — timeout"
+# If a non-ArgumentError is raised instead — conditional doesn't match; the always-on detail attaches to the base:
+# SyncUser.call.error  # => "Couldn't sync user — check the vendor status page"
 ```
 
 ::: tip result.error vs Axn::Failure#message
