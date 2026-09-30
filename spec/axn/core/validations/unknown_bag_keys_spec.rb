@@ -26,8 +26,7 @@ RSpec.describe "an unknown key in an axn-owned validator bag" do
 
       expect { build_axn { expects :lead, model: { klass:, bogus: 1 } } }
         .to raise_error(ArgumentError,
-                        "model: does not support bogus: (supported: klass:, finder:, not_found_on:, id_type:, " \
-                        "message:, if:, unless:, allow_blank:, allow_nil:)")
+                        "model: does not support bogus: (supported: klass:, finder:, not_found_on:, id_type:, message:)")
     end
 
     it "is refused on an exposes" do
@@ -137,11 +136,24 @@ RSpec.describe "an unknown key in an axn-owned validator bag" do
           .to raise_error(ArgumentError, /`strict:` inside model:/)
       end
 
-      it "declares clean with if:/unless:/allow_nil:/allow_blank:" do
+      it "refuses if:/unless:/allow_nil:/allow_blank: on an expects, naming every one at once" do
         klass = lead_class
 
         expect do
           build_axn { expects :lead, model: { klass:, if: -> { true }, unless: -> { false }, allow_nil: true, allow_blank: true } }
+        end.to raise_error(ArgumentError) { |error|
+          expect(error.message).to start_with("`if:` / `unless:` inside model: on :lead only gates the record checks")
+            .and include(" `allow_nil:` / `allow_blank:` inside model: on :lead does not make the field optional")
+        }
+      end
+
+      # An exposure has no lookup: a bag gate there skips only the record-type check while presence still
+      # applies, which is a reading of its own.
+      it "declares clean with if:/unless:/allow_nil:/allow_blank: on an exposes" do
+        klass = lead_class
+
+        expect do
+          build_axn { exposes :lead, model: { klass:, if: -> { true }, unless: -> { false }, allow_nil: true, allow_blank: true } }
         end.not_to raise_error
       end
 

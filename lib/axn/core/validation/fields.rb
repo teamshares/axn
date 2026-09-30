@@ -114,8 +114,8 @@ module Axn
       # Whether the gate for ONE validator ENTRY is OPEN for this call — i.e. whether ActiveModel
       # would run that entry's validator this pass. Two gate tiers apply, and AM merges them inside
       # `validates`: the declaration-level SHARED if:/unless: (`validations`'s own gate keys) and the
-      # ENTRY's OWN nested if:/unless: (the `if:` inside e.g. a `model: { ..., if: }` or
-      # `presence: { if: }` hash). Decided by ActiveModel ITSELF, never by a hand-rolled mirror of its
+      # ENTRY's OWN nested if:/unless: (the `if:` inside e.g. a `presence: { if: }` or
+      # `type: { klass:, if: }` hash). Decided by ActiveModel ITSELF, never by a hand-rolled mirror of its
       # merge/evaluation: we build a probe validator (subclassing this class, so it inherits the exact
       # method_missing delegation to the action the real validators use) carrying a single custom
       # validator whose NESTED options are the entry's own gates and whose SHARED options are the

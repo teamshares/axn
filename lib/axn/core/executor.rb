@@ -1741,26 +1741,19 @@ module Axn
 
       # A config whose MODEL validator is gated OFF for this call: ActiveModel has already waived it, so
       # the model-consistency check (which lives outside AM) must waive too — otherwise a gated-off model
-      # field would still raise on a record/id conflict, the one check that survives a closed gate. Both
-      # gate tiers are honored: the declaration-level shared if:/unless: AND the `model:` entry's OWN
-      # nested if:/unless: (`model: { ..., if: }`), with AM's real tier precedence applied by the probe
-      # (see Fields.validator_gate_open?). Key-presence on either tier is checked first, and the `source`
-      # is yielded lazily, so an ungated config constructs nothing and resolves nothing — zero cost off
-      # the gated path.
+      # field would still raise on a record/id conflict, the one check that survives a closed gate. Only the
+      # declaration's own if:/unless: can gate it: an inbound `model:` bag never carries a gate of its own
+      # (`Contract#_check_inbound_model_bag!` refuses one). Key presence is checked first, and the `source` is
+      # yielded lazily, so an ungated config constructs nothing and resolves nothing — zero cost off the
+      # gated path.
       def _model_gate_closed?(config)
-        gate_keys = Internal::FieldConfig::CONDITIONAL_GATE_KEYS
-        model = config.validations[:model]
-        has_shared_gate = gate_keys.any? { |key| config.validations.key?(key) }
-        has_nested_gate = model.is_a?(Hash) && gate_keys.any? { |key| model.key?(key) }
-        return false unless has_shared_gate || has_nested_gate
+        return false unless Internal::FieldConfig::CONDITIONAL_GATE_KEYS.any? { |key| config.validations.key?(key) }
 
-        # The gate oracle asks ActiveModel itself (see Fields.validator_gate_open?): the action is
+        # The gate oracle asks ActiveModel itself (see Fields.declaration_gate_open?): the action is
         # threaded, plus the subfield reader/config, so a Symbol/Proc gate resolves against the same
-        # `self` and action delegation the real validators see. `source` is yielded only past the
-        # key-presence guard, so an ungated config resolves nothing — zero cost off the gated path.
-        !Axn::Validation::Fields.validator_gate_open?(
+        # `self` and action delegation the real validators see.
+        !Axn::Validation::Fields.declaration_gate_open?(
           validations: config.validations,
-          entry_options: model,
           action: @action,
           source: yield,
           reader: config.subfield? ? config.reader_as : nil,

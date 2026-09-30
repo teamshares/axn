@@ -716,14 +716,13 @@ RSpec.describe "Axn class-level schema reflection" do
       expect(narrow.input_schema_residues).not_to be_empty
     end
 
-    # A same-key gate inside the `model:` bag, blank or not, replaces the declaration's for the lookup, which then
-    # runs on every call.
-    it "names a model lookup as always applying when its entry overrides the declaration gate" do
+    # A gate inside the `model:` bag, even a blank one, is refused at declaration, so only the declaration gate
+    # decides whether the lookup is conditional.
+    it "refuses a blank gate inside the model: bag beside a declaration gate" do
       stub_const("LookupCo", Struct.new(:id) { def self.find(id) = id == 1 ? new(id) : nil })
-      action = build_axn { expects :company, model: { klass: LookupCo, finder: :find, id_type: Integer, if: nil }, if: -> { false } }
 
-      expect(action.call(company_id: 2)).not_to be_ok
-      expect(action.input_schema_residues.select { |r| r.summary.include?("model lookup") }.map(&:kind)).to eq([:inherent])
+      expect { build_axn { expects :company, model: { klass: LookupCo, finder: :find, id_type: Integer, if: nil }, if: -> { false } } }
+        .to raise_error(ArgumentError, /\A`if:` inside model: on :company only gates the record checks/)
     end
 
     # A JSON number arrives as an Integer or a Float, and `"number"` cannot say which a field wants, so any numeric
