@@ -15,6 +15,13 @@ RSpec.describe "call_async adapter dispatch grid" do
 
   after { Axn::Async::Adapters.clear! }
 
+  # A stand-in for the enqueue-all orchestrator, which the config setters configure by constant. Standalone
+  # rather than a subclass of the real one: other files configure the real orchestrator, and what its own
+  # declarations recorded would serve a subclass's declarations, making these rows depend on file order.
+  def stub_orchestrator
+    stub_const("Axn::Async::EnqueueAllOrchestrator", build_axn { expects :target_class_name, :static_args, allow_blank: true })
+  end
+
   def action(const_name, parent = nil, &body)
     klass = parent ? Class.new(parent) : build_axn { expects :name }
     klass.class_eval(&body) if body
@@ -102,6 +109,9 @@ RSpec.describe "call_async adapter dispatch grid" do
       # dispatcher can reach a hook that was never built: these cells enqueue through the right adapter with the
       # config of the declaration that did build one. Meeting them needs an adapter contract that is handed the
       # declaring class (for example a per-declaration hook on the adapter module), which is a separate decision.
+      # The inert-declaration guard cannot refuse them either: at declaration they look exactly like a valid
+      # Concern re-declared with new config (an ancestor's recorded hook serves it), and only running the hook
+      # tells a config baked in at inclusion from one read at call time.
       def unreachable_without_adapter_contract_change!(style)
         pending "a Concern adapter builds its class-side module only on first inclusion" if style == :concern_with_built_override
       end
@@ -174,8 +184,14 @@ RSpec.describe "call_async adapter dispatch grid" do
 
       it "enqueue-all orchestrator switched to the custom adapter, away, and back with new config" do
         unreachable_without_adapter_contract_change!(style)
-        stub_const("Axn::Async::EnqueueAllOrchestrator", Class.new(Axn::Async::EnqueueAllOrchestrator))
+        stub_orchestrator
         Axn.config.set_enqueue_all_async(:custom, tag: "o1")
+        if style == :defines_singleton_method
+          # A hook defined directly on the orchestrator shadows any module Active Job adds, so that switch is refused.
+          expect { Axn.config.set_enqueue_all_async(:active_job) {} }
+            .to raise_error(ArgumentError, /`_enqueue_async_job` is defined directly on Axn::Async::EnqueueAllOrchestrator \(by the :custom adapter\)/)
+          next
+        end
         Axn.config.set_enqueue_all_async(:active_job) {}
         Axn.config.set_enqueue_all_async(:custom, tag: "o2")
         orchestrator = Axn::Async::EnqueueAllOrchestrator
@@ -183,6 +199,108 @@ RSpec.describe "call_async adapter dispatch grid" do
       ensure
         Axn.config.set_enqueue_all_async(nil)
       end
+    end
+  end
+
+  # Custom adapters whose class-side methods collide with another adapter's. A re-declaration that cannot take
+  # effect is refused at declaration; a helper name two adapters on one class both define is warned about.
+  context "with guardrails for colliding custom adapters" do
+    let(:warnings) { [] }
+
+    before do
+      allow(Axn.config.logger).to receive(:warn).and_wrap_original do |original, *args, &message|
+        warnings << (message ? message.call : args.first)
+        original.call(*args, &message)
+      end
+    end
+
+    def register_adapter(key, &included_hook)
+      Axn::Async::Adapters.register(key, plain_adapter(&included_hook))
+    end
+
+    def concern_with(class_methods) = concern_adapter(class_methods)
+
+    it "refuses switching a class whose hook is defined directly on it to another adapter" do
+      register_custom(:defines_singleton_method)
+      report = action("GridReport") { async :custom, tag: "r" }
+
+      expect { report.async :sidekiq, queue: "s" }.to raise_error(
+        ArgumentError,
+        "`async :sidekiq` on GridReport can't take effect — `_enqueue_async_job` is defined directly on GridReport " \
+        "(by the :custom adapter) and shadows it. Define the adapter's class-side methods in a module " \
+        "(e.g. a ClassMethods concern) so a later declaration can replace them.",
+      )
+      expect(report._async_adapter).to eq(:custom)
+      expect(outcome { report.call_async(name: "x") }).to eq(%w[custom r])
+    end
+
+    it "lets a subclass of such a class declare another adapter, which does take effect there" do
+      register_custom(:defines_singleton_method)
+      parent = action("GridParent") { async :custom, tag: "p" }
+      child = action("GridChild", parent) { async :sidekiq, queue: "c" }
+      expect(outcome { child.call_async(name: "x") }).to eq(%w[sidekiq c])
+    end
+
+    it "refuses switching to an adapter whose hook is a module another adapter already added" do
+      log = self.log
+      shared = stub_const("GridSharedHook", Module.new { private define_method(:_enqueue_async_job) { |_kwargs| log << ["shared"] } })
+      register_adapter(:first) { |base| base.extend(shared) }
+      register_adapter(:second) { |base| base.extend(shared) }
+      report = action("GridReport") { async :first }
+
+      expect { report.async :second }.to raise_error(
+        ArgumentError,
+        "`async :second` on GridReport can't take effect — GridReport already reaches `_enqueue_async_job` through " \
+        "GridSharedHook (by the :first adapter), and the :second adapter adds nothing that replaces it. Give each " \
+        "adapter its own class-side module that defines its hook, so a later declaration can replace it.",
+      )
+    end
+
+    it "warns when a newly declared adapter defines a helper another adapter on the class already defines" do
+      log = self.log
+      first = Module.new do
+        define_method(:_enqueue_async_job) { |_kwargs| log << ["first", build_payload] }
+        define_method(:build_payload) { "first" }
+        private :_enqueue_async_job, :build_payload
+      end
+      second = Module.new do
+        define_method(:_enqueue_async_job) { |_kwargs| log << ["second", build_payload] }
+        define_method(:build_payload) { "second" }
+        private :_enqueue_async_job, :build_payload
+      end
+      Axn::Async::Adapters.register(:first, concern_with(first))
+      Axn::Async::Adapters.register(:second, concern_with(second))
+      parent = action("GridParent") { async :first }
+      # Named before declaring, as a `class GridChild < GridParent` body is.
+      child = stub_const("GridChild", Class.new(parent))
+      child.async :second
+
+      expect(warnings).to eq([
+                               "[Axn] GridChild: the :second and :first async adapters both define `build_payload` as class-side methods, " \
+                               "so the one included later answers for both. Prefix each adapter's helper names so they cannot collide.",
+                             ])
+    end
+
+    it "neither refuses nor warns for any built-in re-declaration" do
+      a = action("GridA") { async :sidekiq, queue: "a" }
+      a.async(:active_job) { queue_as "b" }
+      a.async :sidekiq, queue: "c"
+      a.async :sidekiq, queue: "c"
+      a.async false
+      a.async(:active_job) { queue_as "d" }
+      child = action("GridChild", a) { async :sidekiq, queue: "e" }
+      grandchild = action("GridGrandchild", child) { async(:active_job) { queue_as "f" } }
+
+      expect(warnings).to be_empty
+      expect(outcome { grandchild.call_async(name: "x") }).to eq(%w[active_job f])
+    end
+
+    it "allows re-declaring a custom adapter with identical config, and with new config" do
+      register_custom(:defines_singleton_method)
+      a = action("GridA") { async :custom, tag: "a" }
+      a.async :custom, tag: "a"
+      a.async :custom, tag: "b"
+      expect(outcome { a.call_async(name: "x") }).to eq(%w[custom b])
     end
   end
 
@@ -235,7 +353,7 @@ RSpec.describe "call_async adapter dispatch grid" do
     end
 
     it "enqueue-all orchestrator returning to active_job with a new block" do
-      stub_const("Axn::Async::EnqueueAllOrchestrator", Class.new(Axn::Async::EnqueueAllOrchestrator))
+      stub_orchestrator
       orchestrator = Axn::Async::EnqueueAllOrchestrator
       Axn.config.set_enqueue_all_async(:active_job) { queue_as "o1" }
       orchestrator.call_async(target_class_name: "Anything", static_args: {})
@@ -247,7 +365,7 @@ RSpec.describe "call_async adapter dispatch grid" do
     end
 
     it "enqueue-all orchestrator returning to sidekiq with new config" do
-      stub_const("Axn::Async::EnqueueAllOrchestrator", Class.new(Axn::Async::EnqueueAllOrchestrator))
+      stub_orchestrator
       orchestrator = Axn::Async::EnqueueAllOrchestrator
       Axn.config.set_enqueue_all_async(:sidekiq, queue: "o1")
       orchestrator.call_async(target_class_name: "Anything", static_args: {})
@@ -401,7 +519,7 @@ RSpec.describe "call_async adapter dispatch grid" do
     # The config setters keep main's split: a raw `false` means "no adapter here" (an enqueue-all override falls
     # back to the default), while `:disabled`/"disabled" names the Disabled adapter explicitly.
     context "when set as the enqueue-all override or the default" do
-      before { stub_const("Axn::Async::EnqueueAllOrchestrator", Class.new(Axn::Async::EnqueueAllOrchestrator)) }
+      before { stub_orchestrator }
 
       after do
         Axn.config.set_enqueue_all_async(nil)
