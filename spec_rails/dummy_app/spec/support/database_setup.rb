@@ -39,4 +39,17 @@ RSpec.configure do |config|
 
     ActiveRecord::Base.connection.execute("PRAGMA foreign_keys = ON")
   end
+
+  # Every example starts from empty tables. The `:memory:` database lives for the whole process, and the suite
+  # deliberately has no enclosing test transaction: specs exercise the real commit and rollback of
+  # `use :transaction` and its after-commit hooks, which an outer transaction would absorb (the action's
+  # transaction would join it, so nothing commits and a raise no longer rolls back what the spec measures). Rows
+  # those examples commit are therefore deleted here instead.
+  config.before do
+    connection = ActiveRecord::Base.connection
+    tables = connection.tables - %w[schema_migrations ar_internal_metadata]
+    connection.disable_referential_integrity do
+      tables.each { |table| connection.execute("DELETE FROM #{connection.quote_table_name(table)}") }
+    end
+  end
 end
