@@ -89,21 +89,27 @@ RSpec.describe "Values.serialize_value with and without ActiveSupport's json cor
       "protected" => ->(k) { k.send(:define_method, :to_h) { { via: "to_h" } }; k.send(:protected, :to_h) },
       "private" => ->(k) { k.send(:define_method, :to_h) { { via: "to_h" } }; k.send(:private, :to_h) },
     }
+    to_a_variants = {
+      "inherited" => ->(_) {}, "public" => ->(k) { k.send(:define_method, :to_a) { ITEMS.dup } },
+      "private" => ->(k) { k.send(:define_method, :to_a) { ITEMS.dup }; k.send(:private, :to_a) },
+    }
     as_json_variants = { "no as_json" => ->(_) {}, "own as_json" => ->(k) { k.send(:define_method, :as_json) { |*| { via: "as_json" } } } }
     kinds.each do |kname, mk|
       to_h_variants.each do |tname, tv|
         as_json_variants.each do |aname, av|
+         to_a_variants.each do |aname_a, ta|
           # A value with no public shape of its own (a plain object, even with a non-public `to_h`) is the documented
           # `reject_opaque` case, not a routing disagreement.
           next if kname == "plain" && aname == "no as_json" && tname != "public"
 
           klass = mk.call { }
-          tv.call(klass); av.call(klass)
+          tv.call(klass); av.call(klass); ta.call(klass)
           value = (build[kname] || ->(k) { k.new }).call(klass)
           [false, true].each do |opaque|
             r = begin; JSON.generate(values.serialize_value(value, reject_opaque: opaque)); rescue StandardError => e; "raised #{e.class}"; end
-            out["#{kname} | to_h #{tname} | #{aname} | opaque=#{opaque}"] = r
+            out["#{kname} | to_h #{tname} | to_a #{aname_a} | #{aname} | opaque=#{opaque}"] = r
           end
+         end
         end
       end
     end
@@ -129,9 +135,16 @@ RSpec.describe "Values.serialize_value with and without ActiveSupport's json cor
     with = render_cases(core_ext: true)
 
     expect(without.keys).to eq(with.keys)
-    expect(with.size).to be > 150 # the generated product plus the hand-written cases, not an empty comparison
+    expect(with.size).to be > 300 # the generated product plus the hand-written cases, not an empty comparison
     differing = without.keys.reject { |k| without[k] == with[k] }.to_h { |k| [k, { without: without[k], with: with[k] }] }
     expect(differing).to eq({})
+  end
+
+  it "never fails with a raw Ruby error, only with the intended UnserializableValue refusal" do
+    rendered = render_cases(core_ext: true).merge(render_cases(core_ext: false)) { |_, a, b| [a, b] }
+    raw = rendered.select { |_, v| Array(v).any? { |r| r.start_with?("raised ") && !r.include?("UnserializableValue") } }
+
+    expect(raw).to eq({})
   end
 
   it "actually loads the core_ext in one of the two processes (the comparison is not vacuous)" do

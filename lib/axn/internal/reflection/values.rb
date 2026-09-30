@@ -1191,9 +1191,11 @@ module Axn
         # in one call, so a walk of THEIR result would never see a nested member. Taking the `to_a`/`to_hash`
         # they call gives the walker the members themselves, so the leaf rules, `reject_opaque` and the render
         # guard apply at every depth. Every other route is the value's own `as_json`, rendered as it answers.
+        # `to_a` is called with an implicit receiver, as ActiveSupport's own `Enumerable#as_json` calls it, so a
+        # collection that keeps a custom `to_a` non-public still renders.
         def as_json_projection(value, projection)
           case projection
-          when :enumerable_as_json then value.to_a
+          when :enumerable_as_json then value.__send__(:to_a)
           when :delegated_as_json then value.to_hash
           else value.as_json
           end
