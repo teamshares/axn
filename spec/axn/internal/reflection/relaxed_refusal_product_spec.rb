@@ -136,13 +136,17 @@ module RelaxedRefusalProduct
     out
   end
 
-  # A raw `shape:` beside each type, with and without a hand-written `container:`, at every position one is written:
+  # A raw `shape:` beside each type, with and without a hand-written `container:`, at every position one is written —
+  # unions whose branches share a JSON type included (`[Hash, Data]`, `[String, Symbol]`), where the wire cannot tell
+  # the branch that carries the members from the one that skips them:
   # the grid of declared class x container, which the declaration refuses where the container leaves the members
   # unchecked on values the class admits, and the emitter places exactly where it lets them stand.
   def raw_shape_cells
     axes = { type: { "Array" => "Array", "Hash" => "Hash", "none" => nil, "Data" => "#{P}::Point", "[Array,Hash]" => "[Array, Hash]",
-                     "[String,Hash]" => "[String, Hash]", "[Hash,NilClass]" => "[Hash, NilClass]", "Object" => "Object" },
-             container: { "cArray" => "Array", "cHash" => "Hash", "c-" => nil, "cData" => "#{P}::Point", "cObject" => "Object" },
+                     "[String,Hash]" => "[String, Hash]", "[Hash,NilClass]" => "[Hash, NilClass]", "Object" => "Object",
+                     "[Hash,Data]" => "[Hash, #{P}::Point]", "[String,Symbol]" => "[String, Symbol]" },
+             container: { "cArray" => "Array", "cHash" => "Hash", "c-" => nil, "cData" => "#{P}::Point", "cObject" => "Object",
+                          "cSymbol" => "Symbol" },
              req: { "req" => "", "optional" => ", optional: true" }, gate: { "ungated" => "", "closed" => ", if: -> { false }" },
              of: { "no of" => "", "of Hash" => ", of: Hash", "of String" => ", of: String" } }
     out = []

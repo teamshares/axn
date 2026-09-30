@@ -11076,6 +11076,28 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(klass.input_schema_residues).to be_empty
     end
 
+    # A JSON object arrives as a Hash, so a union of two object classes is one class on the wire: beside a container
+    # that is not the Hash, every wire object skips the members, and stating them would reject what the runtime
+    # accepts. Beside the Hash, every wire object carries them, which is exact.
+    it "states nothing, and names the selectivity, where the container is an object class the wire cannot pick out" do
+      m = sku
+      point = Data.define(:sku)
+      klass = build_axn { expects :val, type: [Hash, point], shape: { container: point, members: [m] } }
+
+      expect(klass.input_schema.dig(:properties, :val)).not_to have_key(:properties)
+      expect(klass.call(val: { other: "ok" })).to be_ok
+      expect(residue_summaries(klass)).to include(Axn::Internal::Reflection::Schema::Contents::SELECTIVE_SHAPE_RESIDUE)
+    end
+
+    it "states the members where the container is the Hash every wire object is" do
+      m = sku
+      point = Data.define(:sku)
+      klass = build_axn { expects :val, type: [Hash, point], shape: { container: Hash, members: [m] } }
+
+      expect(klass.input_schema.dig(:properties, :val)).to include(type: "object", required: ["sku"])
+      expect(klass.call(val: { other: "ok" })).not_to be_ok
+    end
+
     it "does the same at an of: bag" do
       m = sku
       klass = build_axn { expects :val, type: Array, of: { klass: [Array, Hash], shape: { container: Hash, members: [m] } } }

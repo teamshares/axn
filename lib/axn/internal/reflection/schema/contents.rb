@@ -251,7 +251,11 @@ module Axn
             # A class with no JSON object form has nowhere to state the members on, while the runtime still reads
             # them — off each element of an Array (`klass: Array` distributes), or off whichever branch of a union
             # carries them — so inbound, their omission is named rather than silent.
-            return (for_output ? node : record_residue(node, UNSTATED_SHAPE_RESIDUE)) unless reach
+            unless reach
+              return node if for_output
+
+              return record_residue(node, unstated_members_residue(Axn::Internal::ShapeGraph.type_tokens(bag[:klass]), shape[:container]))
+            end
 
             member_props, required = member_properties(shape[:members], for_output:, ancestry:)
             return overlay_member_properties(node, shape, reach, member_props, required) unless object_node_for_members?(shape, reach)
@@ -327,16 +331,69 @@ module Axn
 
           # The declaration refuses a container that only narrows a declared class, so every class arriving here
           # either is the container (its values carry the members) or never is (they skip them). What remains is
-          # which of them carry the members to the wire: none but objects may, or the node would have to state the
-          # members on a String.
+          # which WIRE values carry them, since that is all a JSON Schema describes: a JSON object arrives as a
+          # `Hash`, an array as an `Array`, a string as a `String`, and so on (`WIRE_CLASSES`). So two declared classes
+          # that share a JSON type are one class on the wire — `[Hash, SomeData]` beside `container: SomeData` admits
+          # every JSON object and checks the members on none of them, so they cannot be stated at all; beside
+          # `container: Hash` it checks them on every JSON object, which is exact. The members are stated only where
+          # the wire values that carry them are exactly the JSON objects the position admits.
           def member_reach(tokens, container, opaque_is_object:)
             kinds = tokens.filter_map { |token| member_token_kind(token) }
             return EVERY_VALUE_REACH if kinds.all?(:any) && (kinds.any? || container_holds_every_value?(container))
-            return OBJECT_REACH if kinds.empty? || kinds.all?(:object)
-            return OBJECT_REACH if opaque_is_object && (kinds - %i[object opaque]).empty?
-            return nil if tokens.any? { |token| member_token_kind(token) == :scalar && token_carries_members?(token, container) }
 
-            OBJECT_VALUES_REACH if container_holds_every_object?(container)
+            wire = wire_classes_admitted(tokens)
+            return no_wire_reach(kinds, opaque_is_object) if wire.empty?
+
+            checked = wire.select { |klass| container_reads?(klass, container) }
+            return nil unless checked == [::Hash]
+
+            wire.one? ? OBJECT_REACH : OBJECT_VALUES_REACH
+          end
+
+          # The classes a value parsed from JSON has, one per JSON type. `nil` is nullability, decided elsewhere.
+          WIRE_CLASSES = [::Hash, ::Array, ::String, ::Integer, ::Float, ::TrueClass, ::FalseClass].freeze
+
+          # A declaration admitting no wire value at all (`type: SomeData`, a plain class) keeps the object node its
+          # members have always been given, the runtime's type check being what no wire value passes — at a field
+          # for any such class, at a bag only for one that is an object type, as before.
+          def no_wire_reach(kinds, opaque_is_object)
+            return OBJECT_REACH if kinds.empty? || kinds.all?(:object)
+
+            OBJECT_REACH if opaque_is_object && (kinds - %i[object opaque]).empty?
+          end
+
+          def wire_classes_admitted(tokens)
+            WIRE_CLASSES.select { |wire| tokens.any? { |token| token_admits?(token, wire) } }
+          end
+
+          # Whether a declared type token admits a value of the wire class `wire`. A pseudo-type token stands for the
+          # classes its values have (`:params` a Hash, `:boolean` true or false, `:uuid` a String).
+          def token_admits?(token, wire)
+            case token
+            when :params then ::Hash.equal?(wire)
+            when :boolean then ::TrueClass.equal?(wire) || ::FalseClass.equal?(wire)
+            when :uuid then ::String.equal?(wire)
+            else Axn::Internal::Identity.kind?(token, ::Module) && Axn::Internal::NativeMethods.includes_module?(wire, token)
+            end
+          end
+
+          def container_reads?(wire, container)
+            return true if Axn::Internal::ShapeGraph::ANY_CONTAINER.equal?(container)
+
+            Axn::Internal::Identity.kind?(container, ::Module) && Axn::Internal::NativeMethods.includes_module?(wire, container)
+          end
+
+          SELECTIVE_SHAPE_RESIDUE = "its `shape:` members are checked only on a value that is its `container:`, which a " \
+                                    "JSON document cannot tell apart from the other values admitted here"
+
+          # The residue naming members `member_reach` leaves unstated: where the position admits a wire value its
+          # container does not read, the members are selective in a way JSON Schema cannot follow; otherwise they
+          # are read off a value with no JSON object form.
+          def unstated_members_residue(tokens, container)
+            wire = wire_classes_admitted(tokens)
+            return UNSTATED_SHAPE_RESIDUE if wire.empty? || wire.all? { |klass| container_reads?(klass, container) }
+
+            SELECTIVE_SHAPE_RESIDUE
           end
 
           # What one declared class is on the wire, for placing members: an object (`Hash`, `:params`, `Data`,
@@ -348,18 +405,6 @@ module Axn
             return :any if Axn::Internal::Identity.kind?(token, ::Module) && container_holds_every_value?(token)
 
             single_type_for(token, for_output: false).empty? ? :opaque : :scalar
-          end
-
-          # Whether a declared scalar class's values are the container, and so carry the members.
-          def token_carries_members?(token, container)
-            return false unless Axn::Internal::Identity.kind?(container, ::Module)
-
-            classes = case token
-                      when :boolean then [::TrueClass, ::FalseClass]
-                      when :uuid then [::String]
-                      else [token]
-                      end
-            classes.any? { |klass| Axn::Internal::Identity.kind?(klass, ::Module) && Axn::Internal::NativeMethods.includes_module?(klass, container) }
           end
 
           # Whether every value is an instance of `container` (`Object`, `Kernel`, `BasicObject`), read off the

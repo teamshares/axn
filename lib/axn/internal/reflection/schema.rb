@@ -2022,7 +2022,9 @@ module Axn
         # shape whose members reach no JSON object is named rather than left silent.
         def apply_value_members!(prop, config, plan, for_output:, ancestry:)
           shape = plan.shape
-          return prop.replace(record_residue(prop, Contents::UNSTATED_SHAPE_RESIDUE)) if !plan.emitted && !for_output
+          if !plan.emitted && !for_output
+            return prop.replace(record_residue(prop, unstated_members_residue(declared_type_tokens(config.validations), shape[:container])))
+          end
           return unless plan.emitted
 
           member_props, required = member_properties(shape[:members], for_output:, ancestry:)
