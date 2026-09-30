@@ -165,6 +165,7 @@ GEM
       racc (~> 1.4)
     nokogiri (1.18.9-arm64-darwin)
       racc (~> 1.4)
+    ostruct (0.6.3)
     parallel (1.26.3)
     parser (3.3.7.1)
       ast (~> 2.4.1)
@@ -293,6 +294,7 @@ DEPENDENCIES
   json_schemer (~> 2.5)
   lefthook (~> 2.0)
   memory_profiler (~> 1.0)
+  ostruct (~> 0.6)
   pry-byebug (= 3.12.0)
   rails (> 7.0)
   rake (~> 13.0)
@@ -303,4 +305,4 @@ DEPENDENCIES
   vernier (~> 1.0)
 
 BUNDLED WITH
-   2.5.6
+  4.0.16

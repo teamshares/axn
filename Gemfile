@@ -20,6 +20,7 @@ gem "benchmark-ips", "~> 2.10"
 gem "memory_profiler", "~> 1.0"
 
 gem "lefthook", "~> 2.0" # Git-hook manager (pre-commit RuboCop on staged files)
+gem "ostruct", "~> 0.6" # Bundled gem from Ruby 4.0 (no longer loadable by default); specs exercise OpenStruct members
 gem "rake", "~> 13.0"
 gem "rdoc", "~> 8.0" # Pin to match Ruby default gem and avoid dual-load warnings during release
 gem "rubocop", "~> 1.21"
