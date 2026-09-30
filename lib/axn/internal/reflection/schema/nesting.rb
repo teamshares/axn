@@ -194,7 +194,7 @@ module Axn
             model_id_siblings.each do |id_field, model_configs, explicit_id|
               merge_model_id_type_into_sibling!(prop[:properties][id_field], model_configs, explicit_id) if prop[:properties][id_field]
             end
-            name_model_lookups!(prop, children)
+            name_model_lookups!(prop, children, ann)
             # A required nested model id can't be null (a null token resolves the model to nil at runtime).
             # Done after the loop so it survives an explicit id subfield declared after the model: subfield.
             required_model_ids.each { |id_field| reject_null!(prop[:properties][id_field]) if prop[:properties][id_field] }
@@ -435,7 +435,7 @@ module Axn
           end
 
           # Each nested model id's lookup, named once the id's property is final, whichever declaration wrote it.
-          def name_model_lookups!(prop, children)
+          def name_model_lookups!(prop, children, ann)
             children.each do |key, node|
               next if node.implicit?
 
@@ -443,7 +443,8 @@ module Axn
               next if model_configs.empty?
 
               id_field = Internal::FieldConfig.model_id_key(key)
-              prop[:properties][id_field] = with_model_lookup_residue(prop[:properties][id_field], model_configs)
+              stranded = children_require_presence?(node.children, ann)
+              prop[:properties][id_field] = with_model_lookup_residue(prop[:properties][id_field], model_configs, strands_descendant: stranded)
               prop[:properties][key] = with_model_raw_key_residue(prop[:properties][key], model_configs) if prop[:properties].key?(key)
             end
           end

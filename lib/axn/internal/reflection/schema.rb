@@ -1304,10 +1304,14 @@ module Axn
         # resolve an id that names no record exactly as they resolve no id at all. Asked through `nil_accepted?`,
         # the judgment the runtime's own nil verdict turns on, so the two cannot disagree. The call is rejected
         # when ANY route rejects a miss, so the residue stays as long as one does.
-        def with_model_lookup_residue(prop, model_configs)
+        #
+        # A nil record is also rejected by what hangs beneath it: a required descendant reads absent under a nil
+        # parent (PRO-2857), so `strands_descendant:` keeps the residue whatever the model's own validators say.
+        # The explicit `<field>_id` sibling's default rescues an OMITTED id only, never one the caller supplied.
+        def with_model_lookup_residue(prop, model_configs, strands_descendant:)
           return prop if prop.nil? || projected_types(prop) == ["null"]
 
-          model_configs = model_configs.reject { |config| nil_accepted?(config) }
+          model_configs = model_configs.reject { |config| nil_accepted?(config) } unless strands_descendant
           return prop if model_configs.empty?
 
           return record_residue(prop, MODEL_LOOKUP_RESIDUE) unless model_configs.all? { |config| model_lookup_gated?(config) }
