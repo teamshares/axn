@@ -256,7 +256,8 @@ module Axn
             unless reach
               return node if for_output
 
-              return record_residue(node, unstated_members_residue(Axn::Internal::ShapeGraph.type_tokens(bag[:klass]), shape[:container]))
+              residue = unstated_members_residue(Axn::Internal::ShapeGraph.type_tokens(bag[:klass]), shape)
+              return residue ? record_residue(node, residue) : node
             end
 
             member_props, required = member_properties(shape[:members], for_output:, ancestry:)
@@ -394,8 +395,12 @@ module Axn
 
           # The residue naming members `member_reach` leaves unstated: where the position admits a wire value its
           # container does not read, the members are selective in a way JSON Schema cannot follow; otherwise they
-          # are read off a value with no JSON object form.
-          def unstated_members_residue(tokens, container)
+          # are read off a value with no JSON object form. Nil where no member carries an entry: a member is read
+          # only when one of its entries runs, so members with none reject nothing, off any class.
+          def unstated_members_residue(tokens, shape)
+            return nil if Axn::Internal::ShapeGraph.members(shape).none? { |member| member_active_entries(member).any? }
+
+            container = shape[:container]
             wire = wire_classes_admitted(tokens)
             return UNSTATED_SHAPE_RESIDUE if wire.empty? || wire.all? { |klass| container_reads?(klass, container) }
 

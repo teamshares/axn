@@ -2066,6 +2066,27 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(klass.input_schema_residues.map(&:summary)).to include(a_string_including("its `shape:` members are checked"))
     end
 
+    # A member is read only when one of its entries runs, so members carrying none reject nothing off any class —
+    # and naming them as checked would describe a check that never fails.
+    it "names no members off a scalar element when none of them carries an entry" do
+      silent = build_axn do
+        expects(:items, type: Array, of: String) do
+          field :sku, optional: true
+          field :length, method_call: true, optional: true
+        end
+      end
+      checked = build_axn do
+        expects(:items, type: Array, of: String) do
+          field :sku, optional: true
+          field :length, method_call: true, type: Integer
+        end
+      end
+
+      expect(silent.call(items: ["abc", ""])).to be_ok
+      expect(silent.input_schema_residues).to eq([])
+      expect(checked.input_schema_residues.map(&:summary)).to include(a_string_including("its `shape:` members are checked"))
+    end
+
     it "does not advertise object array-items OUTPUT for `of:` a custom-as_json Data (but keeps them on input)" do
       of_data = Data.define(:name) { def as_json(*) = "scalar" }
       klass = Class.new do
@@ -5135,6 +5156,46 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             .to eq(described_class.build_input(implicit.internal_field_configs, implicit.subfield_configs))
           expect(described_class.dropped_deep_subfields(explicit.internal_field_configs, explicit.subfield_configs).map(&:field))
             .to eq([:x])
+        end
+
+        # Where one route of a merged node transforms its value and another does not, the conjoin keeps the untransformed
+        # route's keywords and names the transformed one's; the routes a property is said to be built from
+        # (`property_routes`, and the representative that is its first) are the ones it kept. So the document is the
+        # same whichever route is declared first, and a transformed route's member never reads as emitted.
+        describe "a merged node with one transformed route" do
+          def merged(first, second)
+            routes = {
+              plain: ->(k) { k.expects :company, on: "payload.inner", as: :r_e, type: Hash },
+              transformed: lambda do |k|
+                k.expects(:company, on: :pin, as: :r_a, type: Hash, preprocess: ->(v) { v }) { field :leaf, type: String }
+              end,
+            }
+            build_axn do
+              expects :payload, type: Hash
+              expects :inner, on: :payload, as: :pin, type: Hash
+              [routes.fetch(first), routes.fetch(second)].each { |route| route.call(self) }
+            end
+          end
+
+          it "states the untransformed route whichever is declared first" do
+            plain_first = merged(:plain, :transformed).input_schema
+            transformed_first = merged(:transformed, :plain).input_schema
+            company = transformed_first.dig(:properties, :payload, :properties, :inner, :properties, :company)
+
+            expect(company[:type]).to eq("object")
+            expect(company[:properties]).to be_nil
+            expect(company[:description]).to include("transformed before these are checked")
+            expect(transformed_first).to eq(plain_first)
+          end
+
+          it "builds the property from the routes the conjoin kept" do
+            klass = merged(:transformed, :plain)
+            node = klass._resolved_subfields.tree.roots[:payload].children[:inner].children[:company]
+
+            expect(described_class.property_routes(node.configs).map(&:field)).to eq([:company])
+            expect(described_class.property_routes(node.configs).first.preprocess).to be_nil
+            expect(described_class.property_representative(node.configs)).to equal(described_class.property_routes(node.configs).first)
+          end
         end
 
         # A model's generated `<field>_id` is skipped only when something else has ALREADY written that key.

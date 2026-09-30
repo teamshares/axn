@@ -2067,7 +2067,8 @@ module Axn
         def apply_value_members!(prop, config, plan, for_output:, ancestry:)
           shape = plan.shape
           if !plan.emitted && !for_output
-            return prop.replace(record_residue(prop, unstated_members_residue(declared_type_tokens(config.validations), shape[:container])))
+            residue = unstated_members_residue(declared_type_tokens(config.validations), shape)
+            return residue ? prop.replace(record_residue(prop, residue)) : prop
           end
           return unless plan.emitted
 
