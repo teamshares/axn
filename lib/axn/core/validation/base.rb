@@ -200,22 +200,66 @@ module Axn
         when :type then type_admits_nil?(opts)
         when :exclusion then set_includes_nil?(opts) == false
         when :inclusion then set_includes_nil?(opts) == true
-        when :shape then shape_skips_nil?(opts)
+        when :shape then shape_admits_nil?(opts)
         else false
         end
       end
 
-      # `ShapeValidator` reads members only off a value that is its container (or off every element, for the
-      # distributing `Array`), so a nil reaches the members only where the container is one nil is: the no-gate
-      # sentinel, or a module nil is an instance of (`Object`, `Kernel`, `BasicObject`, `NilClass`). Anywhere else
-      # a nil skips the shape, and whatever rejects it is the `type:` beside it. Read natively, so a container
-      # cannot answer for itself.
-      def self.shape_skips_nil?(opts)
-        container = Internal::ShapeGraph.hash_or_nil(opts)&.[](:container)
-        return false if Internal::ShapeGraph::ANY_CONTAINER.equal?(container)
-        return false unless Internal::Identity.kind?(container, ::Module)
+      # Whether `ShapeValidator` lets a nil value through — asked of what it does to one, not of the container
+      # alone. It reads members only off a value that is its container (or off every element, for the
+      # distributing `Array`), so where the container is not one nil is, a nil skips the shape outright. Where it
+      # is (the no-gate sentinel, `Object`, `Kernel`, `BasicObject`, `NilClass`), the members are read off the
+      # nil, and the shape rejects it only if some member does (`shape_member_rejects_nil?`). Read natively, so a
+      # container cannot answer for itself.
+      def self.shape_admits_nil?(opts, depth = 0)
+        shape = Internal::ShapeGraph.hash_or_nil(opts)
+        return true if nil.equal?(shape)
 
-        !Internal::NativeMethods.includes_module?(::NilClass, container)
+        container = shape[:container]
+        reads_nil = Internal::ShapeGraph::ANY_CONTAINER.equal?(container) ||
+                    (Internal::Identity.kind?(container, ::Module) && Internal::NativeMethods.includes_module?(::NilClass, container))
+        return true unless reads_nil
+        # Past the nesting bound nothing is certain, and the answer that cannot wrongly require a field is "admits".
+        return true if depth > Internal::ShapeGraph::MAX_NESTING
+
+        Internal::ShapeGraph.members(shape).none? { |member| shape_member_rejects_nil?(member, depth) }
+      end
+
+      # Whether one member rejects a nil parent on EVERY call, which is what `ShapeValidator#validate_members_of`
+      # does with it: a name nil does not answer is "could not be read" whenever one of the member's entries runs;
+      # a name nil does answer (`to_s`, `inspect`, …) reads as nil (`Extract` returns nil off a nil source, method
+      # call or not), which the member's own entries then judge. Only an entry certain to run and certain to
+      # reject counts — a member gated wholesale, an entry with its own gate, or one whose verdict on nil turns on
+      # the caller's code (`validate:`, a callable set or pattern) may let the nil through, and "admits" is the
+      # answer that cannot mark a field required the runtime lets be omitted.
+      def self.shape_member_rejects_nil?(member, depth)
+        validations = Internal::ShapeGraph.hash_or_nil(Internal::ShapeGraph.read(member, :validations)) || {}
+        return false if Internal::FieldConfig::CONDITIONAL_GATE_KEYS.any? { |key| validations.key?(key) }
+
+        shared = shared_validation_options(validations)
+        running = validator_entries(validations).select { |_key, opt| opt && !entry_self_gated?(opt) }
+        return false if running.empty?
+
+        name = Internal::ShapeGraph.read(member, :field)
+        return true unless Internal::Identity.kind?(name, ::Symbol) && Internal::NativeMethods.public_instance_method?(::NilClass, name)
+
+        running.any? { |key, opt| nil_rejection_certain?(key, opt, shared, depth) }
+      end
+
+      # Whether an entry rejects nil whatever the caller's code answers — the complement of
+      # `nil_tolerant_validation?`, less the verdicts that turn on a callable resolved per call.
+      def self.nil_rejection_certain?(key, opt, shared, depth)
+        opts = effective_entry_options(opt, shared)
+        return false if opts[:allow_nil] || opts[:allow_blank] || key == :of
+
+        case key
+        when :validate then false
+        when :inclusion, :exclusion then set_includes_nil?(opts) == (key == :exclusion)
+        when :format then format_admits_nil?(opts) == false
+        when :acceptance then acceptance_admits_nil?(opts) == false
+        when :shape then !shape_admits_nil?(opts, depth + 1)
+        else !validator_admits_nil?(key, opts)
+        end
       end
 
       # Whether a validator ENTRY is scoped to an ActiveModel validation CONTEXT — an `on:` among its options,

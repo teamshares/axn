@@ -11016,6 +11016,39 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     end
   end
 
+  # Where the container is one nil is, the members are read off a nil value, and the shape rejects it only if a
+  # member does: a name nil answers (`to_s`) reads as nil, one it does not is "could not be read".
+  describe "a shape reading its members off a nil" do
+    it "does not require a field whose members all let the nil through" do
+      klass = build_axn { expects(:value, type: Object, presence: false) { field :to_s, type: String, optional: true, method_call: true } }
+
+      expect(klass.call).to be_ok
+      expect(klass.input_schema[:required]).to be_nil
+    end
+
+    it "does not count a validate: callable, whose verdict on nil is the caller's code" do
+      check = ->(v) { "bad" unless v.nil? }
+      klass = build_axn { expects(:value, type: Object, presence: false) { field :to_s, method_call: true, presence: false, validate: check } }
+
+      expect(klass.call).to be_ok
+      expect(klass.input_schema[:required]).to be_nil
+    end
+
+    it "still requires a field whose member cannot be read off a nil" do
+      klass = build_axn { expects(:value, type: Object, presence: false) { field :sku, type: String, optional: true } }
+
+      expect(klass.call).not_to be_ok
+      expect(klass.input_schema[:required]).to eq(["value"])
+    end
+
+    it "still requires a field whose member rejects the nil it reads" do
+      klass = build_axn { expects(:value, type: Object, presence: false) { field :to_s, type: String, method_call: true } }
+
+      expect(klass.call).not_to be_ok
+      expect(klass.input_schema[:required]).to eq(["value"])
+    end
+  end
+
   # A union's `container:` names the branch whose values carry the members; every other branch skips them. The
   # members land at the field's own node as `properties`, which JSON Schema applies to an object alone, and never at
   # `items`, which belong to the Array branch.

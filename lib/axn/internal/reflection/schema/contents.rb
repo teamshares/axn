@@ -285,10 +285,11 @@ module Axn
             #     allow_nil: false } }` runs `ShapeValidator` on the nil and rejects it as unreadable.
             shape_tolerance = Axn::Validation::Base.effective_entry_options(shape, Axn::Validation::Base.tolerance_options(bag))
             #
-            # A shape whose container nil is not (`Hash` beside `klass: [Hash, NilClass]`) skips a nil without reading
-            # it, so there the position's gate alone decides (`Validation::Base.shape_skips_nil?`).
+            # And a shape that lets a nil through on its own counts as tolerant: one whose container nil is not
+            # (`Hash` beside `klass: [Hash, NilClass]`) skips it unread, and one that reads members off it rejects it
+            # only if some member does (`Validation::Base.shape_admits_nil?`).
             nullable = bag_nullable?(bag) &&
-                       !!(shape_tolerance[:allow_nil] || shape_tolerance[:allow_blank] || Axn::Validation::Base.shape_skips_nil?(shape))
+                       !!(shape_tolerance[:allow_nil] || shape_tolerance[:allow_blank] || Axn::Validation::Base.shape_admits_nil?(shape))
             merged = node.merge(type: type_with_nullability("object", nullable:),
                                 properties: (node[:properties] || {}).merge(member_props))
             merged[:required] = required unless required.empty?

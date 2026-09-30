@@ -62,7 +62,7 @@ module RelaxedRefusalProduct
 
   def cells
     @cells ||= model_claim_cells + inclusion_cells + raw_shape_cells + id_type_cells + length_floor_cells +
-               union_of_cells + presence_cells + method_read_cells
+               union_of_cells + presence_cells + method_read_cells + nil_read_cells
   end
 
   def cell(group, id, decl, path, array: false) = Cell.new(group:, id: "#{group}|#{id}", decl:, path:, array:)
@@ -180,6 +180,41 @@ module RelaxedRefusalProduct
     members = { "mc" => [mc], "mc opt" => [mc_opt], "mc bare" => [mc_bare], "plain" => [plain], "plain opt" => [plain_opt],
                 "plain gated" => [plain_gated], "mc+plain" => [mc, plain], "mc+plain gated" => [mc, plain_gated], "none" => [] }
     members.flat_map { |label, list| method_read_spellings(label, list) }
+  end
+
+  # A nil reaching a shape: whether the container is one nil is (so the members are read off the nil) x what each
+  # member does with that read x whether the field's own presence would reject the nil anyway. A member nil answers
+  # (`to_s`) reads as nil; one it does not answer is "could not be read" whenever an entry runs; a gated member or a
+  # `validate:` callable may let the nil through.
+  def nil_read_cells
+    req = ["field :sku, type: String", "#{P}.member(:sku, type: { klass: String })"]
+    opt = ["field :sku, type: String, optional: true", "#{P}.member(:sku, type: { klass: String }, allow_blank: true)"]
+    nil_name_req = ["field :to_s, type: String, method_call: true", "#{P}.member(:to_s, method_call: true, type: { klass: String })"]
+    nil_name_opt = ["field :to_s, type: String, optional: true, method_call: true",
+                    "#{P}.member(:to_s, method_call: true, type: { klass: String }, allow_blank: true)"]
+    nil_name_plain = ["field :to_s, type: String, optional: true", "#{P}.member(:to_s, type: { klass: String }, allow_blank: true)"]
+    gated = ["field :sku, type: String, if: -> { false }", "#{P}.member(:sku, type: { klass: String }, if: -> { false })"]
+    callable = ["field :to_s, method_call: true, presence: false, validate: ->(v) { \"bad\" unless v.nil? }",
+                "#{P}.member(:to_s, method_call: true, validate: { with: ->(v) { \"bad\" unless v.nil? } })"]
+    members = { "required" => [req], "optional" => [opt], "nil-name required" => [nil_name_req], "nil-name opt" => [nil_name_opt],
+                "nil-name plain" => [nil_name_plain], "gated" => [gated], "callable" => [callable],
+                "mixed" => [nil_name_opt, req], "mixed tolerant" => [nil_name_opt, gated] }
+    axes = { container: { "reads nil" => "Object", "skips nil" => "Hash" },
+             presence: { "presence false" => ", presence: false", "allow_nil" => ", allow_nil: true", "required" => "" } }
+    out = []
+    members.each do |label, list|
+      block = list.map(&:first).join("\n ")
+      raw = "[#{list.map(&:last).join(', ')}]"
+      combos(axes) do |l, v|
+        id = "#{label} #{l.values.join(' ')}"
+        out << cell("G12", "field #{id}", "expects(:val, type: #{v[:container]}#{v[:presence]}) do\n #{block}\nend", %i[val])
+        klass = v[:container] == "Object" ? "" : "klass: Hash, "
+        tolerance = l[:presence] == "required" ? "" : ", allow_nil: true"
+        out << cell("G12", "bag #{id}", "expects :val, type: Array, of: { #{klass}shape: { members: #{raw} }#{tolerance} }", %i[val], array: true)
+        out << cell("G12", "map #{id}", "expects :val, type: Hash, of: { values: { #{klass}shape: { members: #{raw} }#{tolerance} } }", %i[val k])
+      end
+    end
+    out
   end
 
   def method_read_spellings(label, list)
