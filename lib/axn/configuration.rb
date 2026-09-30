@@ -203,7 +203,8 @@ module Axn
     def set_default_async(adapter = false, **config, &block) # rubocop:disable Style/OptionalBooleanParameter
       raise ArgumentError, "Cannot set default async adapter to nil as it would cause infinite recursion" if adapter.nil?
 
-      @default_async_adapter = adapter unless adapter.nil?
+      adapter = Axn::Async::Adapters.canonical(adapter)
+      @default_async_adapter = adapter
       @default_async_config = config.any? ? config : {}
       @default_async_config_block = block_given? ? block : nil
 
@@ -232,6 +233,7 @@ module Axn
     private :_enqueue_all_async_adapter, :_enqueue_all_async_config, :_enqueue_all_async_config_block, :_enqueue_all_async_set?
 
     def set_enqueue_all_async(adapter, **config, &block)
+      adapter = Axn::Async::Adapters.canonical(adapter)
       @enqueue_all_async_adapter = adapter
       @enqueue_all_async_config = config.any? ? config : {}
       @enqueue_all_async_config_block = block_given? ? block : nil

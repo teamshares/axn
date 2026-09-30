@@ -243,4 +243,96 @@ RSpec.describe "call_async adapter dispatch grid" do
       Axn.config.set_default_async(false)
     end
   end
+
+  # Every spelling `async` accepts for an adapter (the registry symbolizes a String or Symbol key; `false` is
+  # disabled; nil is the default) must select the same adapter, so nothing downstream may branch on the spelling.
+  context "with each accepted spelling of an adapter" do
+    def notifications_during
+      count = 0
+      subscriber = ActiveSupport::Notifications.subscribe("axn.call_async") { count += 1 }
+      yield
+      count
+    ensure
+      ActiveSupport::Notifications.unsubscribe(subscriber)
+    end
+
+    real_parents = {
+      "sidekiq" => proc { async :sidekiq, queue: "p" },
+      "active_job" => proc { async(:active_job) { queue_as "p" } },
+      "custom" => proc { async :custom, tag: "p" },
+    }
+
+    [false, :disabled, "disabled"].each do |spelling|
+      real_parents.each do |parent_label, parent_body|
+        it "disabled as #{spelling.inspect} under a #{parent_label} parent raises without notifying" do
+          register_custom(:class_methods_direct)
+          parent = action("GridParent", &parent_body)
+          child = action("GridChild", parent) { async spelling }
+
+          result = nil
+          expect(notifications_during { result = outcome { child.call_async(name: "x") } }).to eq(0)
+          expect(result).to eq(["raised"])
+        end
+      end
+
+      it "disabled as #{spelling.inspect} under a sidekiq parent is refused by enqueue_all" do
+        parent = action("GridParent") { async :sidekiq, queue: "p" }
+        child = action("GridChild", parent) { async spelling }
+
+        expect { Axn::Async::EnqueueAllOrchestrator.send(:validate_async_configured!, child) }
+          .to raise_error(NotImplementedError, /does not have async configured/)
+      end
+
+      it "a default disabled as #{spelling.inspect} is not a configured default, and a class relying on it raises" do
+        Axn.config.set_default_async(spelling)
+        a = action("GridA")
+
+        expect(Axn.config.default_async?).to be(false)
+        expect(outcome { a.call_async(name: "x") }).to eq(["raised"])
+      ensure
+        Axn.config.set_default_async(false)
+      end
+    end
+
+    [:sidekiq, "sidekiq"].each do |spelling|
+      it "sidekiq as #{spelling.inspect} under an active_job parent" do
+        parent = action("GridParent") { async(:active_job) { queue_as "p" } }
+        child = action("GridChild", parent) { async spelling, queue: "c" }
+        expect(outcome { child.call_async(name: "x") }).to eq(%w[sidekiq c])
+      end
+
+      it "sidekiq as #{spelling.inspect}, returning under an active_job child" do
+        parent = action("GridParent") { async :sidekiq, queue: "p" }
+        child = action("GridChild", parent) { async(:active_job) { queue_as "c" } }
+        grandchild = action("GridGrandchild", child) { async spelling, queue: "g" }
+        expect(outcome { grandchild.call_async(name: "x") }).to eq(%w[sidekiq g])
+      end
+
+      it "sidekiq as #{spelling.inspect}, as the default" do
+        Axn.config.set_default_async(spelling, queue: "d")
+        a = action("GridA")
+        expect(outcome { a.call_async(name: "x") }).to eq(%w[sidekiq d])
+      ensure
+        Axn.config.set_default_async(false)
+      end
+    end
+
+    [:active_job, "active_job"].each do |spelling|
+      it "active_job as #{spelling.inspect} under a sidekiq parent" do
+        parent = action("GridParent") { async :sidekiq, queue: "p" }
+        child = action("GridChild", parent) { async(spelling) { queue_as "c" } }
+        expect(outcome { child.call_async(name: "x") }).to eq(%w[active_job c])
+      end
+    end
+
+    [:custom, "custom"].each do |spelling|
+      it "a custom adapter as #{spelling.inspect}, returning under an active_job child" do
+        register_custom(:class_methods_direct)
+        parent = action("GridParent") { async :custom, tag: "p" }
+        child = action("GridChild", parent) { async(:active_job) {} }
+        grandchild = action("GridGrandchild", child) { async spelling, tag: "g" }
+        expect(outcome { grandchild.call_async(name: "x") }).to eq(%w[custom g])
+      end
+    end
+  end
 end

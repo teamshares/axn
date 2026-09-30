@@ -20,6 +20,18 @@ module Axn
       class << self
         def registry_directory = __dir__
 
+        # The one spelling an adapter selection is stored and compared in, so nothing downstream branches on how it
+        # was written. `false`, `:disabled` and `"disabled"` are all `false`; any other String or Symbol is its
+        # registry key as a Symbol (`"sidekiq"` is `:sidekiq`); nil stays nil (unset). Anything else is returned
+        # unchanged, for `find` to reject as before.
+        def canonical(adapter)
+          return adapter if adapter.nil? || adapter.equal?(false)
+          return adapter unless adapter.is_a?(::String) || adapter.is_a?(::Symbol)
+
+          key = adapter.to_sym
+          key == :disabled ? false : key
+        end
+
         private
 
         def item_type = "Adapter"

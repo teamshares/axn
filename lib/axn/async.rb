@@ -62,6 +62,7 @@ module Axn
       # marker, so the Sidekiq adapter builds/uses the per-action worker (honoring explicit config)
       # rather than the shared DefaultWorker.
       def async(adapter = nil, via_default: false, **config, &block)
+        adapter = Adapters.canonical(adapter)
         self._async_adapter = adapter
         self._async_config = config
         self._async_config_block = block
