@@ -186,6 +186,79 @@ RSpec.describe "call_async adapter dispatch grid" do
     end
   end
 
+  # A built-in adapter's per-declaration artefacts (the Active Job proxy, the Sidekiq worker subclass) are built from
+  # the declaration's config. Each declaration must get its own, including a class re-declaring an adapter it used
+  # before and a subclass re-declaring one its parent has already enqueued through.
+  context "with a built-in adapter re-declared after it has enqueued" do
+    it "active_job, same class returning to it with a new block" do
+      a = action("GridA") { async(:active_job) { queue_as "a" } }
+      a.call_async(name: "x")
+      a.async :sidekiq, queue: "s"
+      a.async(:active_job) { queue_as "b" }
+      expect(outcome { a.call_async(name: "x") }).to eq(%w[active_job b])
+    end
+
+    it "active_job, same class re-declared with a new block" do
+      a = action("GridA") { async(:active_job) { queue_as "a" } }
+      a.call_async(name: "x")
+      a.async(:active_job) { queue_as "b" }
+      expect(outcome { a.call_async(name: "x") }).to eq(%w[active_job b])
+    end
+
+    it "active_job, subclass re-declaring with a new block after the parent enqueued" do
+      parent = action("GridParent") { async(:active_job) { queue_as "p" } }
+      parent.call_async(name: "x")
+      child = action("GridChild", parent) { async(:active_job) { queue_as "c" } }
+      expect(outcome { child.call_async(name: "x") }).to eq(%w[active_job c])
+      expect(outcome { parent.call_async(name: "x") }).to eq(%w[active_job p])
+    end
+
+    it "active_job, a subclass re-declaring it with keyword config is refused like a first declaration" do
+      parent = action("GridParent") { async(:active_job) { queue_as "p" } }
+      expect { action("GridChild", parent) { async :active_job, queue: "c" } }.to raise_error(ArgumentError, /requires a configuration block/)
+    end
+
+    it "sidekiq, same class returning to it with new config" do
+      a = action("GridA") { async :sidekiq, queue: "a" }
+      a.call_async(name: "x")
+      a.async(:active_job) { queue_as "j" }
+      a.async :sidekiq, queue: "b"
+      expect(outcome { a.call_async(name: "x") }).to eq(%w[sidekiq b])
+    end
+
+    it "sidekiq, subclass re-declaring with new config after the parent enqueued" do
+      parent = action("GridParent") { async :sidekiq, queue: "p" }
+      parent.call_async(name: "x")
+      child = action("GridChild", parent) { async :sidekiq, queue: "c" }
+      expect(outcome { child.call_async(name: "x") }).to eq(%w[sidekiq c])
+      expect(outcome { parent.call_async(name: "x") }).to eq(%w[sidekiq p])
+    end
+
+    it "enqueue-all orchestrator returning to active_job with a new block" do
+      stub_const("Axn::Async::EnqueueAllOrchestrator", Class.new(Axn::Async::EnqueueAllOrchestrator))
+      orchestrator = Axn::Async::EnqueueAllOrchestrator
+      Axn.config.set_enqueue_all_async(:active_job) { queue_as "o1" }
+      orchestrator.call_async(target_class_name: "Anything", static_args: {})
+      Axn.config.set_enqueue_all_async(:sidekiq, queue: "s")
+      Axn.config.set_enqueue_all_async(:active_job) { queue_as "o2" }
+      expect(outcome { orchestrator.call_async(target_class_name: "Anything", static_args: {}) }).to eq(%w[active_job o2])
+    ensure
+      Axn.config.set_enqueue_all_async(nil)
+    end
+
+    it "enqueue-all orchestrator returning to sidekiq with new config" do
+      stub_const("Axn::Async::EnqueueAllOrchestrator", Class.new(Axn::Async::EnqueueAllOrchestrator))
+      orchestrator = Axn::Async::EnqueueAllOrchestrator
+      Axn.config.set_enqueue_all_async(:sidekiq, queue: "o1")
+      orchestrator.call_async(target_class_name: "Anything", static_args: {})
+      Axn.config.set_enqueue_all_async(:active_job) { queue_as "j" }
+      Axn.config.set_enqueue_all_async(:sidekiq, queue: "o2")
+      expect(outcome { orchestrator.call_async(target_class_name: "Anything", static_args: {}) }).to eq(%w[sidekiq o2])
+    ensure
+      Axn.config.set_enqueue_all_async(nil)
+    end
+  end
+
   context "with the built-in adapters" do
     it "sidekiq, single-level" do
       a = action("GridA") { async :sidekiq, queue: "a" }
