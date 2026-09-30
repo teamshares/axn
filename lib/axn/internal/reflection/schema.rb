@@ -126,9 +126,6 @@ module Axn
         HASH_TO_A = ::Hash.instance_method(:to_a)
         private_constant :MENTIONABLE_MAP, :MENTIONABLE_EACH_PAIR
 
-        METHOD_READ_RESIDUE = "a value that is not an object is read with `method_call:`, and what the method returns " \
-                              "must pass the checks beneath it"
-
         # PRO-3441. A map's `of: { values: }` axis governs every key `properties` does NOT itself name
         # (`additionalProperties`'s own JSON Schema meaning) — except the keys the axis's OWN `shape:`
         # names, which `_derive_shaped_keys!` exempts because the runtime does (`of_validator.rb`'s
@@ -520,8 +517,6 @@ module Axn
 
           members.all? { |m| nestable_as_object?(m) } ? members : NO_SHAPE_MEMBERS
         end
-
-        NO_SHAPE_MEMBERS = [].freeze
 
         # Every `shape:` member declared at `key` across the node's own configs AND the members carried from
         # a shallower hop — via shape_members_at, the same locator emission uses, so the two sides can't
