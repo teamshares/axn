@@ -398,6 +398,48 @@ RSpec.describe "call_async adapter dispatch grid" do
       end
     end
 
+    # The config setters keep main's split: a raw `false` means "no adapter here" (an enqueue-all override falls
+    # back to the default), while `:disabled`/"disabled" names the Disabled adapter explicitly.
+    context "when set as the enqueue-all override or the default" do
+      before { stub_const("Axn::Async::EnqueueAllOrchestrator", Class.new(Axn::Async::EnqueueAllOrchestrator)) }
+
+      after do
+        Axn.config.set_enqueue_all_async(nil)
+        Axn.config.set_default_async(false)
+      end
+
+      def orchestrator_outcome
+        outcome { Axn::Async::EnqueueAllOrchestrator.call_async(target_class_name: "Anything", static_args: {}) }
+      end
+
+      [:disabled, "disabled"].each do |spelling|
+        it "an enqueue-all override disabled as #{spelling.inspect} beats an enabled default" do
+          Axn.config.set_default_async(:sidekiq, queue: "d")
+          Axn.config.set_enqueue_all_async(spelling)
+          expect(orchestrator_outcome).to eq(["raised"])
+        end
+
+        it "a default disabled as #{spelling.inspect} leaves an enqueue-all override in charge" do
+          Axn.config.set_enqueue_all_async(:sidekiq, queue: "o")
+          Axn.config.set_default_async(spelling)
+          expect(orchestrator_outcome).to eq(%w[sidekiq o])
+          expect(outcome { action("GridA").call_async(name: "x") }).to eq(["raised"])
+        end
+
+        it "a default disabled as #{spelling.inspect}, with no enqueue-all override, disables the orchestrator" do
+          Axn.config.set_default_async(:sidekiq, queue: "d")
+          Axn.config.set_default_async(spelling)
+          expect(orchestrator_outcome).to eq(["raised"])
+        end
+      end
+
+      it "an enqueue-all override of false is no override, so the enabled default applies" do
+        Axn.config.set_default_async(:sidekiq, queue: "d")
+        Axn.config.set_enqueue_all_async(false)
+        expect(orchestrator_outcome).to eq(%w[sidekiq d])
+      end
+    end
+
     [:custom, "custom"].each do |spelling|
       it "a custom adapter as #{spelling.inspect}, returning under an active_job child" do
         register_custom(:class_methods_direct)

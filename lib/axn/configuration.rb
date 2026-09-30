@@ -193,8 +193,9 @@ module Axn
 
     # Whether a default async adapter is configured — the only thing a gem needs to know about the
     # `_default_async_*` trio below, which stays underscored because core reads all three of them
-    # across files. `present?` rather than `!!`, matching how `Axn::Async` itself tests the adapter.
-    def default_async? = _default_async_adapter.present?
+    # across files. `present?` rather than `!!`, matching how `Axn::Async` itself tests the adapter. A default of
+    # `:disabled` is stored as that key (see `Adapters.key`) but configures no async, so it answers false like `false`.
+    def default_async? = _default_async_adapter.present? && _default_async_adapter != :disabled
 
     def _default_async_adapter = @default_async_adapter ||= false
     def _default_async_config = @default_async_config ||= {}
@@ -203,7 +204,7 @@ module Axn
     def set_default_async(adapter = false, **config, &block) # rubocop:disable Style/OptionalBooleanParameter
       raise ArgumentError, "Cannot set default async adapter to nil as it would cause infinite recursion" if adapter.nil?
 
-      adapter = Axn::Async::Adapters.canonical(adapter)
+      adapter = Axn::Async::Adapters.key(adapter)
       @default_async_adapter = adapter
       @default_async_config = config.any? ? config : {}
       @default_async_config_block = block_given? ? block : nil
@@ -233,7 +234,7 @@ module Axn
     private :_enqueue_all_async_adapter, :_enqueue_all_async_config, :_enqueue_all_async_config_block, :_enqueue_all_async_set?
 
     def set_enqueue_all_async(adapter, **config, &block)
-      adapter = Axn::Async::Adapters.canonical(adapter)
+      adapter = Axn::Async::Adapters.key(adapter)
       @enqueue_all_async_adapter = adapter
       @enqueue_all_async_config = config.any? ? config : {}
       @enqueue_all_async_config_block = block_given? ? block : nil
