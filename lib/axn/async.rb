@@ -15,7 +15,9 @@ module Axn
     # The class ivar holding, per adapter module, the names of the class-side helpers that class's own inclusions of
     # it added (see `_class_side_helpers_added`).
     ADAPTER_HELPER_NAMES = :@_axn_async_adapter_helper_names
-    private_constant :INSTALLED_ENQUEUE_HOOKS, :ADAPTER_HELPER_NAMES
+    # The class ivar holding, per adapter module, the class-side modules that class's own inclusions of it added.
+    ADAPTER_CLASS_SIDE_MODULES = :@_axn_async_adapter_class_side_modules
+    private_constant :INSTALLED_ENQUEUE_HOOKS, :ADAPTER_HELPER_NAMES, :ADAPTER_CLASS_SIDE_MODULES
 
     included do
       class_attribute :_async_adapter, :_async_config, :_async_config_block, instance_accessor: false, default: nil
@@ -221,7 +223,12 @@ module Axn
         before = _reachable_enqueue_hook
         include adapter_module
         after = _reachable_enqueue_hook
-        helpers = _class_side_helpers_added(singleton, before_ancestors, before_own)
+        added_modules = Axn::Internal::NativeMethods.module_ancestors(singleton) - before_ancestors
+        unless added_modules.empty?
+          record = _async_class_record(ADAPTER_CLASS_SIDE_MODULES)
+          record[adapter_module] = (record[adapter_module] || []) | added_modules
+        end
+        helpers = _class_side_helpers_added(singleton, added_modules, before_own)
         unless helpers.empty?
           _warn_on_colliding_adapter_helpers(adapter_module, helpers)
           record = _async_class_record(ADAPTER_HELPER_NAMES)
@@ -238,8 +245,7 @@ module Axn
       # into the singleton class's own table (`define_singleton_method` in its `included`). An own-table entry counts
       # when it is new or now resolves to a different definition than before, so a helper that replaces another
       # adapter's under the same name is counted, and a class method the class defined itself is not.
-      def _class_side_helpers_added(singleton, before_ancestors, before_own)
-        added_modules = Axn::Internal::NativeMethods.module_ancestors(singleton) - before_ancestors
+      def _class_side_helpers_added(singleton, added_modules, before_own)
         from_modules = added_modules.flat_map { |mod| Axn::Internal::NativeMethods.own_instance_method_names(mod) }
         from_own_table = _own_class_side_methods(singleton).filter_map { |name, method| name unless before_own[name] == method }
         (from_modules | from_own_table) - [:_enqueue_async_job]
@@ -256,17 +262,21 @@ module Axn
           Axn::Internal::NativeMethods.ivar_set(self, ivar, {}.compare_by_identity)
       end
 
-      # A declaration that installed no hook, where no class in the chain recorded one for the declared adapter,
-      # would silently run whatever the class already reaches (see `_enqueue_with_declared_adapter`). That can only
-      # happen when the reachable hook shadows every module an adapter can add (one defined directly on the class),
-      # or when the declared adapter adds nothing new (its hook is a module already in place). Checked only for a
-      # re-declaration that asks for something different: a first declaration, or one repeating the previous
-      # adapter and config, is left alone.
+      # A declaration that installed no hook, where no class in the chain recorded one for the declared adapter, runs
+      # whatever the class already reaches (see `_enqueue_with_declared_adapter`). That is refused only when the
+      # reachable hook is provably ANOTHER adapter's and not this one's: see `_hook_owned_by?` and
+      # `_hook_owned_by_another_adapter?`. A hook that belongs to the declared adapter (its module was already
+      # present, included by hand or through an ancestor) serves the declaration; a hook whose ownership cannot
+      # be read is given the benefit of the doubt. Checked only for a re-declaration that asks for something
+      # different: a first declaration, or one repeating the previous adapter and config, is left alone.
       def _refuse_inert_redeclaration!(adapter, adapter_module, prior)
         prior_adapter, prior_config, prior_block, prior_via_default = prior
         return if prior_adapter.nil?
         return if prior_adapter == adapter && prior_config == _async_config && prior_block.equal?(_async_config_block)
         return if _installed_enqueue_hook(adapter_module)
+
+        hook = _reachable_enqueue_hook
+        return if hook.nil? || _hook_owned_by?(hook, adapter_module) || !_hook_owned_by_another_adapter?(hook, adapter_module)
 
         message = _inert_redeclaration_message(adapter)
         self._async_adapter = prior_adapter
@@ -274,6 +284,38 @@ module Axn
         self._async_config_block = prior_block
         self._async_via_default = prior_via_default
         raise ArgumentError, message
+      end
+
+      # Whether `hook` is the adapter's own: recorded as the hook one of its declarations installed on this chain, or
+      # defined in one of its class-side modules, meaning its `ClassMethods` and that module's ancestry, or a module
+      # an inclusion of it added on this chain. Read from ownership alone (the method's owner), never by running it.
+      def _hook_owned_by?(hook, adapter_module)
+        return true if _async_chain_records(INSTALLED_ENQUEUE_HOOKS)[adapter_module] == hook
+
+        owner = hook.owner
+        _adapter_class_side_modules(adapter_module).any? { |mod| mod.equal?(owner) }
+      end
+
+      # Whether `hook` provably belongs to an adapter other than `adapter_module`, by the same reading.
+      def _hook_owned_by_another_adapter?(hook, adapter_module)
+        _async_chain_records(INSTALLED_ENQUEUE_HOOKS).each do |other, recorded|
+          return true if !other.equal?(adapter_module) && recorded == hook
+        end
+        Adapters.all.each_value.any? do |other|
+          !other.equal?(adapter_module) && Axn::Internal::Identity.kind?(other, ::Module) && _hook_owned_by?(hook, other)
+        end
+      end
+
+      def _adapter_class_side_modules(adapter_module)
+        class_methods = adapter_module.const_defined?(:ClassMethods, false) && adapter_module::ClassMethods
+        declared = Axn::Internal::Identity.kind?(class_methods, ::Module) ? Axn::Internal::NativeMethods.module_ancestors(class_methods) : []
+        recorded = []
+        klass = self
+        while klass
+          recorded |= (Axn::Internal::NativeMethods.ivar_get(klass, ADAPTER_CLASS_SIDE_MODULES) || {}).fetch(adapter_module, [])
+          klass = klass.superclass
+        end
+        declared | recorded
       end
 
       def _inert_redeclaration_message(adapter)

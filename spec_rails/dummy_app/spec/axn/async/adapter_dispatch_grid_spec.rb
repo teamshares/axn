@@ -234,6 +234,33 @@ RSpec.describe "call_async adapter dispatch grid" do
       expect(outcome { report.call_async(name: "x") }).to eq(%w[custom r])
     end
 
+    # An adapter module already present before the first `async` (included by hand, or through an ancestor that
+    # never declared it) records no hook, but the hook the class reaches is still that adapter's own.
+    {
+      "included by hand into the class" => ->(adapter) { action("GridReport") { include adapter } },
+      "inherited from an ancestor that included it by hand" => ->(adapter) { action("GridReport", action("GridBase") { include adapter }) },
+    }.each do |label, build|
+      %i[class_methods_direct extends_fixed_module].product(%w[a b]).each do |style, second_tag|
+        it "allows re-declaring a custom adapter (#{style}) #{label} (#{second_tag == 'a' ? 'same' : 'new'} config)" do
+          register_custom(style)
+          report = instance_exec(Axn::Async::Adapters.find(:custom), &build)
+          report.async :custom, tag: "a"
+          report.async :custom, tag: second_tag
+          expect(outcome { report.call_async(name: "x") }).to eq(["custom", second_tag])
+        end
+      end
+    end
+
+    it "allows switching to an adapter whose own ClassMethods reaches a hook module another adapter also added" do
+      log = self.log
+      shared = stub_const("GridSharedHook", Module.new { private define_method(:_enqueue_async_job) { |_kwargs| log << ["shared", _async_config[:tag]] } })
+      register_adapter(:first) { |base| base.extend(shared) }
+      Axn::Async::Adapters.register(:second, concern_with(Module.new.tap { |m| m.include(shared) }))
+      report = action("GridReport") { async :first, tag: "f" }
+      report.async :second, tag: "s"
+      expect(outcome { report.call_async(name: "x") }).to eq(%w[shared s])
+    end
+
     it "lets a subclass of such a class declare another adapter, which does take effect there" do
       register_custom(:defines_singleton_method)
       parent = action("GridParent") { async :custom, tag: "p" }
@@ -241,6 +268,9 @@ RSpec.describe "call_async adapter dispatch grid" do
       expect(outcome { child.call_async(name: "x") }).to eq(%w[sidekiq c])
     end
 
+    # Both adapters here extend the same module, so it is arguably :second's hook too. Nothing :second's inclusion
+    # changed shows that (its extend is a no-op), and it has no ClassMethods to read, so the module reads as :first's
+    # alone and the switch is refused. An adapter whose ClassMethods reaches the shared module is allowed (above).
     it "refuses switching to an adapter whose hook is a module another adapter already added" do
       log = self.log
       shared = stub_const("GridSharedHook", Module.new { private define_method(:_enqueue_async_job) { |_kwargs| log << ["shared"] } })
