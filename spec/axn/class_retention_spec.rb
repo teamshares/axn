@@ -89,26 +89,8 @@ RSpec.describe "Axn class retention" do
     Thread.new { surfaces.transform_values { |build| Array.new(count) { WeakRef.new(build.call) } } }.value
   end
 
-  # Ruby 3.2's VM keeps a global call-cache table (1023 slots, keyed by method name and receiver
-  # class) whose entries it marks strongly, and `Class#new` reaches `initialize` through it, as does
-  # every `public_send`. So on 3.2 ANY class, axn or not, that was instantiated or sent to stays alive
-  # until a colliding call overwrites its slots: `Class.new { def initialize; end }.new` is retained
-  # there exactly as a called action is, and neither is on 3.3. That table can pin at most a bounded
-  # set of recent classes, not every class ever built, but it would pin all of this example's. Filling
-  # it with unrelated receivers evicts them, so the example still measures axn's own holders on 3.2.
-  def self.evict_vm_call_cache!
-    return unless RUBY_VERSION < "3.3"
-
-    # The dynamic send is the point: a direct `filler.itself` is an inline-cached call site and never
-    # touches the global table.
-    Thread.new do
-      Array.new(20_000) { Class.new.new }.each { |filler| filler.public_send(:itself) } # rubocop:disable Style/SendWithLiteralMethodName
-    end.join
-  end
-
   it "collects an unreferenced action class, whatever was declared or run on it" do
     refs = self.class.weak_refs_for(surfaces, per_surface)
-    self.class.evict_vm_call_cache!
     3.times { GC.start(full_mark: true, immediate_sweep: true) }
 
     alive = refs.transform_values { |weak| weak.count(&:weakref_alive?) }

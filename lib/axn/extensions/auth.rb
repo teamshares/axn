@@ -39,10 +39,6 @@ module Axn
           super
         end
 
-        # Ruby 3.2's Data#with copies the instance without running `initialize` (3.3+ routes it through),
-        # which would let `with` build the rejection-with-a-principal the checks above refuse.
-        def with(**changes) = changes.empty? ? self : self.class.new(**to_h, **changes)
-
         def ok? = ok
       end
 

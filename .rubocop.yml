@@ -17,7 +17,7 @@ inherit_mode:
     - Exclude
 
 AllCops:
-  TargetRubyVersion: 3.2
+  TargetRubyVersion: 3.3
   SuggestExtensions: false
   NewCops: enable
   # Deltas only — vendor/node_modules/tmp/.git arrive via the merge above. The built-in globs are

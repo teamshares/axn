@@ -13,8 +13,9 @@ Gem::Specification.new do |spec|
   spec.homepage = "https://github.com/teamshares/axn"
   spec.license = "MIT"
 
-  # NOTE: uses endless methods from 3, literal value omission from 3.1, Data.define from 3.2, Vernier profiling from 3.2.1
-  spec.required_ruby_version = ">= 3.2.1"
+  # NOTE: uses endless methods from 3, literal value omission from 3.1, Data.define from 3.2, Data#with running
+  # `initialize` from 3.3. 3.2 is EOL, so the floor is the oldest supported Ruby.
+  spec.required_ruby_version = ">= 3.3"
 
   spec.metadata["homepage_uri"] = spec.homepage
   spec.metadata["source_code_uri"] = spec.homepage
