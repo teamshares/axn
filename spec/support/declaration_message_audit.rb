@@ -2,7 +2,7 @@
 
 require "rspec/expectations"
 
-# Holds every declaration-time refusal the suite asserts to three properties of its message, so a refusal added
+# Holds every declaration-time refusal the suite observes to three properties of its message, so a refusal added
 # or edited anywhere is audited without anyone listing it:
 #
 # 1. it names the declaration it refuses — the direction and the field (`expects :company`, `exposes :total`,
@@ -12,8 +12,10 @@ require "rspec/expectations"
 #
 # Which errors are refusals is decided where they are RAISED, not by their text: an `ArgumentError` or contract
 # violation raised from `lib/` while an `expects`/`exposes` call is on the stack is tagged, with the declaration
-# label current at that moment. Only an error a `raise_error` matcher then receives is judged — one the library
-# raised and rescued internally never reaches a matcher, so it is never mistaken for a refusal.
+# label current at that moment. A tagged error is judged once a spec OBSERVES it: when a `raise_error` matcher
+# (or `raise_exception`, its alias, alone or in a compound) receives it — or one wrapping it as a `cause` — and,
+# on Rubies that report `rescue` (3.3+), when spec code rescues it itself. An error the library rescues internally
+# is never observed, so it is never mistaken for a refusal.
 module DeclarationMessageAudit
   LIB = File.expand_path("../../lib", __dir__)
 
@@ -21,6 +23,9 @@ module DeclarationMessageAudit
   # before the name could be rendered at all, which names its direction as `` `expects` ``.
   DIRECTION = /\b(?:expects|exposes) (?::|[^\s.`]+\.)|`(?:expects|exposes)`/
   ADDRESS = /0x\h{4,}/
+
+  # How far down a `cause` chain an observed error is searched for the refusal it wraps.
+  CAUSE_DEPTH = 8
 
   # Refusals whose subject is not the declaration being judged, so naming it would claim something false:
   # a graph walk over contract state the class already HOLDS (a config assigned onto it rather than declared),
@@ -31,18 +36,29 @@ module DeclarationMessageAudit
   ].freeze
 
   # `current` is the label of what was being declared when the error was raised — a member's label while its
-  # block is built — and `declaration` the label of the field that declaration belongs to.
+  # block is built — and `declaration` the label of the field that declaration belongs to. `current` is nil only
+  # for a refusal of the declared NAME itself, raised before there is a name to render.
   Tag = Data.define(:current, :declaration)
 
-  TAGS = ObjectSpace::WeakMap.new
+  # Identity-keyed and held strongly for one example, then cleared. A WeakMap would hold its VALUES weakly too, so
+  # a tag nothing else referenced could be collected while its error was still in flight — an error with no tag
+  # is never judged, so that is a hole, not a leak.
+  TAGS = {}.compare_by_identity
+  # Tagged errors whose first rescue was in lib/ (internal, never a refusal a caller sees), and those already
+  # judged, so a matcher and a spec's own `rescue` observing one error report it once.
+  INTERNAL = {}.compare_by_identity
+  JUDGED = {}.compare_by_identity
+  # Errors a spec rescued itself during the current example, judged when it ends.
+  OBSERVED = {}.compare_by_identity
 
   class << self
     # The defects a refusal's message has, given the label that was current when it was raised. A refusal must
-    # name THAT declaration — the text `DeclarationLabel` holds, verbatim — not merely something shaped like one:
-    # a sibling's, an outer field's or a stale label reads just as well and points the author at the wrong line.
-    # A refusal about another config (a re-anchored subfield, a crossed route) names that config as well, never
-    # instead.
+    # name THAT declaration — the text `DeclarationLabel` holds, as a whole label — not merely something shaped
+    # like one: a sibling's, an outer field's or a stale label reads just as well and points the author at the
+    # wrong line. A refusal about another config (a re-anchored subfield, a crossed route) names that config as
+    # well, never instead.
     def defects(message, label:)
+      raise ArgumentError, "the audit was handed a blank declaration label" if !label.nil? && label.strip.empty?
       return [] if EXEMPT.any? { |pattern, _reason| message.match?(pattern) }
 
       found = []
@@ -54,9 +70,16 @@ module DeclarationMessageAudit
 
     def naming_defects(message, label)
       return ["does not name the declaration (direction and field) it refuses"] unless message.match?(DIRECTION)
-      return ["names a declaration other than the one it refuses (#{label})"] unless message.include?(label)
+      return ["names a declaration other than the one it refuses (#{label})"] unless names_label?(message, label)
 
       []
+    end
+
+    # Whether `label` occurs in `message` as a whole label: `expects :v` must not be found inside `expects :value`,
+    # `expects :v.w` or `unexpects :v`, so neither neighbour may continue an identifier or a path. A `.` that
+    # ends the sentence is not a path step, so it is told apart by what follows it.
+    def names_label?(message, label)
+      message.match?(/(?<![\w.:])#{Regexp.escape(label)}(?![\w?!=]|\.[\w"`])/)
     end
 
     def field_names(label)
@@ -69,6 +92,32 @@ module DeclarationMessageAudit
 
     def tag_for(error) = TAGS.key?(error) ? TAGS[error] : nil
 
+    # The refusal an observed error is or wraps: itself when tagged, else the first tagged error down its `cause`
+    # chain, so a spec asserting a wrapper still has the refusal inside it judged.
+    def refusal_in(error)
+      CAUSE_DEPTH.times do
+        return error if error.nil? || tag_for(error)
+
+        error = error.cause
+      end
+      nil
+    end
+
+    # Judges one observed refusal, once. Raises the expectation failure naming the defect; anything else the
+    # judging raises (an unreadable message, say) propagates too, so the audit never passes unjudged.
+    def judge!(error)
+      return if JUDGED.key?(error)
+
+      JUDGED[error] = true
+      tag = tag_for(error)
+      message = error.message
+      problems = defects(message, label: tag.current)
+      return if problems.empty?
+
+      raise RSpec::Expectations::ExpectationNotMetError,
+            "declaration refusal #{problems.join('; ')} (declared as #{tag.current.inspect}):\n  #{message}"
+    end
+
     def under_declaration?
       caller_locations.any? { |location| location.path&.start_with?(LIB) && %w[expects exposes].include?(location.base_label) }
     end
@@ -76,11 +125,13 @@ module DeclarationMessageAudit
     def refusal?(error)
       error.is_a?(ArgumentError) || (defined?(Axn::ContractViolation) && error.is_a?(Axn::ContractViolation))
     end
+
+    def in_lib?(path) = path&.start_with?(LIB)
   end
 
   TRACE = TracePoint.new(:raise) do |tp|
     error = tp.raised_exception
-    next unless tp.path&.start_with?(LIB)
+    next unless DeclarationMessageAudit.in_lib?(tp.path)
     next unless DeclarationMessageAudit.refusal?(error)
     next if DeclarationMessageAudit.tag_for(error)
     next unless DeclarationMessageAudit.under_declaration?
@@ -89,28 +140,34 @@ module DeclarationMessageAudit
     DeclarationMessageAudit.tag(error, label.current, label.declaration)
   end
 
-  # Judges the error a `raise_error` matcher received. Raising from here fails the example with the defect named,
-  # beside whatever the matcher itself asserted about the text. Nothing is rescued: an audit that cannot read the
-  # message, or breaks judging it, fails the example rather than passing it unjudged.
+  # Ruby 3.3+ reports where an exception is rescued. A tagged error first rescued inside lib/ is the library's own
+  # business; one first rescued anywhere else was observed by the spec (RSpec's matcher included, which also
+  # judges it directly), and is judged when the example ends.
+  RESCUE_TRACE = begin
+    TracePoint.new(:rescue) do |tp|
+      error = tp.raised_exception
+      next unless DeclarationMessageAudit.tag_for(error)
+      next if DeclarationMessageAudit::INTERNAL.key?(error) || DeclarationMessageAudit::JUDGED.key?(error)
+
+      if DeclarationMessageAudit.in_lib?(tp.path)
+        DeclarationMessageAudit::INTERNAL[error] = true
+      else
+        DeclarationMessageAudit::OBSERVED[error] = true
+      end
+    end
+  rescue ArgumentError
+    nil
+  end
+
+  # Judges the error a `raise_error` matcher received, or the refusal it wraps. Raising from here fails the example
+  # with the defect named, beside whatever the matcher itself asserted about the text.
   module Matcher
     # RSpec's own signature, positional flag included.
     def matches?(given_proc, negative_expectation = false, &) # rubocop:disable Style/OptionalBooleanParameter
       result = super
-      error = @actual_error
-      tag = error && DeclarationMessageAudit.tag_for(error)
-      audit!(error, tag) if tag
+      refusal = DeclarationMessageAudit.refusal_in(@actual_error)
+      DeclarationMessageAudit.judge!(refusal) if refusal
       result
-    end
-
-    private
-
-    def audit!(error, tag)
-      message = error.message
-      problems = DeclarationMessageAudit.defects(message, label: tag.current)
-      return if problems.empty?
-
-      raise RSpec::Expectations::ExpectationNotMetError,
-            "declaration refusal #{problems.join('; ')} (declared as #{tag.current.inspect}):\n  #{message}"
     end
   end
 end
@@ -118,6 +175,19 @@ end
 RSpec::Matchers::BuiltIn::RaiseError.prepend(DeclarationMessageAudit::Matcher)
 
 RSpec.configure do |config|
-  config.before(:suite) { DeclarationMessageAudit::TRACE.enable }
-  config.after(:suite) { DeclarationMessageAudit::TRACE.disable }
+  config.before(:suite) do
+    DeclarationMessageAudit::TRACE.enable
+    DeclarationMessageAudit::RESCUE_TRACE&.enable
+  end
+  config.after(:suite) do
+    DeclarationMessageAudit::TRACE.disable
+    DeclarationMessageAudit::RESCUE_TRACE&.disable
+  end
+  config.after do
+    observed = DeclarationMessageAudit::OBSERVED.keys
+    observed.each { |error| DeclarationMessageAudit.judge!(error) }
+  ensure
+    [DeclarationMessageAudit::OBSERVED, DeclarationMessageAudit::TAGS, DeclarationMessageAudit::INTERNAL,
+     DeclarationMessageAudit::JUDGED].each(&:clear)
+  end
 end

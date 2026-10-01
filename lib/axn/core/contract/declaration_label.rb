@@ -21,6 +21,15 @@ module Axn
       # member, or a class built while another is declared) restores the outer label when it finishes, raise or
       # not, and nothing outside a declaration ever sees one — so a message composed at runtime names no
       # direction rather than a stale one.
+      #
+      # Keyed by FIBER inside that slot. Under `isolation_level = :thread` every fiber of a thread shares the one
+      # slot, and a block-form declaration can yield from its block: two declarations interleaved on two fibers
+      # (resumed by hand, no scheduler) would read each other's label, and each `leave` would restore the other's.
+      # A declaration's entries are strictly nested on its own fiber (each one leaves from an `ensure`), so a stack
+      # per fiber is exact, and a fiber's key is removed when its last entry leaves, so nothing accumulates.
+      # Under `:fiber` isolation the slot is already per fiber and holds one key. The nesting stack's own
+      # interleaving heal (`NestingTracking`) answers a different question — which entry a SHARED stack should pop
+      # — and would still let one fiber read another's label from the shared top, so it is not reused here.
       module DeclarationLabel
         KEY = :__axn_declaration_label
         private_constant :KEY
@@ -33,16 +42,21 @@ module Axn
           # Makes the declaration `direction` (`:expects`/`:exposes`) of `fields`, on `on:`'s route, the current
           # one, answering a token for `leave`. A pair rather than a block so `expects`/`exposes` can enter once
           # their names are canonical and leave from their own `ensure`, whatever path they return or raise by.
+          #
+          # A declaration naming no field has no label to give (`expects` with nothing in it is a legal no-op), so
+          # it enters none and answers nil.
           def enter(direction, fields, on: nil)
-            entry = Entry.new(previous: ActiveSupport::IsolatedExecutionState[KEY])
-            ActiveSupport::IsolatedExecutionState[KEY] = Label.new(text: _fields_text(direction, fields, on), top: nil)
+            return nil if fields.empty?
+
+            entry = Entry.new(previous: _label)
+            _store(Label.new(text: _fields_text(direction, fields, on), top: nil))
             entry
           end
 
-          # Restores whatever was current before `enter`; a nil token (the declaration raised before entering)
-          # leaves the label alone.
+          # Restores whatever was current on this fiber before `enter`; a nil token (the declaration raised before
+          # entering) leaves the label alone.
           def leave(entry)
-            ActiveSupport::IsolatedExecutionState[KEY] = entry.previous unless entry.nil?
+            _store(entry.previous) unless entry.nil?
           end
 
           # Runs the block as the block-form shape member `name` of the declaration currently being judged. A
@@ -79,7 +93,7 @@ module Axn
           end
 
           # The current declaration's label, or nil outside a declaration.
-          def current = ActiveSupport::IsolatedExecutionState[KEY]&.text
+          def current = _label&.text
 
           # The label of the FIELD being declared, even while one of its members is current — for a refusal about
           # the declaration as a whole (its graph's size), wherever in it the walk was when it found out.
@@ -92,16 +106,36 @@ module Axn
           private
 
           def _within(label)
-            previous = ActiveSupport::IsolatedExecutionState[KEY]
-            ActiveSupport::IsolatedExecutionState[KEY] = label
+            previous = _label
+            _store(label)
             yield
           ensure
-            ActiveSupport::IsolatedExecutionState[KEY] = previous
+            _store(previous)
           end
 
           def _top
-            label = ActiveSupport::IsolatedExecutionState[KEY]
+            label = _label
             label && (label.top || label.text)
+          end
+
+          # This fiber's label: the slot maps fibers (by identity) to labels.
+          def _label
+            labels = ActiveSupport::IsolatedExecutionState[KEY]
+            labels && labels[Fiber.current]
+          end
+
+          # Sets (or, given nil, clears) this fiber's label, dropping the slot once no fiber holds one.
+          def _store(label)
+            labels = ActiveSupport::IsolatedExecutionState[KEY]
+            if label.nil?
+              return if labels.nil?
+
+              labels.delete(Fiber.current)
+              ActiveSupport::IsolatedExecutionState[KEY] = nil if labels.empty?
+            else
+              labels ||= ActiveSupport::IsolatedExecutionState[KEY] = {}.compare_by_identity
+              labels[Fiber.current] = label
+            end
           end
 
           # Each name through `PropertyNames`, never its own `to_s`. A top-level field keeps its Symbol spelling

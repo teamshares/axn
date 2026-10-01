@@ -46,6 +46,23 @@ RSpec.describe "the declaration message audit" do
         .to include("names a declaration other than the one it refuses (shape member `sku` in expects :rows)")
     end
 
+    # A label is matched whole: one that is a prefix of the label the message renders names a different field.
+    it "flags a refusal whose label only begins with this declaration's" do
+      expect(defects("`x:` isn't allowed on expects :value.")).to include("names a declaration other than the one it refuses (expects :v)")
+      expect(defects("`x:` isn't allowed on expects :v.w.")).to include("names a declaration other than the one it refuses (expects :v)")
+      expect(defects("`x:` isn't allowed on expects :v.")).to be_empty
+    end
+
+    it "matches a label carrying regexp characters literally, and whole" do
+      label = 'exposes :"a.b"'
+      expect(defects('`x:` isn\'t allowed on exposes :"a.b".', label:)).to be_empty
+      expect(defects('`x:` isn\'t allowed on exposes :"aXb".', label:)).to include(%(names a declaration other than the one it refuses (#{label})))
+    end
+
+    it "refuses to judge against a blank label rather than passing every message" do
+      expect { defects("anything", label: " ") }.to raise_error(ArgumentError, /blank declaration label/)
+    end
+
     it "accepts a refusal about another config that names this declaration as well" do
       expect(defects("expects :payload is declared nil-tolerant. Found while declaring expects :v.")).to be_empty
     end
@@ -94,6 +111,50 @@ RSpec.describe "the declaration message audit" do
       DeclarationMessageAudit.tag(unreadable, "expects :v")
 
       expect { expect { raise unreadable }.to raise_error(ArgumentError) }.to raise_error(RuntimeError, "message cannot be rendered")
+    end
+
+    # A spec asserting a wrapper still has the refusal it wraps judged.
+    it "judges a refusal reached through the asserted error's cause" do
+      allow(action).to receive(:_declared_fields_label).and_return("expects :w")
+      wrapped = lambda do
+        action.expects :v, type: Integer, allow_empty: true
+      rescue ArgumentError
+        raise "wrapped"
+      end
+      expect { expect { wrapped.call }.to raise_error(RuntimeError, "wrapped") }
+        .to raise_error(RSpec::Expectations::ExpectationNotMetError, /names a declaration other than the one it refuses/)
+    end
+
+    # A refusal a spec rescues itself, rather than through `raise_error`, is collected and judged when the example
+    # ends (Ruby 3.3+, which reports `rescue`). Judged here directly so the control does not fail its own example.
+    it "collects a refusal a spec rescues itself" do
+      skip "needs TracePoint(:rescue), Ruby 3.3+" if DeclarationMessageAudit::RESCUE_TRACE.nil?
+
+      allow(action).to receive(:_declared_fields_label).and_return("expects :w")
+      refusal = begin
+        action.expects :v, type: Integer, allow_empty: true
+      rescue ArgumentError => e
+        e
+      end
+
+      expect(DeclarationMessageAudit::OBSERVED).to have_key(refusal)
+      DeclarationMessageAudit::OBSERVED.delete(refusal)
+      expect { DeclarationMessageAudit.judge!(refusal) }
+        .to raise_error(RSpec::Expectations::ExpectationNotMetError, /names a declaration other than the one it refuses/)
+    end
+
+    it "leaves a refusal the library rescues itself unjudged" do
+      skip "needs TracePoint(:rescue), Ruby 3.3+" if DeclarationMessageAudit::RESCUE_TRACE.nil?
+
+      # Blankness is probed on these bytes with a match that raises `ArgumentError` inside lib/, which rescues it.
+      expect do
+        build_axn do
+          expects :par, type: Hash
+          expects :a, on: (+"\xff").force_encoding("UTF-8"), optional: true
+        end
+      end.to raise_error(EncodingError)
+      expect(DeclarationMessageAudit::INTERNAL).not_to be_empty
+      expect(DeclarationMessageAudit::OBSERVED).to be_empty
     end
 
     it "leaves an error raised outside a declaration alone" do
