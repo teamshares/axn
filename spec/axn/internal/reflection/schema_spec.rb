@@ -7115,6 +7115,60 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(id).to include(type: "integer")
     end
 
+    # Whether the lookup reads a declared `company_id` is the runtime's own selector (`FieldConfig.id_token_routes`),
+    # not the declaration's presence: it reads the route on the model's own `on:` or the one owning the `company_id`
+    # reader, and an `as:`-renamed one on another route is read past, so the Proc's output supplies the token.
+    describe "a model: child of the transforming route beside a declared id" do
+      def account_with(sibling)
+        decl = ["expects :payload, type: Hash", "expects :inner, on: :payload, as: :pin, type: Hash",
+                'expects :account, on: "payload.inner", as: :raw, type: Hash',
+                'expects :account, on: :pin, as: :cooked, type: Hash, preprocess: ->(_v) { { "company_id" => 1 } }',
+                "expects :company, on: :cooked, model: { klass: MergedRouteCompany, finder: :find }", sibling].compact.join("\n")
+        Class.new do
+          include Axn
+          class_eval(decl)
+          def call = nil
+        end
+      end
+
+      before { stub_const("MergedRouteCompany", Struct.new(:id) { def self.find(id) = id.nil? ? nil : new(id) }) }
+
+      {
+        "no declared id" => nil,
+        "an id the lookup reads (the `company_id` reader on the wire-reading route)" => "expects :company_id, on: :raw, type: Integer, optional: true",
+        "a gated id the lookup still reads" => "expects :company_id, on: :raw, type: Integer, optional: true, if: -> { false }",
+        "an id on the model's own route" => "expects :company_id, on: :cooked, type: Integer, optional: true",
+        "an `as:`-renamed id the lookup reads past" => "expects :company_id, on: :raw, as: :other_id, type: Integer, optional: true",
+        "a model: route at the id's key" => "expects :company_id, on: :raw, model: { klass: MergedRouteCompany, finder: :find }, optional: true",
+      }.each do |label, sibling|
+        it "never rejects what the runtime accepts, with #{label}" do
+          klass = account_with(sibling)
+          document = JSONSchemer.schema(JSON.parse(JSON.generate(klass.input_schema)))
+          [{ "x" => 1 }, { "company_id" => 5 }, { "company_id" => nil }, { "company_id" => "a" }].each do |account|
+            next unless klass.call(payload: { "inner" => { "account" => account } }).ok?
+
+            expect(document.valid?({ "payload" => { "inner" => { "account" => account } } })).to be(true), "#{label}: #{account.inspect}"
+          end
+        end
+      end
+
+      def account(klass) = klass.input_schema.dig(:properties, :payload, :properties, :inner, :properties, :account)
+
+      it "keeps a read-past sibling's own optional property, and adds no model requirement to it" do
+        klass = account_with("expects :company_id, on: :raw, as: :other_id, type: Integer, optional: true")
+
+        expect(account(klass)[:required].to_a).not_to include("company_id")
+        expect(account(klass).dig(:properties, :company_id)).to include(type: %w[integer null])
+      end
+
+      it "keeps the requirement of a sibling the lookup reads" do
+        klass = account_with("expects :company_id, on: :raw, type: Integer, optional: true")
+
+        expect(klass.call(payload: { "inner" => { "account" => { "x" => 1 } } })).not_to be_ok
+        expect(account(klass)[:required]).to include("company_id")
+      end
+    end
+
     it "keeps the exact schema of a child anchored on the untransformed route" do
       klass = merged(:r_e)
 

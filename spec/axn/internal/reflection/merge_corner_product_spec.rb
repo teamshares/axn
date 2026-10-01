@@ -209,9 +209,15 @@ module MergeCornerProduct
     end
   end
 
-  # A `model:` child under the node, which writes no property of its own key — only its generated `owner_id`.
+  # A `model:` child under the node, which writes no property of its own key — only its generated `owner_id` — alone,
+  # and beside an `owner_id` declared on the wire-reading route that the lookup reads (it owns the `owner_id` reader)
+  # or reads past (`as:`-renamed), which `FieldConfig.id_token_routes` decides.
   def model_child_routes(on:)
-    %w[required optional].map { |pres| route("Dm", pres, lines: [opts("expects :owner", "on: #{on}", MODEL, presence(pres, "String"))]) }
+    model = ->(pres) { opts("expects :owner", "on: #{on}", MODEL, presence(pres, "String")) }
+    siblings = { "id read" => "expects :owner_id, on: :r_e, type: Integer, optional: true",
+                 "id read past" => "expects :owner_id, on: :r_e, as: :oid, type: Integer, optional: true" }
+    %w[required optional].map { |pres| route("Dm", pres, lines: [model.call(pres)]) } +
+      siblings.map { |label, line| route("Dm", "required #{label}", lines: [model.call("required"), line]) }
   end
 
   # A top-level `model:` beside a top-level explicit field at its generated id, or beside a second `model:` route

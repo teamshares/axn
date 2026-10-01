@@ -160,7 +160,7 @@ module Axn
             transformed_keys = []
             child_loop = nil
             model_routes_first(children).each do |key, node|
-              transformed_keys.concat(transformed_child_keys(key, node, children)) if reads_transformed_route?(node, transforming_routes)
+              transformed = collect_transformed_keys!(transformed_keys, key, node, children, transforming_routes)
               if node.implicit?
                 apply_implicit_node!(prop, key, node, ancestor_configs, ann)
                 next
@@ -173,7 +173,7 @@ module Axn
 
               unless model_configs.empty?
                 child_loop ||= ChildLoop.new(prop:, children:, parent_configs:, ann:, carried:, required_model_ids:, model_id_siblings:)
-                apply_model_id_child!(child_loop, key, node, model_configs)
+                apply_model_id_child!(child_loop, key, node, model_configs, derived: model_id_derived?(transformed, key, model_configs, children))
               end
 
               representative = property_representative(node.configs)
@@ -213,15 +213,41 @@ module Axn
             transformed_keys.uniq.each { |key| stand_down_transformed_child!(prop, key) }
           end
 
-          # The keys a child anchored on a transforming route writes: its own, and a `model:` route's generated id —
-          # unless a declaration of its own owns the id's key, which the lookup then reads, and whose own anchor
-          # decides it on its own visit.
-          def transformed_child_keys(key, node, children)
-            return [key] if node.implicit? || node.configs.none? { |c| c.validations[:model] }
+          # Whether this child reads a transforming route, recording the keys it writes that stand down if so.
+          def collect_transformed_keys!(transformed_keys, key, node, children, transforming_routes)
+            return false unless reads_transformed_route?(node, transforming_routes)
 
-            id_field = Internal::FieldConfig.model_id_key(key)
-            id_node = children[id_field]
-            id_node.nil? || id_node.implicit? ? [key, id_field] : [key]
+            transformed_keys.concat(transformed_child_keys(key, node, children))
+            true
+          end
+
+          # The keys a child anchored on a transforming route writes: its own, and a `model:` route's generated id
+          # when nothing else is declared at the id's key — the Proc's output then supplies the token. A declared
+          # sibling keeps its own property: its own anchor decides it on its own visit.
+          def transformed_child_keys(key, node, children)
+            model_configs = node.implicit? ? [] : node.configs.select { |c| c.validations[:model] }
+            return [key] if model_configs.empty? || model_id_reading(key, model_configs, children) != :generated
+
+            [key, Internal::FieldConfig.model_id_key(key)]
+          end
+
+          # Whether a `model:` child's generated id carries the model's own requirement: always, unless the child reads
+          # a transforming route and its lookup reads past a sibling declared at the id's key.
+          def model_id_derived?(transformed, key, model_configs, children)
+            !transformed || model_id_reading(key, model_configs, children) != :unread_sibling
+          end
+
+          # Where a `model:` child's lookup reads its token: `:generated` when nothing is declared at the `<field>_id`
+          # key, `:sibling` when every model route reads a declaration there — asked of the runtime's own selector
+          # (`FieldConfig.id_token_routes`, which `ContractForSubfields.sibling_id_configs` calls over the same
+          # candidates) — and `:unread_sibling` when one is declared but a route reads past it, off its own
+          # (transformed) parent.
+          def model_id_reading(key, model_configs, children)
+            sibling = children[Internal::FieldConfig.model_id_key(key)]
+            return :generated if sibling.nil? || sibling.implicit?
+
+            read = model_configs.all? { |config| Internal::FieldConfig.id_token_routes(config, sibling.configs).any? }
+            read ? :sibling : :unread_sibling
           end
 
           # At a node two routes declare, the routes that transform the value (`preprocess:`) while another reads it
@@ -363,7 +389,11 @@ module Axn
           # folded into `apply_children!`'s single already-large loop body, which the conflict/reconciliation
           # logic here had pushed past this file's complexity budget. Mutates `prop`/`required_model_ids` in
           # place, exactly as the inlined code it replaces did.
-          def apply_model_id_child!(child_loop, key, node, model_configs)
+          #
+          # `derived: false` is a child of a merged node's transforming route whose lookup reads past a declared
+          # sibling id: the Proc's output supplies the token, so the sibling keeps exactly the property and
+          # requiredness it declares and nothing of the model is added to it.
+          def apply_model_id_child!(child_loop, key, node, model_configs, derived: true)
             # The id key derives from the LEAF wire segment (a dotted model name digs `<leaf>_id` off
             # the same nested parent at runtime). A user may declare an explicit NON-model nested
             # `<field>_id` subfield — its own entry in `children`, keyed by that same id, visited
@@ -393,6 +423,8 @@ module Axn
             # carried `field :company_id, type: String` claims the key exactly as one on the node's own route does,
             # and leaving the carry out would discard the declared `id_type:` one level up.
             explicit_id ||= emitted_shape_member_at(child_loop.prop, property_routes(child_loop.parent_configs), child_loop.carried, id_field)
+            return unless derived || explicit_id.nil?
+
             if explicit_id
               # Deferred rather than merged here directly (see the post-loop pass in `apply_children!`):
               # this sibling's OWN entry in `children` hasn't necessarily been visited yet, so
