@@ -129,16 +129,10 @@ module Axn
 
         RESIDUE_PREFACE = "Additional constraints apply that JSON Schema cannot express: "
 
-        # The container reads the residue reduction makes, held UNBOUND. Exact class is not enough on its
-        # own: an exact Array or Hash can still carry a singleton `map`/`each_pair`, so the reduction reaches
-        # for Array's and Hash's own.
-        MENTIONABLE_MAP = ::Array.instance_method(:map)
-        MENTIONABLE_EACH_PAIR = ::Hash.instance_method(:each_pair)
         SAME_STRING = ::String.instance_method(:==)
         ARRAY_SIZE = ::Array.instance_method(:size)
         ARRAY_AT = ::Array.instance_method(:[])
         HASH_TO_A = ::Hash.instance_method(:to_a)
-        private_constant :MENTIONABLE_MAP, :MENTIONABLE_EACH_PAIR
 
         # PRO-3441. A map's `of: { values: }` axis governs every key `properties` does NOT itself name
         # (`additionalProperties`'s own JSON Schema meaning) — except the keys the axis's OWN `shape:`

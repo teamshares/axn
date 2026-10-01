@@ -23,6 +23,13 @@ module Axn
         module Mentions
           include Vocabulary
 
+          # The container reads the residue reduction makes, held UNBOUND. Exact class is not enough on its
+          # own: an exact Array or Hash can still carry a singleton `map`/`each_pair`, so the reduction reaches
+          # for Array's and Hash's own.
+          MENTIONABLE_MAP = ::Array.instance_method(:map)
+          MENTIONABLE_EACH_PAIR = ::Hash.instance_method(:each_pair)
+          private_constant :MENTIONABLE_MAP, :MENTIONABLE_EACH_PAIR
+
           # The fragment a residue MENTIONS, rendered without requiring the caller's literals to be
           # JSON-encodable. They need not be: `normalize_scalar_literal` deliberately keeps a
           # `Float::INFINITY` default and its kind, so ordinary reflection does not fail on one — and a path
