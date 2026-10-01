@@ -1385,6 +1385,19 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
         expect { build_axn { expects :val, type: :params, shape: { container: Object, members: [sku] } } }.not_to raise_error
       end
 
+      # Without Rails, all that is known of a Parameters value's class is that it descends from `Object` and no other
+      # class: a class container is refused, a container every object is declares, and a module — which Parameters may
+      # include, as it does `ActiveSupport::DeepMergeable` — is undecided, so it declares. (spec_rails holds the
+      # Rails half, read off Parameters' real ancestry.)
+      it "judges `:params` beside a container without Rails by what is known of Parameters" do
+        skip "ActionController::Parameters is loaded" if defined?(ActionController::Parameters)
+
+        sku = member
+        declares = ->(container) { build_axn { expects :val, type: :params, shape: { container:, members: [sku] } } && true }
+        [Kernel, BasicObject, Enumerable].each { |container| expect { declares.call(container) }.not_to raise_error }
+        [Data, Class.new, Comparable].each { |container| expect { declares.call(container) }.to raise_error(ArgumentError, /beside `type: :params`/) }
+      end
+
       # The rule weighs the type against the container, so it stands down where the two can part: a `type:` gated on
       # its own skips its check on the calls it closes while the shape still runs.
       it "stands down beside a type: gated on its own, where the shape runs without the class check" do

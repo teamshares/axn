@@ -303,6 +303,7 @@ module Axn
           return if tokens.empty? && Internal::NativeMethods.includes_module?(::Object, container)
 
           relations = tokens.map { |token| _container_relation(token, container) }
+          return if relations.include?(:unknown)
           return if relations.include?(:covered) && relations.all? { |relation| %i[covered disjoint].include?(relation) }
 
           raise ArgumentError, _uncovered_container_message(container, tokens, relations, where:, option:)
@@ -339,25 +340,43 @@ module Axn
         end
 
         # How one declared type token stands to the container: `:covered` when every value of it is the container,
-        # `:disjoint` when no value of it can be, `:narrowed` otherwise. A pseudo-type token stands for the classes
-        # its values have (`:boolean` true or false, `:uuid` a String, `:params` a Hash or an
-        # `ActionController::Parameters`). Ancestry is read natively, so a class defining its own `<` or `ancestors`
-        # cannot answer for itself.
-        #
-        # Parameters is not a Hash, so `container: Hash` beside `:params` checks the members of a Hash and skips a
-        # Parameters value without a word. It stands in as `Object`, which it descends from directly: that never
-        # names a Rails constant, and it gives the same verdict whether or not Rails is loaded, so a declaration
-        # does not start or stop declaring with the load order.
+        # `:disjoint` when no value of it can be, `:narrowed` otherwise, and `:unknown` when that cannot be decided
+        # — which declares, since a refusal has to be earned. A pseudo-type token stands for the classes its values
+        # have (`:boolean` true or false, `:uuid` a String). Ancestry is read natively, so a class defining its own
+        # `<` or `ancestors` cannot answer for itself.
         def _container_relation(token, container)
+          return _params_container_relation(container) if Internal::Identity.same?(token, :params)
+
           classes =
             case token
-            when :params then [::Hash, ::Object]
             when :boolean then [::TrueClass, ::FalseClass]
             when :uuid then [::String]
             else [token]
             end
           relations = classes.map { |klass| _class_container_relation(klass, container) }.uniq
           relations.one? ? relations.first : :narrowed
+        end
+
+        # `:params` admits a Hash and an `ActionController::Parameters`, which is not one. It is ONE token, so the
+        # container covers it only where it covers both: `container: Hash` checks a Hash's members and lets a
+        # Parameters value skip them without a word, which is no branch an author named. Where Rails is loaded the
+        # Parameters half is read off its real ancestry; where it is not, all that is known is that its class
+        # descends from `Object` and from no other class — so a container every object is covers it, a class
+        # never does, and a module (which Parameters may include: `ActiveSupport::DeepMergeable` is one Hash
+        # shares) is undecided. So `container: Hash` is refused either way.
+        def _params_container_relation(container)
+          relations = [_class_container_relation(::Hash, container), _parameters_container_relation(container)].uniq
+          return relations.first if relations.one?
+          return :unknown if relations.sort == %i[covered unknown]
+
+          :narrowed
+        end
+
+        def _parameters_container_relation(container)
+          return _class_container_relation(::ActionController::Parameters, container) if defined?(::ActionController::Parameters)
+          return :covered if Internal::NativeMethods.includes_module?(::Object, container)
+
+          Internal::Identity.kind?(container, ::Class) ? :disjoint : :unknown
         end
 
         def _class_container_relation(klass, container)
