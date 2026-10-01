@@ -7,6 +7,7 @@ require "active_support/core_ext/module/delegation"
 require "active_support/core_ext/object/blank"
 
 require "axn/extensions"
+require "axn/core/contract/declaration_label"
 require "axn/core/contract/redaction"
 require "axn/core/contract/validator_class_cache"
 require "axn/core/contract/shape_declaration"
@@ -106,7 +107,7 @@ module Axn
         return if Axn::Core::Flow::Handlers::Invoker.safely_callable?(user_facing)
 
         raise ArgumentError,
-              "user_facing: must be true, a String, a Symbol, or a Proc (got a value of class " \
+              "user_facing: must be true, a String, a Symbol, or a Proc#{DeclarationLabel.locator} (got a value of class " \
               "#{Axn::Internal::Reflection::PropertyNames.renderable_class_name(user_facing)})"
       end
 
@@ -137,14 +138,16 @@ module Axn
           return unless _sensitive_proc_requires_argument?(sensitive)
 
           raise ArgumentError,
-                "sensitive: Proc is instance_exec'd against the action instance with no arguments — it reads " \
+                "sensitive: Proc#{DeclarationLabel.locator} is instance_exec'd against the action instance with no " \
+                "arguments — it reads " \
                 "other fields by name, the value is never passed to it — so it cannot declare a required " \
                 "parameter (positional or keyword). Use `sensitive: -> { !include_pii }`, reading the field " \
                 "it depends on by name, rather than `sensitive: ->(v) { ... }`."
         end
 
         raise ArgumentError,
-              "sensitive: must be true, false, a Symbol naming an action method, or a Proc (got a value of " \
+              "sensitive: must be true, false, a Symbol naming an action method, or a Proc#{DeclarationLabel.locator} " \
+              "(got a value of " \
               "class #{Axn::Internal::Reflection::PropertyNames.renderable_class_name(sensitive)}) — any other value is not a redaction rule, and " \
               "a truthy one would silently leave the value logged in the clear rather than raise. Use " \
               "`sensitive: true` to always redact, or a Symbol/Proc predicate to decide per call."
@@ -193,7 +196,7 @@ module Axn
         end
 
         raise ArgumentError,
-              "a shape member name must be a String or a Symbol (got a name of class " \
+              "a shape member name#{DeclarationLabel.placement} must be a String or a Symbol (got a name of class " \
               "#{Axn::Internal::Reflection::PropertyNames.renderable_class_name(name)}) — a member name is both the JSON " \
               "property it renders as " \
               "and the schema property key it is emitted under, and any other object converts to those two " \
@@ -226,7 +229,7 @@ module Axn
         end
 
         raise ArgumentError,
-              "#{option} must be a String or Symbol naming #{names} (got a value of class " \
+              "#{option}#{DeclarationLabel.locator} must be a String or Symbol naming #{names} (got a value of class " \
               "#{Axn::Internal::Reflection::PropertyNames.renderable_class_name(value)}) — any other object has no single " \
               "name to canonicalize to. #{fix}"
       end
@@ -253,7 +256,7 @@ module Axn
         return if Axn::Internal::NativeMethods.ascii_compatible_name?(value)
 
         raise ArgumentError,
-              "#{kind} must be written in an ASCII-compatible encoding (got one encoded as " \
+              "#{kind}#{DeclarationLabel.locator} must be written in an ASCII-compatible encoding (got one encoded as " \
               "#{Axn::Internal::NativeMethods.name_encoding(value).name}) — a name in a wide encoding interns to a " \
               "different Symbol than the UTF-8 property it renders as, so nothing a caller sends can match it, and " \
               "every check the declaration makes against it raises rather than answering. #{fix}"
@@ -423,12 +426,15 @@ module Axn
           # truly empty call (a legitimate "nothing to declare this time"), an empty `field` call still
           # carries `opts`/a `block`, which is exactly the shape of a typo that dropped the name, not
           # a deliberate no-op. Reject it rather than let the declared validations silently vanish.
-          raise ArgumentError, "field requires at least one name" if names.empty?
+          raise ArgumentError, "`field` requires at least one name#{DeclarationLabel.placement}" if names.empty?
 
           # Same rule `expects`/`exposes` already enforce for a shape block declared across several
           # top-level fields at once (`_build_shape`'s "a shape block can only be declared on a
           # single field") -- a nested shape can't be shared honestly across sibling members either.
-          raise ArgumentError, "a shape block can only be declared on a single field" if names.size > 1 && block
+          if names.size > 1 && block
+            raise ArgumentError, "a shape block isn't allowed on several members at once#{DeclarationLabel.placement} — " \
+                                 "declare it on a single member."
+          end
 
           names.each { |name| @declarations << [name, opts, block] }
         end
@@ -466,7 +472,7 @@ module Axn
           # reader names, duplicate detection, the inbound read path — is symbol-keyed by construction.
           # `expects "note"` and `expects :note` are the same field; a dotted subfield key (`"a.b"`)
           # symbolizes harmlessly (it's only ever compared/split via `.to_s`). See PRO-2790.
-          fields = _canonical_field_names!(fields, kind: "a field name", names: "an inbound field")
+          fields = _canonical_field_names!(fields, kind: "an `expects` field name", names: "an inbound field")
 
           # A subfield's ROUTE is canonicalized on the same terms, and here — before the first guard reads it.
           # A route is judged as written (its root must name a declared reader; `_duplicate_fields` keys a config
@@ -501,6 +507,8 @@ module Axn
                                               encoding_fix: "Name the parent in UTF-8 (or any other ASCII-compatible " \
                                                             "encoding).")
                end
+          # From here every refusal names this declaration (see `DeclarationLabel`).
+          declaration = DeclarationLabel.enter(:expects, fields, on:)
 
           # A field's wire key always names a single key; the nested-path capability lives entirely in a
           # dotted `on:` (`expects :b, on: "a"`). A dotted field NAME is therefore never valid — reject it
@@ -516,8 +524,9 @@ module Axn
           # rejections). `method_call: false` is the default, so it's a harmless no-op anywhere.
           if method_call && on.nil?
             raise ArgumentError,
-                  "`method_call: true` is only meaningful on a subfield (declared with `on:`) — a top-level field " \
-                  "reads its wire key and never invokes a method. Add `on:` to name the parent, or drop `method_call:`."
+                  "`method_call: true` isn't allowed#{DeclarationLabel.locator} — add `on:` to name the parent, or drop " \
+                  "`method_call:`. It is only meaningful on a subfield (declared with `on:`); a top-level field reads its " \
+                  "wire key and never invokes a method."
           end
 
           # Two names, two receivers, judged separately — because `as:`/`prefix:` can pull them apart.
@@ -597,6 +606,8 @@ module Axn
             superseded.each { |c| _withdraw_inferred_reader!(c.reader_as) }
             _define_field_readers!(configs)
           end
+        ensure
+          DeclarationLabel.leave(declaration)
         end
         # rubocop:enable Metrics/ParameterLists
 
@@ -612,12 +623,13 @@ module Axn
           &block
         )
           # Symbolize the wire key (see `expects`) so exposes shares the same symbol-keyed contract.
-          fields = _canonical_field_names!(fields, kind: "an exposure name", names: "an outbound field")
+          fields = _canonical_field_names!(fields, kind: "an `exposes` field name", names: "an outbound field")
+          declaration = DeclarationLabel.enter(:exposes, fields)
 
           # Stays pre-build, unlike every other declared name: an exposed field name is a property in the
           # SERIALIZED BODY (`Values.serialize_exposed` iterates these configs and raises on an unrenderable
           # one) as well as in `output_schema`, so it must be rejected whatever the schema emits.
-          _reject_unrenderable_field_names!(fields)
+          _reject_unrenderable_field_names!(fields, kind: "a field name#{DeclarationLabel.locator}")
 
           fields.each { |field| _reject_shadowed_exposure_name!(field) }
 
@@ -641,9 +653,9 @@ module Axn
           # extension's to reassign; the registration is refused its collision at the point it would matter.
           if validations.key?(:on) || metadata.key?(:on)
             raise ArgumentError,
-                  "exposes does not support `on:` on #{fields.map(&:to_s).inspect} — an exposure has no subfield " \
-                  "parent to reach into, and axn has no ActiveModel validation contexts. Drop `on:`; to gate the " \
-                  "outbound checks, use `if:`/`unless:`."
+                  "`on:` isn't allowed on #{_declared_fields_label(fields)} — drop it; to gate the outbound checks, use " \
+                  "`if:`/`unless:`. An exposure has no subfield parent to reach into, and axn has no ActiveModel " \
+                  "validation contexts."
           end
 
           # A confirmation pair is an inbound form contract: the caller supplies both halves (the field and
@@ -656,9 +668,9 @@ module Axn
           # `confirmation: false` is the same disabled-validator no-op it is everywhere else.
           if validations[:confirmation]
             raise ArgumentError,
-                  "`exposes` does not support confirmation: — a confirmation compares a caller-supplied value " \
-                  "against a caller-supplied companion, and an exposure has neither. Declare the pair with " \
-                  "`expects` if the confirmation is an input."
+                  "`confirmation:` isn't allowed on #{_declared_fields_label(fields)} — declare the pair with `expects` " \
+                  "if the confirmation is an input. A confirmation compares a caller-supplied value against a " \
+                  "caller-supplied companion, and an exposure has neither."
           end
 
           # `id_type:` types the GENERATED `<field>_id` on the INPUT schema `expects` builds — there is no
@@ -669,9 +681,9 @@ module Axn
           # on the outbound side instead of a transform.
           if (bag = validations[:model]).is_a?(::Hash) && bag.key?(:id_type)
             raise ArgumentError,
-                  "`exposes` does not support model: id_type: on #{fields.map(&:to_s).inspect} — " \
-                  "id_type: types the generated `<field>_id` property `expects` builds on the INPUT " \
-                  "schema, and an exposure never generates one. Drop id_type: here."
+                  "`id_type:` isn't allowed inside `model:` on #{_declared_fields_label(fields)} — drop it. It types the " \
+                  "generated `<field>_id` property `expects` builds on the INPUT schema, and an exposure never " \
+                  "generates one."
           end
 
           # Same refusal as `expects`, and for the same ordering reason: reads the caller's own `shape:` ahead
@@ -702,7 +714,8 @@ module Axn
             configs.each { |c| _reject_outbound_shape_user_facing_in!(c.validations) }
 
             if configs.any? { |c| c.validations.dig(:type, :coerce) }
-              raise ArgumentError, "coerce: is not supported on exposes (outbound fields are serialized, not coerced)."
+              raise ArgumentError, "`coerce:` isn't allowed on #{_declared_fields_label(fields)} — drop it. Outbound fields " \
+                                   "are serialized, not coerced."
             end
 
             configs.each { |c| _reject_shadowed_predicate_name!(c) }
@@ -715,6 +728,8 @@ module Axn
             # Copy-on-write + freeze (see internal_field_configs above).
             self.external_field_configs = (external_field_configs + configs).freeze
           end
+        ensure
+          DeclarationLabel.leave(declaration)
         end
 
         DeclaredFieldsCacheEntry = Data.define(:internal_field_configs, :external_field_configs, :fields)
@@ -899,8 +914,8 @@ module Axn
             name = Internal::ShapeGraph.fetch(member, :field)
             if Internal::ShapeGraph.read(member, :user_facing)
               raise ArgumentError,
-                    "shape member #{_describe_shape_member(member, name)} does not support user_facing: on exposes — an " \
-                    "outbound failure is a dev-facing bug (bad output), never a user-facing one. Drop user_facing:."
+                    "`user_facing:` isn't allowed on shape member #{_describe_shape_member(member, name)} — drop it. An " \
+                    "outbound failure is a dev-facing bug (bad output), never a user-facing one."
             end
             # Read ONCE and used for both of this member's edges — the nested `shape:` and the `of:` chain,
             # whose bags may carry shapes of their own (PRO-3166).
@@ -1034,16 +1049,20 @@ module Axn
           identical, collapsed = collisions.partition { |claimed, offending| Axn::Internal::Reflection::PropertyNames.same_declared_name?(claimed, offending) }
           if identical.any?
             names = identical.map { |_claimed, offending| Axn::Internal::Reflection::Values.canonical_wire_key(offending) }
-            raise Axn::ContractViolation::DuplicateFieldError, "Duplicate field(s) declared: #{names.join(', ')}"
+            raise Axn::ContractViolation::DuplicateFieldError, "Duplicate field(s) declared: #{names.join(', ')}#{_duplicate_fields_place}"
           end
 
           claimed, offending = collapsed.first
           raise Axn::ContractViolation::DuplicateFieldError,
                 "Duplicate field(s) declared: #{_inspect_field_name(claimed)} and #{_inspect_field_name(offending)} " \
-                "both render as the JSON property #{Axn::Internal::Reflection::Values.canonical_wire_key(offending).inspect} — a " \
+                "both render as the JSON property #{Axn::Internal::Reflection::Values.canonical_wire_key(offending).inspect}" \
+                "#{_duplicate_fields_place} — a " \
                 "field name becomes a property name in the reflected schema and in serialized output, so the two would " \
                 "collapse onto one. Declare them under names that stay distinct once converted to UTF-8."
         end
+
+        # Where a duplicate was declared, after the names it repeats: `(on expects :a, :b)`.
+        def _duplicate_fields_place = (label = DeclarationLabel.current) ? " (on #{label})" : ""
 
         # Map each declared field to the name of its generated reader. Without `as:`/`prefix:` the
         # reader is named for the wire key (identity). `as:` renames a single field's reader;
@@ -1074,10 +1093,16 @@ module Axn
 
           return fields.to_h { |f| [f, f] } if as.nil? && prefix.nil?
 
-          raise ArgumentError, "`as:` and `prefix:` cannot be combined" if as && prefix
+          if as && prefix
+            raise ArgumentError, "`as:` isn't allowed beside `prefix:`#{DeclarationLabel.locator} — keep one: `as:` renames a single " \
+                                 "field's reader, `prefix:` prepends to each."
+          end
 
           if as
-            raise ArgumentError, "`as:` can only be provided when declaring a single field (use prefix: for several)" if fields.size > 1
+            if fields.size > 1
+              raise ArgumentError, "`as:` isn't allowed#{DeclarationLabel.locator} — it renames a single field's reader; use " \
+                                   "`prefix:` to rename several."
+            end
 
             # Canonicalized before the dotted check rather than after it, so the name the check JUDGES is the
             # name the reader is defined under — `to_s` and `to_sym` are two dispatches on the same caller
@@ -1088,7 +1113,10 @@ module Axn
             reader = Contract.canonical_name!(as, option: "`as:`", names: "the generated reader",
                                                   fix: "Pass the reader's name, or omit `as:` to name the reader for the wire key.",
                                                   encoding_fix: "Name it in UTF-8 (or any other ASCII-compatible encoding).")
-            raise ArgumentError, "`as:` reader name may not be dotted (#{reader.inspect} would not name a method)" if reader.to_s.include?(".")
+            if reader.to_s.include?(".")
+              raise ArgumentError, "`as: #{reader.inspect}` isn't allowed#{DeclarationLabel.locator} — name the reader without a " \
+                                   "dot; a dotted reader name would not name a method."
+            end
 
             { fields.first => reader }
           else
@@ -1102,7 +1130,8 @@ module Axn
                                                        encoding_fix: "Name it in UTF-8 (or any other ASCII-compatible encoding).")
             if segment.to_s.include?(".")
               raise ArgumentError,
-                    "`prefix:` may not be dotted (#{segment.inspect} would compose a reader that does not name a method)"
+                    "`prefix: #{segment.inspect}` isn't allowed#{DeclarationLabel.locator} — name the prefix without a dot; a " \
+                    "dotted prefix composes a reader that does not name a method."
             end
 
             fields.to_h { |f| [f, :"#{segment}#{f}"] }
@@ -1139,16 +1168,16 @@ module Axn
 
           if kind == "exposes"
             raise ArgumentError,
-                  "a dotted field name (#{dotted.map(&:to_s).inspect}) is not valid for exposes " \
-                  "(outbound fields have no nested-path reader)"
+                  "a dotted field name isn't allowed#{DeclarationLabel.locator} — name a single key. An exposure has no " \
+                  "nested-path reader."
           end
 
           *parents, leaf = dotted.first.to_s.split(".")
           suggested_on = [on, *parents].map(&:to_s).reject(&:empty?).join(".")
           raise ArgumentError,
-                "a dotted field name (#{dotted.map(&:to_s).inspect}) is not supported — name the leaf and move the " \
-                "path into `on:` (e.g. `expects :#{leaf}, on: #{suggested_on.inspect}`). A dotted `on:` pulls a value " \
-                "out of a nested structure; a field's own name is always a single wire key."
+                "a dotted field name isn't allowed#{DeclarationLabel.locator} — name the leaf and move the path into " \
+                "`on:` (e.g. `expects :#{leaf}, on: #{suggested_on.inspect}`). A dotted `on:` pulls a value out of a " \
+                "nested structure; a field's own name is always a single wire key."
         end
 
         # Which config answers to each reader name already declared on this class, across both tiers —
@@ -1174,7 +1203,8 @@ module Axn
           conflict = Axn::Internal::NameOwnership.conflict_for(self, name)
           return unless conflict
 
-          raise ContractViolation::ReservedAttributeError.new(name, owner: Axn::Internal::NameOwnership.describe(conflict, name:))
+          raise ContractViolation::ReservedAttributeError.new(name, owner: Axn::Internal::NameOwnership.describe(conflict, name:),
+                                                                    declaration: DeclarationLabel.current)
         end
 
         # Refuse a top-level inbound WIRE KEY that the inbound facade already answers to. The key is
@@ -1194,7 +1224,7 @@ module Axn
           return unless conflict
 
           raise ContractViolation::ReservedAttributeError.new(
-            name, owner: Axn::Internal::NameOwnership.describe(conflict, name:), kind: :wire_key
+            name, owner: Axn::Internal::NameOwnership.describe(conflict, name:), kind: :wire_key, declaration: DeclarationLabel.current
           )
         end
 
@@ -1239,7 +1269,7 @@ module Axn
           return unless conflict
 
           raise ContractViolation::ReservedAttributeError.new(
-            name, owner: Axn::Internal::NameOwnership.describe(conflict, name:), kind: :exposure
+            name, owner: Axn::Internal::NameOwnership.describe(conflict, name:), kind: :exposure, declaration: DeclarationLabel.current
           )
         end
 
@@ -1286,7 +1316,10 @@ module Axn
                      .transform_values(&:field)
           collisions = reader_names.filter_map { |field, reader| reader if existing.key?(reader) && existing[reader] != field }
           collisions |= reader_names.values.tally.select { |_, count| count > 1 }.keys
-          raise ArgumentError, "Reader name collision: #{collisions.uniq.join(', ')}" if collisions.any?
+          return if collisions.empty?
+
+          raise ArgumentError, "Reader name collision#{DeclarationLabel.locator}: #{collisions.uniq.join(', ')} — two declared " \
+                               "fields would answer to the same reader. Rename one with `as:` or `prefix:`."
         end
 
         # `user_facing:` reclassifies a violation of this field from a dev-facing exception into a
@@ -1389,8 +1422,10 @@ module Axn
         # Every way of failing to "name an axis": a bare `of: Integer` names none of them, a bag naming neither
         # constrains nothing at all, and an axis holding an empty union names nothing while looking like it does.
         # One message, since the fix is the same one every way.
-        MAP_OF_REQUIRED_MESSAGE = "of: requires keys: and/or values: for a Hash — a Hash has two things inside it, " \
-                                  "so name the axis you are constraining"
+        def _map_of_required_message
+          "of: requires keys: and/or values: for a Hash#{DeclarationLabel.locator} — a Hash has two things inside it, " \
+            "so name the axis you are constraining"
+        end
 
         # What a `model:` bag may carry (PRO-3387). `klass:`/`finder:`/`not_found_on:`/`id_type:` are read by
         # `ModelValidator`/`FieldResolvers::Model`/schema reflection (see the guards beside
@@ -1566,7 +1601,7 @@ module Axn
 
           raise ArgumentError,
                 "Unknown key(s) #{unknown.map { |key| _inspect_field_name(key) }.join(', ')} in the validations of " \
-                "shape member `#{_shape_member_label(name)}`. Not a recognized validation — ActiveModel reads the " \
+                "#{DeclarationLabel.member(name)}. Not a recognized validation — ActiveModel reads the " \
                 "bag as validators, so it fails every call with `Unknown validator`. A member's other options are " \
                 "attributes of the member ITSELF rather than entries in its validations bag: " \
                 "`sensitive:`/`user_facing:`/`method_call:` are read from the member, `description:` and any " \
@@ -1580,29 +1615,30 @@ module Axn
           return if unsupported.empty?
 
           raise ArgumentError,
-                "shape member `#{_shape_member_label(name)}` does not support #{unsupported.map { |k| "#{k}:" }.join('/')} " \
-                "(shape blocks declare validation/schema only)"
+                "#{unsupported.map { |k| "`#{k}:`" }.join(' / ')} #{unsupported.one? ? "isn't" : "aren't"} allowed on " \
+                "#{DeclarationLabel.member(name)} — drop #{unsupported.one? ? 'it' : 'them'}; a shape member declares " \
+                "validation and schema only."
         end
 
         def _raise_member_reader_options!(name, reader_opts)
           return if reader_opts.empty?
 
           raise ArgumentError,
-                "shape member `#{_shape_member_label(name)}` does not support #{reader_opts.map { |k| "#{k}:" }.join('/')} " \
-                "(they rename a field's generated reader, but a shape member is reader-less; " \
-                "use them on a top-level `expects` field or an `on:` subfield)."
+                "#{reader_opts.map { |k| "`#{k}:`" }.join(' / ')} #{reader_opts.one? ? "isn't" : "aren't"} allowed on " \
+                "#{DeclarationLabel.member(name)} — use #{reader_opts.one? ? 'it' : 'them'} on a top-level `expects` field " \
+                "or an `on:` subfield. #{reader_opts.one? ? 'It renames' : 'They rename'} a field's generated reader, " \
+                "and a shape member is reader-less."
         end
 
         def _raise_member_context_option!(name, context_opts)
           return if context_opts.empty?
 
           raise ArgumentError,
-                "shape member `#{_shape_member_label(name)}` does not support " \
-                "#{context_opts.map { |k| "#{k}:" }.join('/')} — it names an ActiveModel validation context, and " \
-                "axn validates with no context, so on a raw `shape:` member every validator in the bag would be " \
-                "skipped on every call, while on a block-form member the option is discarded outright. A member " \
-                "has no subfield parent for it to name either. Drop `on:`, or gate the checks with " \
-                "`if:`/`unless:`, which axn does support."
+                "#{context_opts.map { |k| "`#{k}:`" }.join(' / ')} isn't allowed on #{DeclarationLabel.member(name)} — drop " \
+                "it, or gate the checks with `if:`/`unless:`, which axn does support. It names an ActiveModel " \
+                "validation context, and axn validates with no context, so on a raw `shape:` member every validator in " \
+                "the bag would be skipped, while on a block-form member the option is discarded outright. A member " \
+                "has no subfield parent for it to name either."
         end
 
         # `coerce:` is field-only: it resolves a coerced value onto a reader, which a member has not got (see
@@ -1616,15 +1652,15 @@ module Axn
           return unless validations.key?(:coerce) || (!nil.equal?(type_bag) && type_bag[:coerce])
 
           raise ArgumentError,
-                "coerce: is not supported on a shape member (it has no reader for a coerced value to resolve " \
-                "onto; use it on a top-level `expects` field or an `on:` subfield)."
+                "`coerce:` isn't allowed on #{DeclarationLabel.current || 'a shape member'} — use it on a top-level " \
+                "`expects` field or an `on:` subfield. A shape member has no reader for a coerced value to resolve onto."
         end
 
         # Parse a structured field's block into a `{ members: [...], container: <klass> }` validation
         # value. `container` lets ShapeValidator defer a type mismatch to TypeValidator (rather than
         # trying to extract members from the wrong kind of value).
         def _build_shape(fields, validations: nil, outbound: false, &)
-          raise ArgumentError, "a shape block can only be declared on a single field" if fields.size > 1
+          raise ArgumentError, "a shape block isn't allowed#{DeclarationLabel.locator} — declare it on a single field." if fields.size > 1
 
           container = _shape_compatible_type!(validations)
 
@@ -1639,6 +1675,10 @@ module Axn
         # A member reuses the same option handling as a top-level field (optional/allow_blank/
         # default/etc. + validations + metadata), but yields a ShapeConfig and never a reader.
         def _build_shape_member(name, opts, subblock, outbound: false)
+          DeclarationLabel.declaring_member(name) { _build_declared_shape_member(name, opts, subblock, outbound:) }
+        end
+
+        def _build_declared_shape_member(name, opts, subblock, outbound:)
           _raise_member_unsupported_options!(name, opts.keys & SHAPE_MEMBER_UNSUPPORTED_OPTIONS)
           _raise_member_reader_options!(name, opts.keys & SHAPE_MEMBER_READER_OPTIONS)
           # Ahead of `_parse_field_configs` below, whose `on:` parameter would otherwise absorb the key as a
@@ -1653,8 +1693,8 @@ module Axn
           # as an unknown key regardless of value.
           if outbound && opts.key?(:user_facing)
             raise ArgumentError,
-                  "shape member `#{_shape_member_label(name)}` does not support user_facing: on exposes — an outbound failure is a " \
-                  "dev-facing bug (bad output), never a user-facing one. Drop user_facing:."
+                  "`user_facing:` isn't allowed on #{DeclarationLabel.member(name)} — drop it. An outbound failure is " \
+                  "a dev-facing bug (bad output), never a user-facing one."
           end
 
           _raise_member_model_unsupported!(name) if opts.key?(:model)
@@ -1667,7 +1707,7 @@ module Axn
 
           # Same refusal, same ordering reason, at the member's own slot: a `field :rows, type: Array, shape: {...}
           # do ... end` would otherwise have its raw `shape:` silently replaced by the subblock's.
-          _reject_raw_shape_before_block_overwrite!(field_validations, "`shape:` on shape member `#{_shape_member_label(name)}`",
+          _reject_raw_shape_before_block_overwrite!(field_validations, "`shape:` on #{DeclarationLabel.member(name)}",
                                                     _declared_fields_label([name]), block: subblock)
           field_validations[:shape] = _build_shape([name], validations: field_validations, outbound:, &subblock) if subblock
 
@@ -1716,7 +1756,8 @@ module Axn
           return klasses.first if _shape_compatible_klass?(klass)
 
           raise ArgumentError,
-                "#{requirement} (Array, Hash, or a class) — got [#{klasses.map { |k| _declared_type_label(k) }.join(', ')}]"
+                "#{requirement}#{DeclarationLabel.locator} (Array, Hash, or a class) — got " \
+                "[#{klasses.map { |k| _declared_type_label(k) }.join(', ')}]"
         end
 
         # The same rule as a question rather than a demand, for the one caller that must not refuse what it
@@ -1791,7 +1832,7 @@ module Axn
         # the time this runs the node is the declaration walk's own copy, SHARED by every position reusing that
         # shape, while the container belongs to the position — so writing in place would give one position the
         # container derived for another. Mutates `bag`.
-        def _derive_inner_shape_container!(bag, fields, where:)
+        def _derive_inner_shape_container!(bag, _fields, where:)
           shape = Internal::ShapeGraph.hash_or_nil(bag[:shape])
           return if nil.equal?(shape)
 
@@ -1804,7 +1845,7 @@ module Axn
                 Internal::ShapeGraph::ANY_CONTAINER
               end
           else
-            _reject_distributing_inner_shape!(detached[:container], fields) unless ::Array.equal?(bag[:klass])
+            _reject_distributing_inner_shape!(detached[:container], where) unless ::Array.equal?(bag[:klass])
             klass_tokens = Internal::ShapeGraph.carries_key?(bag, :klass) ? _declared_type_tokens(bag[:klass]) : []
             _reject_uncovered_container!(detached[:container], klass_tokens, where:, option: "klass:")
           end
@@ -1823,17 +1864,16 @@ module Axn
         # shape: ... } }`), which emits `items.items.properties`.
         #
         # Identity on axn's side, as every other read of this key is: a shape may put any object in that slot.
-        def _reject_distributing_inner_shape!(container, fields)
+        def _reject_distributing_inner_shape!(container, where)
           return unless ::Array.equal?(container)
 
           raise ArgumentError,
-                "a `shape:` inside an `of:` bag cannot name `container: Array` (on " \
-                "#{_declared_fields_label(fields)}) — `ShapeValidator` reads that container as \"distribute " \
-                "over the elements\" rather than as a gate, so an element that is not an Array has its members " \
-                "checked by nothing. Where the members belong to the level below, write it as the nesting it is " \
-                "(`of: { klass: Array, of: { shape: ... } }`); where they belong to this level, name the class " \
-                "they are read off (`klass: Hash`, or the object's own class) and leave the shape's `container:` " \
-                "to be derived."
+                "`container: Array` isn't allowed in #{where} — where the members belong to the level below, write it " \
+                "as the nesting it is (`of: { klass: Array, of: { shape: ... } }`); where they belong to this level, " \
+                "name the class they are read off (`klass: Hash`, or the object's own class) and leave the shape's " \
+                "`container:` to be derived. `ShapeValidator` reads that container as \"distribute over the " \
+                "elements\" rather than as a gate, so an element that is not an Array has its members checked by " \
+                "nothing."
         end
 
         # A container is what the shaped value is type-checked against (`value.is_a?(container)` in
@@ -1851,7 +1891,8 @@ module Axn
           end
 
           raise ArgumentError,
-                "a shape's `container:` must be a class (got #{_inspect_field_name(container)}) — it is what the " \
+                "a shape's `container:` must be a class#{DeclarationLabel.locator} (got #{_inspect_field_name(container)}) — " \
+                "it is what the " \
                 "shaped value is type-checked against, so a non-class makes every call raise `TypeError: class " \
                 "or module required`. Name the container class (`Hash`, `Array`, or the object's own class), or " \
                 "omit `container:` and let it be derived from `type:`."
@@ -1865,13 +1906,14 @@ module Axn
           unknown = validations.keys.reject { |k| KNOWN_VALIDATION_KEYS.include?(k) }
           if unknown.any?
             raise ArgumentError,
-                  "Unknown key(s) #{unknown.map(&:inspect).join(', ')} in field declaration. " \
+                  "Unknown key(s) #{unknown.map(&:inspect).join(', ')}#{DeclarationLabel.locator(' in field declaration')}. " \
                   "Not a recognized validation or registered field metadata key."
           end
 
           if metadata.present? && fields.size > 1
             raise ArgumentError,
-                  "Field metadata (#{metadata.keys.join(', ')}) can only be provided when declaring a single field"
+                  "Field metadata (#{metadata.keys.join(', ')}) isn't allowed#{DeclarationLabel.locator} — provide it when " \
+                  "declaring a single field."
           end
 
           _symbolize_option_bags!(validations)
@@ -1908,7 +1950,7 @@ module Axn
             bag = Internal::ShapeGraph.hash_or_nil(value)
             next if nil.equal?(bag)
 
-            symbolized = _symbol_keyed_bag(bag) { "the `#{key}:` option bag" }
+            symbolized = _symbol_keyed_bag(bag) { "the `#{key}:` option bag#{DeclarationLabel.locator}" }
             next if nil.equal?(symbolized) || Internal::ShapeGraph.supplies_default?(bag)
 
             validations[key] = symbolized
@@ -1979,8 +2021,8 @@ module Axn
           allow_blank ||= optional
 
           if validations.key?(:model)
-            _validate_model_batch!(fields, on:)
-            _reject_model_transform!(fields, on:, preprocess:, validations:)
+            _validate_model_batch!(fields)
+            _reject_model_transform!(fields, preprocess:, validations:)
           end
 
           _parse_field_validations(*fields, allow_nil:, allow_blank:, allow_empty:, path_allowance:, **validations).map do |field, parsed_validations|
@@ -2190,17 +2232,17 @@ module Axn
         # field, and (now that subfield transforms resolve on the read path, which the model reader does
         # not route through) applying them would silently do nothing. Reject at declaration — loud, never
         # silently inert. To transform the lookup TOKEN, declare/transform the `<field>_id` field instead.
-        def _reject_model_transform!(fields, on:, preprocess:, validations:)
+        def _reject_model_transform!(fields, preprocess:, validations:)
           offending = []
           offending << "coerce:" if validations.key?(:coerce) || (validations[:type].is_a?(Hash) && validations[:type][:coerce])
           offending << "preprocess:" unless preprocess.nil?
           return if offending.empty?
 
-          where = on ? "#{fields.map(&:to_s).inspect} with on: #{on}" : fields.map(&:to_s).inspect
           raise ArgumentError,
-                "#{offending.join(' / ')} is not supported on a `model:` field (#{where}) — a model field resolves a " \
-                "record from an id, not a scalar to coerce/preprocess. To transform the lookup token, declare or " \
-                "transform the `<field>_id` field instead."
+                "#{offending.map { |key| "`#{key}`" }.join(' / ')} #{offending.one? ? "isn't" : "aren't"} allowed beside " \
+                "`model:` on #{_declared_fields_label(fields)} — to transform the lookup token, declare or transform the " \
+                "`<field>_id` field instead. A model field resolves a record from an id, not a scalar to " \
+                "coerce/preprocess."
         end
 
         # A model: batch that also names a model field's own `<field>_id` companion (e.g.
@@ -2211,15 +2253,14 @@ module Axn
         # so the explicit one is both redundant and broken. (Declaring the id in a separate expects
         # doesn't help either — the generated `<field>_id` reader already exists, so it trips the
         # duplicate-reader guard.)
-        def _validate_model_batch!(fields, on: nil)
+        def _validate_model_batch!(fields)
           batch = fields.map(&:to_sym)
           model_field = batch.find { |f| batch.include?(Axn::Internal::FieldConfig.model_id_key(f)) }
           return unless model_field
 
           id_key = Axn::Internal::FieldConfig.model_id_key(model_field)
-          where = on ? "#{fields.map(&:to_s).inspect} with on: #{on}" : fields.map(&:to_s).inspect
           raise ArgumentError,
-                "a model: batch (#{where}) names both " \
+                "a model: batch (#{_declared_fields_label(fields)}) names both " \
                 ":#{model_field} and its own id companion :#{id_key} — but model: applies to every field " \
                 "in the batch, so :#{id_key} becomes a second model: field (requiring :#{id_key}_id) " \
                 "rather than the raw id. The model: field :#{model_field} already generates a " \
@@ -2250,17 +2291,18 @@ module Axn
           tolerances = MODEL_BAG_TOLERANCE_KEYS.select { |key| Internal::ShapeGraph.carries_key?(bag, key) }
           return if gates.empty? && tolerances.empty?
 
-          raise ArgumentError, _model_bag_refusal(gates, tolerances, _declared_fields_label(fields), direction)
+          raise ArgumentError, _model_bag_refusal(gates, tolerances, fields, direction)
         end
 
         # The gist first (which keys, where), then the fix, then what the key reaches inside the bag.
-        def _model_bag_refusal(gates, tolerances, where, direction)
+        def _model_bag_refusal(gates, tolerances, fields, direction)
           keys = gates + tolerances
           record_check = direction == :expects ? "the record check" : "the record-type check"
           fixes = []
           reasons = []
           unless gates.empty?
-            fixes << "put the condition on the declaration: `#{direction} #{where}, model: …, #{gates.first}: …`"
+            written = fields.map { |field| _inspect_field_name(field) }.join(", ")
+            fixes << "put the condition on the declaration: `#{direction} #{written}, model: …, #{gates.first}: …`"
             reasons << "Inside the bag a gate reaches only #{direction == :expects ? MODEL_BAG_EXPECTS_RECORD_CHECK : record_check}, " \
                        "never #{direction == :expects ? 'the lookup or ' : ''}presence; on the declaration it gates presence too."
           end
@@ -2271,8 +2313,8 @@ module Axn
                        "runs on a nil or blank value, never presence."
           end
 
-          "#{_model_bag_keys_label(keys)} #{keys.one? ? "isn't" : "aren't"} allowed inside `model:` on #{direction} " \
-            "#{where} — #{fixes.join('; ')}. #{reasons.join(' ')}"
+          "#{_model_bag_keys_label(keys)} #{keys.one? ? "isn't" : "aren't"} allowed inside `model:` on " \
+            "#{_declared_fields_label(fields)} — #{fixes.join('; ')}. #{reasons.join(' ')}"
         end
 
         MODEL_BAG_EXPECTS_RECORD_CHECK = "the record check (the record's type, the record/id match, the not-found report)"
@@ -2493,14 +2535,14 @@ module Axn
 
           if validations.key?(:type)
             raise ArgumentError,
-                  "coerce: and type: cannot be combined (coerce: already declares the type). " \
-                  "Use `type: { klass: …, coerce: true }` when you also need sibling type options."
+                  "`coerce:` isn't allowed beside `type:`#{DeclarationLabel.locator} — `coerce:` already declares the type; " \
+                  "use `type: { klass: …, coerce: true }` when you also need sibling type options."
           end
 
           target = validations.delete(:coerce)
           if [true, false].include?(target)
             raise ArgumentError,
-                  "coerce: must be a type (a Class or array of Classes), not a boolean. " \
+                  "coerce: must be a type (a Class or array of Classes), not a boolean#{DeclarationLabel.locator}. " \
                   "The boolean form lives inside `type: { klass: …, coerce: true }`."
           end
 
@@ -2517,7 +2559,9 @@ module Axn
           # any truthy value (`coerce: :typo`) as enabled. `coerce: false` is a valid no-op (the type
           # is declared, coercion off), so it passes here and skips the coercible-set checks below.
           coerce = type_hash[:coerce]
-          raise ArgumentError, "coerce: must be true or false (got #{coerce.inspect})" unless [true, false].include?(coerce)
+          unless [true, false].include?(coerce)
+            raise ArgumentError, "coerce: must be true or false#{DeclarationLabel.locator} (got #{_declared_type_label(coerce)})"
+          end
           return unless coerce
 
           # `_declared_type_tokens`, not `Array(...)`: `type_hash[:klass]` is the coerce target as the caller
@@ -2531,7 +2575,8 @@ module Axn
             # and this is an error-reporting path — a declared class defining its own `inspect` that raises
             # would replace this ArgumentError with the caller's exception.
             raise ArgumentError,
-                  "coerce: does not yet support #{unsupported.map { |k| _declared_type_label(k) }.join(', ')} " \
+                  "coerce: does not yet support #{unsupported.map { |k| _declared_type_label(k) }.join(', ')}" \
+                  "#{DeclarationLabel.locator} " \
                   "(supported: #{Axn::Internal::Coercion::SUPPORTED.join(', ')}). " \
                   "String may accompany a coercible type as a passthrough."
           end
@@ -2539,8 +2584,8 @@ module Axn
           return unless coercible.empty?
 
           raise ArgumentError,
-                "coerce: needs at least one coercible type (#{Axn::Internal::Coercion::SUPPORTED.join(', ')}); " \
-                "got #{klasses.map(&:inspect).join(', ')}."
+                "coerce: needs at least one coercible type#{DeclarationLabel.locator} " \
+                "(#{Axn::Internal::Coercion::SUPPORTED.join(', ')}); got #{klasses.map { |k| _declared_type_label(k) }.join(', ')}."
         end
 
         # Whether a validator entry must be held OUT of the declaration's `optional:`/`allow_blank:`/
@@ -2745,7 +2790,8 @@ module Axn
           # that raises would replace this ArgumentError with the caller's exception — which outside
           # StandardError escapes every rescue meant to settle it. The rendering is byte-identical to the list's
           # for every ordinary class.
-          raise ArgumentError, "of: requires #{option} Array or Hash (got [#{declared.map { |k| _declared_type_label(k) }.join(', ')}])"
+          raise ArgumentError, "of: requires #{option} Array or Hash#{DeclarationLabel.locator} " \
+                               "(got [#{declared.map { |k| _declared_type_label(k) }.join(', ')}])"
         end
 
         # This seam runs over a shape MEMBER's bag twice — once as the member is built like a field
@@ -2817,7 +2863,7 @@ module Axn
           # The field path is safe because `detach_option_containers!` reaches ITS validator entries directly.
           # A bag's entries sit one level further down, where `detached_option_bag` copies a nested Hash by
           # reference — it detaches nested Arrays only — so the same seam is applied here, to the entries.
-          Internal::ShapeGraph.detach_option_containers!(entries)
+          Internal::ShapeGraph.detach_option_containers!(entries, locator: DeclarationLabel.locator)
           # The bag-position mirror of the field path's own call (`_canonicalize_validator_options!`), so a
           # clusivity set means the same thing at an `of:` position as it does at a named one. Ordered after the
           # detachment to read alongside it rather than out of necessity: the rewrite builds a new members Array
@@ -3007,7 +3053,8 @@ module Axn
           return unless false.equal?(klass) || nil.equal?(klass)
 
           raise ArgumentError,
-                "model: klass: false/nil is not a type to resolve a record through — pass `model: true` (or " \
+                "model: klass: false/nil is not a type to resolve a record through#{DeclarationLabel.locator} — pass " \
+                "`model: true` (or " \
                 "omit klass: entirely) to infer the class from the field name, or name the class explicitly."
         end
 
@@ -3040,7 +3087,8 @@ module Axn
           end
 
           raise ArgumentError,
-                "model: klass: must name a single Class or Module (got #{_declared_type_label(klass)}) — a " \
+                "model: klass: must name a single Class or Module#{DeclarationLabel.locator} " \
+                "(got #{_declared_type_label(klass)}) — a " \
                 "model field resolves a record by calling a finder method on this class, so a union or a " \
                 "pseudo-type has nothing to dispatch through."
         end
@@ -3080,7 +3128,7 @@ module Axn
           return if offending.empty?
 
           raise ArgumentError,
-                "model: not_found_on: must name StandardError subclasses (got " \
+                "model: not_found_on: must name StandardError subclasses#{DeclarationLabel.locator} (got " \
                 "#{offending.map { |e| _declared_type_label(e) }.join(', ')}) — each one is a class the finder " \
                 "raises to mean \"no such record\", which axn turns into a not-found violation instead of a " \
                 "reported exception. Only StandardError is rescuable there, so a class outside it would escape " \
@@ -3110,7 +3158,8 @@ module Axn
           return if Internal::FieldConfig::MODEL_ID_TYPE_TOKENS.any? { |token| Internal::Identity.same?(token, id_type) }
 
           raise ArgumentError,
-                "model: id_type: must be a class or :uuid (got #{_declared_type_label(id_type)}) — it names the " \
+                "model: id_type: must be a class or :uuid#{DeclarationLabel.locator} (got #{_declared_type_label(id_type)}) " \
+                "— it names the " \
                 "JSON type of the generated id, so a value that is not a type describes nothing."
         end
 
@@ -3222,9 +3271,11 @@ module Axn
                 "on the field's own declaration, where ActiveModel does read it."
         end
 
-        # The field(s) a declaration error names, each through the shared name seam: a field name is the
-        # caller's Symbol and reaches this only on the failure path, so nothing of its own is run to build it.
-        def _declared_fields_label(fields) = fields.map { |field| _inspect_field_name(field) }.join(", ")
+        # The declaration a refusal names: the direction and field(s) `DeclarationLabel` holds for the declaration
+        # being judged (`expects :company`, `shape member `sku` in exposes :rows`), and outside one the field(s)
+        # alone. Each name goes through the shared name seam: a field name is the caller's Symbol and reaches this
+        # only on the failure path, so nothing of its own is run to build it.
+        def _declared_fields_label(fields) = DeclarationLabel.current || fields.map { |field| _inspect_field_name(field) }.join(", ")
 
         # The axes a bag can constrain on. Keyed on `key?` rather than on truthiness, so a supplied-but-nil axis
         # is caught by this check rather than passing as one that was named.
@@ -3273,7 +3324,8 @@ module Axn
         # refusal on the next declaration. Takes the AXIS rather than a rendered option label, since the axis is
         # the key the author has to edit and only the caller knows which was written.
         def _empty_union_axis_message(axis)
-          "of: #{axis}: names an empty union, so that axis constrains nothing — #{EMPTY_UNION_DIAGNOSIS}. " \
+          "of: #{axis}: names an empty union#{DeclarationLabel.locator}, so that axis constrains nothing — " \
+            "#{EMPTY_UNION_DIAGNOSIS}. " \
             "Name the class(es) that axis must hold, or drop the axis and constrain the other one — an axis " \
             "left off is the honest spelling of \"unconstrained\", while one naming nothing only looks like " \
             "a constraint."
@@ -3309,7 +3361,7 @@ module Axn
             Internal::ShapeGraph.carries_key?(bag, candidate) && _axis_names_empty_union?(bag[candidate])
           end
 
-          nil.equal?(axis) ? MAP_OF_REQUIRED_MESSAGE : _empty_union_axis_message(axis)
+          nil.equal?(axis) ? _map_of_required_message : _empty_union_axis_message(axis)
         end
 
         def _reject_unconstraining_of_bag!(bag)
@@ -3319,7 +3371,8 @@ module Axn
           # contents' class with `klass:`" is no help to an author looking at the `klass:` they wrote.
           if Internal::ShapeGraph.carries_key?(bag, :klass) && !bag[:klass].nil?
             raise ArgumentError,
-                  "of: klass: names an empty union, so this bag constrains nothing — #{EMPTY_UNION_DIAGNOSIS}. " \
+                  "of: klass: names an empty union#{DeclarationLabel.locator}, so this bag constrains nothing — " \
+                  "#{EMPTY_UNION_DIAGNOSIS}. " \
                   "Name the class(es) the contents must be, or drop the empty klass: and constrain them with " \
                   "`of:` or `shape:`. (`of: []` is sugar for `of: { klass: [] }`.)"
           end
@@ -3331,7 +3384,8 @@ module Axn
           return if _bag_carries_positional_validator?(bag)
 
           raise ArgumentError,
-                "of: must constrain something — name the contents' class with `klass:`, what is inside them " \
+                "of: must constrain something#{DeclarationLabel.locator} — name the contents' class with `klass:`, what " \
+                "is inside them " \
                 "with `of:`, their members with `shape:`, or their value with a validator " \
                 "(#{POSITIONAL_VALIDATOR_KEYS.map { |key| "#{key}:" }.join(', ')})"
         end
@@ -3432,12 +3486,12 @@ module Axn
           # before any key is read out of it, so every read below reads axn's own copy, a later mutation of what
           # the caller still holds cannot change a declared contract at any depth, and
           # `reject_defaulting_option_container!` applies at every rung rather than only the first.
-          Internal::ShapeGraph.detach_option_containers!(bag)
+          Internal::ShapeGraph.detach_option_containers!(bag, locator: DeclarationLabel.locator)
           # And canonical before any key is read out of it, for the reason the detach above is taken here: one
           # rung down is exactly as far as the field-level pass reaches. AFTER the detach, so the defaulting-bag
           # refusal still judges the container the author wrote rather than the plain copy canonicalizing
           # produces — the same order, and the same reason for it, as `_symbolize_option_bags!`'s own carve-out.
-          _symbolize_inner_bag!(bag, :of) { "the `of:` option bag" }
+          _symbolize_inner_bag!(bag, :of) { "the `of:` option bag#{DeclarationLabel.locator}" }
           container = _inner_of_container!(bag)
           _drop_derived_of_container!(bag, container)
           bag[:of] = container.equal?(::Hash) ? _canonical_map_of!(bag, fields) : _canonical_array_of!(bag, fields)
@@ -3474,8 +3528,8 @@ module Axn
         # reason a union `klass:` is refused a line later.
         def _inner_of_container!(bag)
           unless Internal::ShapeGraph.carries_key?(bag, :klass)
-            raise ArgumentError, "of: names no container, so its own `of:` has no reading — add `klass: Array` " \
-                                 "or `klass: Hash`"
+            raise ArgumentError, "of: names no container#{DeclarationLabel.locator}, so its own `of:` has no reading — add " \
+                                 "`klass: Array` or `klass: Hash`"
           end
 
           _declared_of_container!(bag[:klass], option: "klass:")
@@ -3494,7 +3548,7 @@ module Axn
         # stored shape may not carry.
         def _canonical_map_of!(owner, fields)
           bag = Internal::ShapeGraph.hash_or_nil(owner[:of])
-          raise ArgumentError, MAP_OF_REQUIRED_MESSAGE if nil.equal?(bag)
+          raise ArgumentError, _map_of_required_message if nil.equal?(bag)
 
           _reject_unknown_bag_keys!(bag, MAP_OF_OPTION_KEYS, option: "of:")
           raise ArgumentError, _map_axes_name_no_class_message(bag) if MAP_OF_AXES.all? { |axis| _axis_names_no_class?(bag[axis]) }
@@ -3533,13 +3587,13 @@ module Axn
         # of what the caller still holds cannot change a declared contract at any depth, and a defaulting Hash is
         # refused at this rung with the axis named. Mutates `bag`.
         def _canonicalize_map_axes!(bag, fields)
-          Internal::ShapeGraph.detach_option_containers!(bag)
+          Internal::ShapeGraph.detach_option_containers!(bag, locator: DeclarationLabel.locator)
 
           MAP_OF_AXES.each do |axis|
             # Canonical before its grammar is checked, on the same terms and in the same order as a nested
             # element bag (see `_symbolize_inner_bag!`): an axis is the third position one inner-contract bag
             # sits at, and a spelling accepted at the other two has to be accepted here.
-            _symbolize_inner_bag!(bag, axis) { "the `of: { #{axis}: … }` option bag" }
+            _symbolize_inner_bag!(bag, axis) { "the `of: { #{axis}: … }` option bag#{DeclarationLabel.locator}" }
             inner = Internal::ShapeGraph.hash_or_nil(bag[axis])
             next if nil.equal?(inner)
 
@@ -3649,7 +3703,7 @@ module Axn
         # `inspect`: it is the caller's object, and one raising from `to_s` while this message is built would
         # replace the ArgumentError with its exception.
         def _unsupported_type_token_message(option, declared)
-          "#{option} must name a type — a Class, a union of them, or one of " \
+          "#{option} must name a type#{DeclarationLabel.locator} — a Class, a union of them, or one of " \
             "#{TYPE_TOKEN_PSEUDO_TYPES.map(&:inspect).join(', ')} (got #{_declared_type_label(declared)})"
         end
 
@@ -3899,8 +3953,8 @@ module Axn
           # this line calls supported and a sibling guard refuses is not one to point an author at.
           supported = allowed.reject { |key| unadvertised.include?(key) }
           raise ArgumentError,
-                "#{option} does not support #{offenders.map { |key| _bag_key_label(key) }.join(', ')} " \
-                "(supported: #{supported.map { |key| "#{key}:" }.join(', ')})"
+                "#{option} does not support #{offenders.map { |key| _bag_key_label(key) }.join(', ')}" \
+                "#{DeclarationLabel.locator} (supported: #{supported.map { |key| "#{key}:" }.join(', ')})"
         end
 
         # An offending key written into the message. A Symbol is named through a BOUND `Symbol#name` and keeps
@@ -5602,37 +5656,40 @@ module Axn
         # context-scope pair below. `inside` is where the `strict:` was written, so the message names the thing
         # the author has to edit.
         def _raise_strict_validation!(inside, where)
+          place = inside == "the declaration" ? "" : " in #{inside}"
           raise ArgumentError,
-                "`strict:` inside #{inside} on #{where} is ActiveModel's strict-raising mode, and axn does not " \
-                "have one: a contract violation already raises, and the strict exception lands in the same " \
-                "handling with LESS to say — it pre-empts the settlement, so a `user_facing:` message degrades " \
-                "to the generic one, co-occurring violations are dropped, and a class outside StandardError " \
-                "escapes the call. Drop `strict:`; a failed validation already stops the action. To shape what " \
-                "the failure says, use `message:` on the check, `user_facing:` on the field, or `fails_on`."
+                "`strict:` isn't allowed#{place} on #{where} — drop it; to shape what a failure says, use " \
+                "`message:` on the check, `user_facing:` on the field, or `fails_on`. Axn has no strict mode: when an " \
+                "ActiveModel check it rides on fails, it raises `ActiveModel::StrictValidationFailed` in place of axn's " \
+                "own contract violation, so a `user_facing:` message degrades to the generic one, the other violations " \
+                "go unreported, and a `strict:` class outside StandardError escapes `.call`. Axn's own checks " \
+                "(`type:`, `of:`, `shape:`, `model:`, `validate:`) ignore it."
         end
 
         # The one sentence, shared by the entry scan above and by the bag check that reaches the positions it
         # cannot see (`_reject_inner_contract_context_scope!`). `inside` is what the `on:` was written in — a
         # validator key, or a bag — so the message names the thing the author has to edit rather than a
-        # construct their declaration does not carry.
+        # construct their declaration does not carry. It speaks for the checks `on:` was written on and no
+        # others: the declaration's other checks run as declared.
         def _raise_validator_context_scope!(inside, where, runs)
+          place = inside == "the declaration" ? "" : " in #{inside}"
           raise ArgumentError,
-                "`on:` inside #{inside} on #{where} names an ActiveModel validation context, and " \
-                "axn validates with no context — so #{runs} on no call and the declaration is left unenforced. " \
-                "Axn has no validation contexts: drop `on:`, or gate the check with `if:`/`unless:`, which axn " \
-                "does support. (A DECLARATION-level `on:` is axn's subfield parent — `expects :zip, on: :address` " \
-                "— and is unaffected.)"
+                "`on:` isn't allowed#{place} on #{where} — drop it, or gate the check with `if:`/`unless:`, which " \
+                "axn does support. It names an ActiveModel validation context, and axn validates with no context, so " \
+                "#{runs} on no call. (A DECLARATION-level `on:` is axn's subfield parent — `expects :zip, on: " \
+                ":address` — and is unaffected.)"
         end
 
         # The one sentence, shared by the entry scan (`_reject_validator_except_on!`) and the bag check that
         # reaches the positions it cannot see (`_reject_inner_contract_except_on!`). `inside` is where the
-        # `except_on:` was written, so the message names the thing the author has to edit.
+        # `except_on:` was written, so the message names the thing the author has to edit. It says only that the
+        # option skips nothing — never when the check runs, which the declaration's gates and tolerances decide.
         def _raise_validator_except_on!(inside, where)
+          place = inside == "the declaration" ? "" : " in #{inside}"
           raise ArgumentError,
-                "`except_on:` inside #{inside} on #{where} names an ActiveModel validation context to skip, " \
-                "and axn validates with no context — so the exclusion excludes nothing and the check runs on " \
-                "every call, which is what it would do with the option absent. Axn has no validation " \
-                "contexts: drop `except_on:`, or gate the check with `if:`/`unless:`, which axn does support."
+                "`except_on:` isn't allowed#{place} on #{where} — drop it, or gate the check with `if:`/`unless:`, " \
+                "which axn does support. It names an ActiveModel validation context to skip, and axn validates with no " \
+                "context, so it skips nothing: the check runs exactly when it would without it."
         end
 
         # Pseudo-types (Symbol type names) whose values can be empty. `:params` is Hash-backed; `:boolean`
@@ -5687,7 +5744,7 @@ module Axn
           # replaces the declaration error with the caller's exception — outside StandardError, escaping every
           # rescue meant to settle it.
           raise ArgumentError,
-                "allow_empty: must be true, false, or nil on #{fields.map(&:to_s).inspect} " \
+                "allow_empty: must be true, false, or nil on #{_declared_fields_label(fields)} " \
                 "(got a value of class #{Axn::Internal::Reflection::PropertyNames.renderable_class_name(allow_empty)}). " \
                 "`true` accepts an empty value, `false` rejects one, and omitting the option leaves the " \
                 "field's other rules to decide."
@@ -5700,21 +5757,20 @@ module Axn
         def _validate_allow_empty!(fields, validations)
           # `_declared_type_tokens`, not `Array(...)`: the declared `type:`/`klass:` is the caller's own value.
           klasses = _declared_type_tokens(validations.dig(:type, :klass))
-          where = fields.map(&:to_s).inspect
+          where = _declared_fields_label(fields)
 
           if klasses.empty?
             raise ArgumentError,
-                  "allow_empty: requires a `type:` on #{where} — without one nothing rejects a nil, so the " \
-                  "flag would widen the field to accept any value. Declare the container type (e.g. `type: Array`)."
+                  "`allow_empty:` isn't allowed on #{where} without a `type:` — declare the container type (e.g. " \
+                  "`type: Array`). Without one nothing rejects a nil, so the flag would widen the field to accept any value."
           end
 
           offending = klasses.reject { |k| _emptiable_type?(k) }
           return if offending.empty?
 
           raise ArgumentError,
-                "allow_empty: is not supported for #{offending.map { |k| _declared_type_label(k) }.join('/')} on " \
-                "#{where} — those values cannot be empty, so there is no empty state to permit or forbid. " \
-                "Drop allow_empty:."
+                "`allow_empty:` isn't allowed on #{where} for #{offending.map { |k| _declared_type_label(k) }.join('/')} — " \
+                "drop it. Those values cannot be empty, so there is no empty state to permit or forbid."
         end
 
         # This method applies any top-level options to each of the individual validations given.
@@ -5727,7 +5783,7 @@ module Axn
           path_allowance: nil,
           **validations
         )
-          Internal::ShapeGraph.detach_option_containers!(validations)
+          Internal::ShapeGraph.detach_option_containers!(validations, locator: DeclarationLabel.locator)
           _canonicalize_blank_gates!(validations)
 
           # `coerce: <Type>` sugar → a coerce flag inside the type bag (coercion binds to the type;
@@ -6197,7 +6253,7 @@ module Axn
           verdict = allow_empty ? "acceptable" : "not acceptable"
           raise ArgumentError,
                 "`#{spelling}` and `allow_empty: #{allow_empty}` answer the same question two ways on " \
-                "#{fields.map(&:to_s).inspect} — #{says}, while `allow_empty: #{allow_empty}` says an empty value is " \
+                "#{_declared_fields_label(fields)} — #{says}, while `allow_empty: #{allow_empty}` says an empty value is " \
                 "#{verdict}. Declare the emptiness axis once: keep `allow_empty: #{allow_empty}` and drop `#{spelling}`, " \
                 "or drop `allow_empty:` and let `#{spelling}` stand."
         end

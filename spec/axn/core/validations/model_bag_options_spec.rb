@@ -10,8 +10,8 @@ RSpec.describe "a gate or tolerance key inside a model: bag" do
     stub_const("Company", Struct.new(:id) { def self.find(id) = id.to_s == "1" ? new(1) : nil })
   end
 
-  define_method(:expected_message) do |direction, key|
-    head = "`#{key}:` isn't allowed inside `model:` on #{direction} :company — "
+  define_method(:expected_message) do |direction, key, field = ":company"|
+    head = "`#{key}:` isn't allowed inside `model:` on #{direction} #{field} — "
     if %i[if unless].include?(key)
       reach = if direction == :expects
                 "the record check (the record's type, the record/id match, the not-found report), never the lookup or presence"
@@ -28,20 +28,20 @@ RSpec.describe "a gate or tolerance key inside a model: bag" do
   end
 
   positions = {
-    "top-level expects" => [:expects, ->(bag, **decl) { expects :company, model: bag, **decl }],
+    "top-level expects" => [:expects, ->(bag, **decl) { expects :company, model: bag, **decl }, ":company"],
     "on: subfield expects" => [:expects, lambda { |bag, **decl|
       expects :payload, type: Hash
       expects :company, on: :payload, model: bag, **decl
-    }],
+    }, "payload.company"],
     "dotted on: subfield expects" => [:expects, lambda { |bag, **decl|
       expects :payload, type: Hash
       expects :company, on: "payload.inner", model: bag, **decl
-    }],
-    "exposes" => [:exposes, ->(bag, **decl) { exposes :company, model: bag, **decl }],
+    }, "payload.inner.company"],
+    "exposes" => [:exposes, ->(bag, **decl) { exposes :company, model: bag, **decl }, ":company"],
   }.freeze
 
   define_method(:declare) do |position, bag, **decl|
-    body = positions.fetch(position).last
+    body = positions.fetch(position)[1]
     build_axn { instance_exec(bag, **decl, &body) }
   end
 
@@ -52,13 +52,13 @@ RSpec.describe "a gate or tolerance key inside a model: bag" do
     allow_blank: [true, false, nil],
   }.freeze
 
-  positions.each do |position, (direction, _body)|
+  positions.each do |position, (direction, _body, field)|
     describe "on a #{position}" do
       refused.each do |key, values|
         values.each do |value|
           it "refuses #{key}: #{value.is_a?(Proc) ? 'a Proc' : value.inspect}" do
             expect { declare(position, { klass: Company, key => value }) }
-              .to raise_error(ArgumentError, expected_message(direction, key))
+              .to raise_error(ArgumentError, expected_message(direction, key, field))
           end
         end
       end
@@ -148,7 +148,7 @@ RSpec.describe "a gate or tolerance key inside a model: bag" do
 
   it "advertises only the keys a model: bag accepts on an unknown key" do
     expect { build_axn { exposes :company, model: { klass: Company, bogus: 1 } } }
-      .to raise_error(ArgumentError, "model: does not support bogus: (supported: klass:, finder:, not_found_on:, id_type:, message:)")
+      .to raise_error(ArgumentError, "model: does not support bogus: on exposes :company (supported: klass:, finder:, not_found_on:, id_type:, message:)")
   end
 
   # This refusal comes first; the bag's `on:`/`except_on:`/`strict:` refusals still own a bag without these keys.
@@ -157,11 +157,11 @@ RSpec.describe "a gate or tolerance key inside a model: bag" do
       expect { build_axn { public_send(direction, :company, model: { klass: Company, if: -> { true }, strict: true }) } }
         .to raise_error(ArgumentError, expected_message(direction, :if))
       expect { build_axn { public_send(direction, :company, model: { klass: Company, strict: true }) } }
-        .to raise_error(ArgumentError, /`strict:` inside model:/)
+        .to raise_error(ArgumentError, /`strict:` isn't allowed in model:/)
       expect { build_axn { public_send(direction, :company, model: { klass: Company, on: :create }) } }
-        .to raise_error(ArgumentError, /`on:` inside model:/)
+        .to raise_error(ArgumentError, /`on:` isn't allowed in model:/)
       expect { build_axn { public_send(direction, :company, model: { klass: Company, except_on: :create }) } }
-        .to raise_error(ArgumentError, /`except_on:` inside model:/)
+        .to raise_error(ArgumentError, /`except_on:` isn't allowed in model:/)
     end
   end
 

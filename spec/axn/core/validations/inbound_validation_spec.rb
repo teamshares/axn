@@ -358,7 +358,7 @@ RSpec.describe Axn do
       end
 
       it "raises" do
-        expect { action.call(foo: 100) }.to raise_error(Axn::ContractViolation::DuplicateFieldError, "Duplicate field(s) declared: foo")
+        expect { action.call(foo: 100) }.to raise_error(Axn::ContractViolation::DuplicateFieldError, "Duplicate field(s) declared: foo (on expects :foo)")
       end
     end
 

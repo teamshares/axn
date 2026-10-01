@@ -467,7 +467,7 @@ RSpec.describe "Dynamic sensitive fields" do
   # the value is never handed to it) — so a Proc declaring a required parameter can never be called
   # successfully, and used to make `#inspect` raise on every resolution instead of failing at declaration.
   describe "sensitive: Proc arity" do
-    let(:arity_error) { /sensitive: Proc is instance_exec'd against the action instance with no arguments/ }
+    let(:arity_error) { /sensitive: Proc on expects :a is instance_exec'd against the action instance with no arguments/ }
 
     it "rejects a lambda with a required positional parameter" do
       expect { build_axn { expects :a, sensitive: ->(v) { v }, optional: true } }.to raise_error(ArgumentError, arity_error)
@@ -505,7 +505,7 @@ RSpec.describe "Dynamic sensitive fields" do
 
     it "rejects a required-parameter Proc on a shape member too" do
       expect { build_axn { expects(:par, type: Hash, optional: true) { field :m, sensitive: ->(v) { v } } } }
-        .to raise_error(ArgumentError, arity_error)
+        .to raise_error(ArgumentError, /sensitive: Proc on shape member `m` in expects :par is instance_exec'd/)
     end
   end
 
@@ -659,7 +659,7 @@ RSpec.describe "Dynamic sensitive fields" do
       lying.define_singleton_method(:parameters) { [] }
 
       expect { build_axn { expects :a, sensitive: lying, optional: true } }
-        .to raise_error(ArgumentError, /sensitive: Proc is instance_exec'd against the action instance with no arguments/)
+        .to raise_error(ArgumentError, /sensitive: Proc on expects :a is instance_exec'd against the action instance with no arguments/)
     end
   end
 

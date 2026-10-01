@@ -1704,7 +1704,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           include Axn
           exposes :user, model: { klass: Struct.new(:id), id_type: Integer }
         end
-      end.to raise_error(ArgumentError, /exposes.*does not support model: id_type:/)
+      end.to raise_error(ArgumentError, /`id_type:` isn't allowed inside `model:` on exposes :user — drop it/)
     end
 
     it "still allows model: on exposes without id_type:" do

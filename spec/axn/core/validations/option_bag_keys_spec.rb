@@ -96,7 +96,7 @@ RSpec.describe "option bag keys" do
   # DECLARATION level, above the bag, and still decides first.
   it "still rejects an unrecognized key in the declaration itself" do
     expect { build_axn { expects :a, "type" => String } }
-      .to raise_error(ArgumentError, /Unknown key\(s\) "type" in field declaration/)
+      .to raise_error(ArgumentError, /Unknown key\(s\) "type" on expects :a\./)
   end
 
   # An unrecognized key INSIDE a bag has never been rejected (there is no per-bag grammar to reject it
@@ -113,7 +113,7 @@ RSpec.describe "option bag keys" do
   # happened to be written last.
   it "rejects a bag declaring one option under both spellings" do
     expect { build_axn { expects :choice, inclusion: { "in" => %w[a b], :in => %w[c] } } }
-      .to raise_error(ArgumentError, /the `inclusion:` option bag declares :in twice.*Declare the option once/m)
+      .to raise_error(ArgumentError, /the `inclusion:` option bag on expects :choice declares :in twice.*Declare the option once/m)
   end
 
   # An INNER contract is the one thing below a bag that is still axn's own grammar rather than caller data: the
@@ -218,7 +218,7 @@ RSpec.describe "option bag keys" do
         inner = string_keyed(klass: Integer, on: :create)
 
         expect { build_axn { expects :m, type: Array, of: { klass: Array, of: inner } } }
-          .to raise_error(ArgumentError, /`on:` inside an `of:` bag/)
+          .to raise_error(ArgumentError, /`on:` isn't allowed in an `of:` bag/)
       end
 
       it "still refuses an option an axis bag cannot honour" do
@@ -239,17 +239,17 @@ RSpec.describe "option bag keys" do
         bag = string_keyed(shape: { members: [], container: Hash }, message: "nope")
 
         expect { build_axn { expects :m, type: Array, of: { klass: Array, of: bag } } }
-          .to raise_error(ArgumentError, /of: message: on :m has nothing to describe/)
+          .to raise_error(ArgumentError, /of: message: on expects :m has nothing to describe/)
       end
 
       it "reports one option declared under both spellings, naming the nested bag" do
         expect { build_axn { expects :m, type: Array, of: { klass: Array, of: { "klass" => Integer, :klass => String } } } }
-          .to raise_error(ArgumentError, /the `of:` option bag declares :klass twice/)
+          .to raise_error(ArgumentError, /the `of:` option bag on expects :m declares :klass twice/)
       end
 
       it "reports one option declared under both spellings, naming the axis" do
         expect { build_axn { expects :m, type: Hash, of: { values: { "klass" => Integer, :klass => String } } } }
-          .to raise_error(ArgumentError, /#{Regexp.escape('the `of: { values: … }` option bag declares :klass twice')}/)
+          .to raise_error(ArgumentError, /#{Regexp.escape('the `of: { values: … }` option bag on expects :m declares :klass twice')}/)
       end
 
       # The defaulting-container refusal is judged ahead of the canonicalization at every rung, for the reason
@@ -307,7 +307,7 @@ RSpec.describe "option bag keys" do
 
     it "rejects a member declaring one option under both spellings" do
       expect { declared_with(member({ "type" => { klass: String }, :type => { klass: Integer } })) }
-        .to raise_error(ArgumentError, /the validations of shape member `a` declares :type twice/)
+        .to raise_error(ArgumentError, /the validations of shape member `a` in expects :payload declares :type twice/)
     end
   end
 
@@ -325,7 +325,7 @@ RSpec.describe "option bag keys" do
       bag = defaulting(String)
 
       expect { build_axn { expects :a, type: bag } }
-        .to raise_error(ArgumentError, /the `type:` option bag answers a missing key from a Hash default.*Write the options out as entries/m)
+        .to raise_error(ArgumentError, /the `type:` option bag on expects :a answers a missing key from a Hash default.*Write the options out as entries/m)
     end
 
     it "rejects a default_proc bag" do
@@ -354,7 +354,7 @@ RSpec.describe "option bag keys" do
       bag["klass"] = String
 
       expect { build_axn { expects :a, type: bag } }
-        .to raise_error(ArgumentError, /the `type:` option bag answers a missing key from a Hash default/)
+        .to raise_error(ArgumentError, /the `type:` option bag on expects :a answers a missing key from a Hash default/)
     end
 
     it "rejects a mixed-key defaulting bag" do
@@ -363,7 +363,7 @@ RSpec.describe "option bag keys" do
       bag["message"] = "must be a String"
 
       expect { build_axn { expects :a, type: bag } }
-        .to raise_error(ArgumentError, /the `type:` option bag answers a missing key from a Hash default/)
+        .to raise_error(ArgumentError, /the `type:` option bag on expects :a answers a missing key from a Hash default/)
     end
 
     it "rejects a String-keyed default_proc bag" do
@@ -381,7 +381,7 @@ RSpec.describe "option bag keys" do
       bag[:klass] = String
 
       expect { build_axn { expects :a, type: bag } }
-        .to raise_error(ArgumentError, /the `type:` option bag answers a missing key from a Hash default/)
+        .to raise_error(ArgumentError, /the `type:` option bag on expects :a answers a missing key from a Hash default/)
     end
 
     # Both readers stay Hash's own here too — the erasure is what a lying subclass would otherwise be handed
@@ -405,7 +405,7 @@ RSpec.describe "option bag keys" do
       bag[:in] = %w[y]
 
       expect { build_axn { expects :a, inclusion: bag } }
-        .to raise_error(ArgumentError, /the `inclusion:` option bag declares :in twice/)
+        .to raise_error(ArgumentError, /the `inclusion:` option bag on expects :a declares :in twice/)
     end
 
     # The skip is on the DEFAULT, not on being a Hash: a String-keyed bag with the `default: nil` every Hash
@@ -426,7 +426,7 @@ RSpec.describe "option bag keys" do
         bag = defaulting(String)
 
         expect { build_axn { expects :a, type: Array, option => bag } }
-          .to raise_error(ArgumentError, /the `#{option}:` option bag answers a missing key from a Hash default/)
+          .to raise_error(ArgumentError, /the `#{option}:` option bag on expects :a answers a missing key from a Hash default/)
       end
     end
 
@@ -435,7 +435,7 @@ RSpec.describe "option bag keys" do
       shape[:container] = Hash
 
       expect { build_axn { expects :payload, type: Hash, shape: } }
-        .to raise_error(ArgumentError, /`shape:` on :payload answers a missing key from a Hash default/)
+        .to raise_error(ArgumentError, /`shape:` on expects :payload answers a missing key from a Hash default/)
     end
 
     it "rejects a defaulting nested shape, naming the member it hangs from" do
@@ -444,7 +444,7 @@ RSpec.describe "option bag keys" do
       member = Axn::Core::Contract::ShapeConfig.new(field: :m, validations: { type: Hash, shape: nested })
 
       expect { build_axn { expects :payload, type: Hash, shape: { members: [member], container: Hash } } }
-        .to raise_error(ArgumentError, /`shape:` on shape member `m` answers a missing key from a Hash default/)
+        .to raise_error(ArgumentError, /`shape:` on shape member `m` in expects :payload answers a missing key from a Hash default/)
     end
 
     # A shape node's keys are canonicalized by the same pass, so both shape reports had the same hole — and a
@@ -455,7 +455,7 @@ RSpec.describe "option bag keys" do
       shape["container"] = Hash
 
       expect { build_axn { expects :payload, type: Hash, shape: } }
-        .to raise_error(ArgumentError, /`shape:` on :payload answers a missing key from a Hash default/)
+        .to raise_error(ArgumentError, /`shape:` on expects :payload answers a missing key from a Hash default/)
     end
 
     it "rejects a String-keyed defaulting nested shape, naming the member it hangs from" do
@@ -464,7 +464,7 @@ RSpec.describe "option bag keys" do
       member = Axn::Core::Contract::ShapeConfig.new(field: :m, validations: { type: Hash, shape: nested })
 
       expect { build_axn { expects :payload, type: Hash, shape: { members: [member], container: Hash } } }
-        .to raise_error(ArgumentError, /`shape:` on shape member `m` answers a missing key from a Hash default/)
+        .to raise_error(ArgumentError, /`shape:` on shape member `m` in expects :payload answers a missing key from a Hash default/)
     end
 
     it "rejects a String-keyed defaulting bag inside a shape member" do
@@ -473,7 +473,7 @@ RSpec.describe "option bag keys" do
       member = Axn::Core::Contract::ShapeConfig.new(field: :m, validations: { type: bag })
 
       expect { build_axn { expects :payload, type: Hash, shape: { members: [member], container: Hash } } }
-        .to raise_error(ArgumentError, /the `type:` option bag answers a missing key from a Hash default/)
+        .to raise_error(ArgumentError, /the `type:` option bag on shape member `m` in expects :payload answers a missing key from a Hash default/)
     end
 
     # A member's own two grammar levels are held to it as well: the validations Hash and the metadata Hash are
@@ -483,14 +483,14 @@ RSpec.describe "option bag keys" do
       member = Axn::Core::Contract::ShapeConfig.new(field: :a, validations:)
 
       expect { build_axn { expects :payload, type: Hash, shape: { members: [member], container: Hash } } }
-        .to raise_error(ArgumentError, /the validations of shape member `a` answers a missing key from a Hash default/)
+        .to raise_error(ArgumentError, /the validations of shape member `a` in expects :payload answers a missing key from a Hash default/)
     end
 
     it "rejects a member whose metadata Hash defaults" do
       member = Axn::Core::Contract::ShapeConfig.new(field: :a, validations: {}, metadata: defaulting("the a"))
 
       expect { build_axn { expects :payload, type: Hash, shape: { members: [member], container: Hash } } }
-        .to raise_error(ArgumentError, /the metadata of shape member `a` answers a missing key from a Hash default/)
+        .to raise_error(ArgumentError, /the metadata of shape member `a` in expects :payload answers a missing key from a Hash default/)
     end
 
     # Both readers are Hash's own, bound: a subclass overriding them is exactly the case the guard is about, so

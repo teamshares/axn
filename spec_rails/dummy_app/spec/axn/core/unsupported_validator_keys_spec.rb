@@ -27,19 +27,19 @@ RSpec.describe "validator keys ActiveModel cannot resolve, with ActiveRecord loa
 
   it "refuses uniqueness: at declaration rather than raising on every call" do
     expect { build_axn { expects :v, type: String, uniqueness: true } }
-      .to raise_error(ArgumentError, /uniqueness: on :v is not supported.*ActiveRecord validator/m)
+      .to raise_error(ArgumentError, /uniqueness: on expects :v is not supported.*ActiveRecord validator/m)
   end
 
   # A `model:` field is the one place a record genuinely exists, and is exactly where the option looks most
   # plausible — so it is refused there too rather than acquiring a second, model-only meaning.
   it "refuses uniqueness: on a model: field, where a record does exist" do
     expect { build_axn { expects :user, model: { klass: User }, uniqueness: true } }
-      .to raise_error(ArgumentError, /uniqueness: on :user is not supported/)
+      .to raise_error(ArgumentError, /uniqueness: on expects :user is not supported/)
   end
 
   it "refuses a bare message: at declaration" do
     expect { build_axn { expects :v, type: String, message: "nope" } }
-      .to raise_error(ArgumentError, /message: on :v is not an option at this level/)
+      .to raise_error(ArgumentError, /message: on expects :v is not an option at this level/)
   end
 
   # The controls, mirrored on the Rails side: the bag spelling is what the refusal points at, and a field

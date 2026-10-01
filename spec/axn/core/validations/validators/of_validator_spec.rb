@@ -229,7 +229,7 @@ RSpec.describe Axn::Validators::OfValidator do
     it "raises ArgumentError when of: is used with a type: that is no container at all" do
       expect do
         build_axn { expects :items, type: String, of: String }
-      end.to raise_error(ArgumentError, "of: requires type: Array or Hash (got [String])")
+      end.to raise_error(ArgumentError, "of: requires type: Array or Hash on expects :items (got [String])")
     end
 
     it "applies the element contract to the Array branch of a union whose one container is Array" do
@@ -244,13 +244,13 @@ RSpec.describe Axn::Validators::OfValidator do
     it "raises ArgumentError when a union names two containers" do
       expect do
         build_axn { expects :items, type: [Array, Hash], of: String }
-      end.to raise_error(ArgumentError, "of: requires type: Array or Hash (got [Array, Hash])")
+      end.to raise_error(ArgumentError, "of: requires type: Array or Hash on expects :items (got [Array, Hash])")
     end
 
     it "raises ArgumentError when of: is used without any type:" do
       expect do
         build_axn { expects :items, of: String }
-      end.to raise_error(ArgumentError, "of: requires type: Array or Hash (got [])")
+      end.to raise_error(ArgumentError, "of: requires type: Array or Hash on expects :items (got [])")
     end
 
     # The COMPLETE axis-pair behaviour, as a truth table over every combination of the six things an axis can
@@ -413,7 +413,7 @@ RSpec.describe Axn::Validators::OfValidator do
         it "refuses a non-class token at #{position}, where every call used to fail opaquely" do
           expect { build_axn { expects :a, type: container, of: } }.to raise_error(
             ArgumentError,
-            "#{option} must name a type — a Class, a union of them, or one of " \
+            "#{option} must name a type on expects :a — a Class, a union of them, or one of " \
             ":boolean, :uuid, :params (got a value of class String)",
           )
         end
@@ -493,7 +493,7 @@ RSpec.describe Axn::Validators::OfValidator do
       stub_const("RaisingInspect", Class.new(Hash) { def self.inspect = raise("boom from inspect") })
 
       expect { build_axn { expects :counts, type: [RaisingInspect, String], of: { values: Integer } } }
-        .to raise_error(ArgumentError, "of: requires type: Array or Hash (got [RaisingInspect, String])")
+        .to raise_error(ArgumentError, "of: requires type: Array or Hash on expects :counts (got [RaisingInspect, String])")
     end
 
     # A declared `type:` that is not a class at all is named by ITS class rather than by its own bytes, on the
@@ -515,7 +515,7 @@ RSpec.describe Axn::Validators::OfValidator do
 
     it "names a non-class declared type by its class" do
       expect { build_axn { expects :counts, type: "Hash", of: { values: Integer } } }
-        .to raise_error(ArgumentError, "of: requires type: Array or Hash (got [a value of class String])")
+        .to raise_error(ArgumentError, "of: requires type: Array or Hash on expects :counts (got [a value of class String])")
     end
   end
 
@@ -560,12 +560,12 @@ RSpec.describe Axn::Validators::OfValidator do
     # actually wrote rather than asking for an axis that is already there.
     it "rejects a values axis naming an empty union" do
       expect { build_axn { expects :counts, type: Hash, of: { values: [] } } }
-        .to raise_error(ArgumentError, /\Aof: values: names an empty union, so that axis constrains nothing/)
+        .to raise_error(ArgumentError, /\Aof: values: names an empty union on expects :counts, so that axis constrains nothing/)
     end
 
     it "rejects a keys axis naming an empty union" do
       expect { build_axn { expects :counts, type: Hash, of: { keys: [] } } }
-        .to raise_error(ArgumentError, /\Aof: keys: names an empty union, so that axis constrains nothing/)
+        .to raise_error(ArgumentError, /\Aof: keys: names an empty union on expects :counts, so that axis constrains nothing/)
     end
 
     # Both axes empty is still ONE defect per axis, so the first one written is the one named — an author
@@ -605,7 +605,7 @@ RSpec.describe Axn::Validators::OfValidator do
     # whitelist entry for both containers, and axn has no validation contexts on either side of the line.
     it "leaves on: to the context-scope guard here too" do
       expect { build_axn { expects :counts, type: Hash, of: { values: Integer, on: :create } } }
-        .to raise_error(ArgumentError, /`on:` inside an `of:` bag on :counts .* validation context/)
+        .to raise_error(ArgumentError, /`on:` isn't allowed in an `of:` bag on expects :counts .* validation context/)
     end
 
     it "rejects message:, which cannot say which axis failed" do
@@ -650,7 +650,7 @@ RSpec.describe Axn::Validators::OfValidator do
     # token the runtime cannot hold a value to.
     it "rejects an axis naming an empty union beside a valid one" do
       expect { build_axn { expects :c, type: Hash, of: { keys: Symbol, values: [] } } }
-        .to raise_error(ArgumentError, /\Aof: values: names an empty union, so that axis constrains nothing/)
+        .to raise_error(ArgumentError, /\Aof: values: names an empty union on expects :c, so that axis constrains nothing/)
     end
 
     # `nil` INSIDE a union is the one unsupported token a `find`-based search cannot report: the answer for
@@ -678,7 +678,7 @@ RSpec.describe Axn::Validators::OfValidator do
     # rather than a nested contract.
     it "rejects a bag inside a union on an axis" do
       expect { build_axn { expects :counts, type: Hash, of: { values: [String, { klass: Integer }] } } }
-        .to raise_error(ArgumentError, "of: values: must name a type — a Class, a union of them, or one of " \
+        .to raise_error(ArgumentError, "of: values: must name a type on expects :counts — a Class, a union of them, or one of " \
                                        ":boolean, :uuid, :params (got a value of class Hash)")
     end
 
@@ -839,12 +839,12 @@ RSpec.describe Axn::Validators::OfValidator do
 
     it "rejects a union type:, from which no container can be derived" do
       expect { build_axn { expects :counts, type: [Array, Hash], of: { values: Integer } } }
-        .to raise_error(ArgumentError, "of: requires type: Array or Hash (got [Array, Hash])")
+        .to raise_error(ArgumentError, "of: requires type: Array or Hash on expects :counts (got [Array, Hash])")
     end
 
     it "rejects of: with no type: at all" do
       expect { build_axn { expects :counts, of: { values: Integer } } }
-        .to raise_error(ArgumentError, "of: requires type: Array or Hash (got [])")
+        .to raise_error(ArgumentError, "of: requires type: Array or Hash on expects :counts (got [])")
     end
 
     it "holds a shape member's bag to the same rules, since both pass through one seam" do

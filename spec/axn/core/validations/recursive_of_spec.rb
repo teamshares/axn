@@ -4,10 +4,11 @@ RSpec.describe "recursive of:" do
   # The message grew when the bag gained value validators (PRO-3193): a bag now constrains its position with a
   # class, with what is inside it, with its members, OR with a validator, and the fix it offers names all four.
   # Held in one constant so the two assertions below cannot drift apart.
-  must_constrain_something =
-    "of: must constrain something — name the contents' class with `klass:`, what is inside them with `of:`, " \
-    "their members with `shape:`, or their value with a validator (absence:, acceptance:, comparison:, " \
-    "exclusion:, format:, inclusion:, length:, numericality:, presence:, validate:)"
+  must_constrain_something = lambda do |on|
+    "of: must constrain something on #{on} — name the contents' class with `klass:`, what is inside them with " \
+      "`of:`, their members with `shape:`, or their value with a validator (absence:, acceptance:, comparison:, " \
+      "exclusion:, format:, inclusion:, length:, numericality:, presence:, validate:)"
+  end
 
   describe "an Array of Arrays" do
     let(:action) { build_axn { expects :matrix, type: Array, of: { klass: Array, of: Integer } } }
@@ -57,12 +58,12 @@ RSpec.describe "recursive of:" do
     # that rung for the author to edit. The field-level spelling is unchanged (see of_validator_spec).
     it "refuses a nested of: under a scalar klass" do
       expect { build_axn { expects :m, type: Array, of: { klass: String, of: Integer } } }
-        .to raise_error(ArgumentError, "of: requires klass: Array or Hash (got [String])")
+        .to raise_error(ArgumentError, "of: requires klass: Array or Hash on expects :m (got [String])")
     end
 
     it "refuses a nested of: under a union klass" do
       expect { build_axn { expects :m, type: Array, of: { klass: [Array, Hash], of: Integer } } }
-        .to raise_error(ArgumentError, "of: requires klass: Array or Hash (got [Array, Hash])")
+        .to raise_error(ArgumentError, "of: requires klass: Array or Hash on expects :m (got [Array, Hash])")
     end
 
     # An empty class union is the silent no-op this option exists to refuse, arriving through `klass:` rather
@@ -75,7 +76,7 @@ RSpec.describe "recursive of:" do
       # refusal cannot see — nothing under a `keys:` axis emits at any depth — so the message states the
       # runtime consequence, which holds at every position (PRO-3170).
       empty_union_message =
-        "of: klass: names an empty union, so this bag constrains nothing — a value held to every " \
+        "of: klass: names an empty union on expects :a, so this bag constrains nothing — a value held to every " \
         "class in an empty list is held to none, so every value at that position passes. Name the " \
         "class(es) the contents must be, or drop the empty klass: and constrain them with `of:` or " \
         "`shape:`. (`of: []` is sugar for `of: { klass: [] }`.)"
@@ -122,8 +123,8 @@ RSpec.describe "recursive of:" do
     # `klass:`, not the axis, is what the message names: an author who wrote `of: { values: { klass: false } }`
     # has nothing to fix on `values:`, and the same bag written at an Array's element has no axis at all.
     describe "an unsupported class token in a bag" do
-      def unsupported(named)
-        "of: klass: must name a type — a Class, a union of them, or one of :boolean, :uuid, :params (got #{named})"
+      def unsupported(named, on = "expects :m")
+        "of: klass: must name a type on #{on} — a Class, a union of them, or one of :boolean, :uuid, :params (got #{named})"
       end
 
       it "refuses one on a map's values: axis" do
@@ -159,7 +160,7 @@ RSpec.describe "recursive of:" do
           field: :n, validations: { type: { klass: Array }, of: { klass: false } },
         )
         expect { build_axn { expects :m, type: Hash, shape: { members: [member] } } }
-          .to raise_error(ArgumentError, unsupported("a value of class FalseClass"))
+          .to raise_error(ArgumentError, unsupported("a value of class FalseClass", "shape member `n` in expects :m"))
       end
 
       # A union names types, so each member is judged as one and the OFFENDER is what gets named — not the
@@ -189,7 +190,7 @@ RSpec.describe "recursive of:" do
       # so the author gets the fix that lands in one edit instead of two.
       it "leaves a bag carrying of: to the container refusal, which prescribes the narrower fix" do
         expect { build_axn { expects :m, type: Array, of: { klass: false, of: Integer } } }
-          .to raise_error(ArgumentError, "of: requires klass: Array or Hash (got [a value of class FalseClass])")
+          .to raise_error(ArgumentError, "of: requires klass: Array or Hash on expects :m (got [a value of class FalseClass])")
       end
 
       # `_declared_type_tokens` (shared by this guard and the bare-axis one) classifies the union-or-single
@@ -455,7 +456,7 @@ RSpec.describe "recursive of:" do
         e.message
       end
 
-      expect(message).to start_with("the `of:` graph on :m has more than #{Axn::Internal::ShapeGraph::MAX_MEMBER_PATHS} member paths — " \
+      expect(message).to start_with("the `of:` graph on expects :m has more than #{Axn::Internal::ShapeGraph::MAX_MEMBER_PATHS} member paths — " \
                                     "a nested `of:` bag reused at sibling positions multiplies out")
       expect(message).to include("Give each nested bag contents of its own, or flatten the nesting.")
     end
@@ -466,7 +467,7 @@ RSpec.describe "recursive of:" do
       shape = shared_sibling_shape(13, { type: Array, of: { klass: Array, of: Integer } })
 
       expect { build_axn { expects :payload, type: Hash, shape: } }
-        .to raise_error(ArgumentError, /\Athe `shape:` graph on :payload has more than #{Axn::Internal::ShapeGraph::MAX_MEMBER_PATHS} member paths/)
+        .to raise_error(ArgumentError, /\Athe `shape:` graph on expects :payload has more than #{Axn::Internal::ShapeGraph::MAX_MEMBER_PATHS} member paths/)
     end
 
     def shared_sibling_shape(depth, leaf_validations)
@@ -774,7 +775,7 @@ RSpec.describe "recursive of:" do
 
     it "still refuses a bag that constrains none of the three axes, naming all of them" do
       expect { build_axn { expects :rows, type: Array, of: { message: "nope" } } }
-        .to raise_error(ArgumentError, must_constrain_something)
+        .to raise_error(ArgumentError, must_constrain_something.call("expects :rows"))
     end
 
     # A shape describes what is inside a STRUCTURED value, so a bag naming a scalar class has nothing for the
@@ -783,14 +784,14 @@ RSpec.describe "recursive of:" do
     it "refuses a shape under a scalar klass:" do
       shape = sku_shape
       expect { build_axn { expects :rows, type: Array, of: { klass: String, shape: } } }
-        .to raise_error(ArgumentError, "a shape inside an `of:` bag requires a single structured klass: " \
+        .to raise_error(ArgumentError, "a shape inside an `of:` bag requires a single structured klass: on expects :rows " \
                                        "(Array, Hash, or a class) — got [String]")
     end
 
     it "refuses a shape under a union klass:" do
       shape = sku_shape
       expect { build_axn { expects :rows, type: Array, of: { klass: [Hash, Array], shape: } } }
-        .to raise_error(ArgumentError, "a shape inside an `of:` bag requires a single structured klass: " \
+        .to raise_error(ArgumentError, "a shape inside an `of:` bag requires a single structured klass: on expects :rows " \
                                        "(Array, Hash, or a class) — got [Hash, Array]")
     end
 
@@ -800,12 +801,12 @@ RSpec.describe "recursive of:" do
     # other class, a non-Array element distributes to nothing and its members go unchecked, so it is refused.
     describe "an Array container on a bag's shape" do
       distributing_message =
-        "a `shape:` inside an `of:` bag cannot name `container: Array` (on :rows) — `ShapeValidator` reads that " \
-        "container as \"distribute over the elements\" rather than as a gate, so an element that is not an Array " \
-        "has its members checked by nothing. Where the members belong to the level below, write it as the " \
-        "nesting it is (`of: { klass: Array, of: { shape: ... } }`); where they belong to this level, name the " \
-        "class they are read off (`klass: Hash`, or the object's own class) and leave the shape's `container:` " \
-        "to be derived."
+        "`container: Array` isn't allowed in `shape:` inside the `of:` bag on expects :rows — where the members " \
+        "belong to the level below, write it as the nesting it is (`of: { klass: Array, of: { shape: ... } }`); " \
+        "where they belong to this level, name the class they are read off (`klass: Hash`, or the object's own " \
+        "class) and leave the shape's `container:` to be derived. `ShapeValidator` reads that container as " \
+        "\"distribute over the elements\" rather than as a gate, so an element that is not an Array has its " \
+        "members checked by nothing."
 
       it "distributes a shape derived onto it by klass: Array, and names the members it cannot state" do
         shape = sku_shape
@@ -1036,14 +1037,14 @@ RSpec.describe "recursive of:" do
       shape = { members: [member(user_facing: true)] }
 
       expect { build_axn { exposes :rows, type: Array, of: { klass: Hash, shape: } } }
-        .to raise_error(ArgumentError, /shape member `sku` does not support user_facing: on exposes/)
+        .to raise_error(ArgumentError, /`user_facing:` isn't allowed on shape member `sku`/)
     end
 
     it "refuses one nested a container deeper" do
       shape = { members: [member(user_facing: true)] }
 
       expect { build_axn { exposes :m, type: Array, of: { klass: Array, of: { klass: Hash, shape: } } } }
-        .to raise_error(ArgumentError, /shape member `sku` does not support user_facing: on exposes/)
+        .to raise_error(ArgumentError, /`user_facing:` isn't allowed on shape member `sku`/)
     end
 
     it "refuses one hanging off a field-shape member's own of: chain" do
@@ -1052,7 +1053,7 @@ RSpec.describe "recursive of:" do
                                                                validations: { type: Array, of: { klass: Hash, shape: inner } })] }
 
       expect { build_axn { exposes :payload, type: Hash, shape: outer } }
-        .to raise_error(ArgumentError, /shape member `sku` does not support user_facing: on exposes/)
+        .to raise_error(ArgumentError, /`user_facing:` isn't allowed on shape member `sku`/)
     end
 
     it "leaves an un-opted member declarable on exposes" do
@@ -1192,7 +1193,7 @@ RSpec.describe "recursive of:" do
 
     it "holds an axis bag to the same grammar an element bag is held to" do
       expect { build_axn { expects :m, type: Hash, of: { values: {} } } }
-        .to raise_error(ArgumentError, must_constrain_something)
+        .to raise_error(ArgumentError, must_constrain_something.call("expects :m"))
     end
 
     it "refuses an unknown key inside an axis bag, against the element bag's own whitelist" do
@@ -1355,29 +1356,29 @@ RSpec.describe "recursive of:" do
 
     it "refuses one at the field's own shape:" do
       expect { build_axn { expects :m, type: Hash, shape: :junk } }
-        .to raise_error(ArgumentError, /\A`shape:` on :m must be a Hash naming the members it describes \(got :junk\) — /)
+        .to raise_error(ArgumentError, /\A`shape:` on expects :m must be a Hash naming the members it describes \(got :junk\) — /)
     end
 
     it "refuses one at a shape member's own shape:" do
       shape = { members: [Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { shape: :junk })] }
 
       expect { build_axn { expects :m, type: Hash, shape: } }
-        .to raise_error(ArgumentError, /\A`shape:` on shape member `a` must be a Hash naming the members it describes \(got :junk\) — /)
+        .to raise_error(ArgumentError, /\A`shape:` on shape member `a` in expects :m must be a Hash naming the members it describes \(got :junk\) — /)
     end
 
     it "refuses one at the element position" do
       expect { build_axn { expects :rows, type: Array, of: { klass: Hash, shape: :junk } } }
-        .to raise_error(ArgumentError, /\A`shape:` inside the `of:` bag on :rows must be a Hash naming the members it describes/)
+        .to raise_error(ArgumentError, /\A`shape:` inside the `of:` bag on expects :rows must be a Hash naming the members it describes/)
     end
 
     it "refuses one on the values axis, named by that axis" do
       expect { build_axn { expects :m, type: Hash, of: { values: { klass: Hash, shape: :junk } } } }
-        .to raise_error(ArgumentError, /\A`shape:` inside the `of: \{ values: … \}` bag on :m must be a Hash naming/)
+        .to raise_error(ArgumentError, /\A`shape:` inside the `of: \{ values: … \}` bag on expects :m must be a Hash naming/)
     end
 
     it "refuses one on the keys axis, named by that axis" do
       expect { build_axn { expects :m, type: Hash, of: { keys: { klass: Hash, shape: 5 } } } }
-        .to raise_error(ArgumentError, /\A`shape:` inside the `of: \{ keys: … \}` bag on :m must be a Hash naming/)
+        .to raise_error(ArgumentError, /\A`shape:` inside the `of: \{ keys: … \}` bag on expects :m must be a Hash naming/)
     end
 
     # The bag position inside a MEMBER's chain, where the enclosing declaration is the member rather than the
@@ -1387,12 +1388,12 @@ RSpec.describe "recursive of:" do
                                                                validations: { type: Array, of: { klass: Hash, shape: nil } })] }
 
       expect { build_axn { expects :m, type: Hash, shape: } }
-        .to raise_error(ArgumentError, /\A`shape:` inside the `of:` bag on shape member `a` must be a Hash naming/)
+        .to raise_error(ArgumentError, /\A`shape:` inside the `of:` bag on shape member `a` in expects :m must be a Hash naming/)
     end
 
     it "refuses one a container deeper" do
       expect { build_axn { expects :rows, type: Array, of: { klass: Array, of: { klass: Hash, shape: 5 } } } }
-        .to raise_error(ArgumentError, /`shape:` inside the `of:` bag on :rows must be a Hash naming/)
+        .to raise_error(ArgumentError, /`shape:` inside the `of:` bag on expects :rows must be a Hash naming/)
     end
 
     # Keyed on `key?`, so "supplied but naming nothing" is refused while a declaration that simply carries no
@@ -1417,22 +1418,22 @@ RSpec.describe "recursive of:" do
   describe "on: inside an of: bag" do
     it "is refused at the element position" do
       expect { build_axn { expects :rows, type: Array, of: { klass: Integer, on: :create } } }
-        .to raise_error(ArgumentError, /\A`on:` inside an `of:` bag on :rows names an ActiveModel validation context/)
+        .to raise_error(ArgumentError, /\A`on:` isn't allowed in an `of:` bag on expects :rows — drop it/)
     end
 
     it "is refused on the values axis" do
       expect { build_axn { expects :m, type: Hash, of: { values: { klass: Integer, on: :create } } } }
-        .to raise_error(ArgumentError, /\A`on:` inside an `of:` bag on :m names an ActiveModel validation context/)
+        .to raise_error(ArgumentError, /\A`on:` isn't allowed in an `of:` bag on expects :m — drop it/)
     end
 
     it "is refused on the keys axis" do
       expect { build_axn { expects :m, type: Hash, of: { keys: { klass: Symbol, on: :create } } } }
-        .to raise_error(ArgumentError, /`on:` inside an `of:` bag on :m names an ActiveModel validation context/)
+        .to raise_error(ArgumentError, /`on:` isn't allowed in an `of:` bag on expects :m — drop it/)
     end
 
     it "is refused a container deeper" do
       expect { build_axn { expects :rows, type: Array, of: { klass: Array, of: { klass: Integer, on: :create } } } }
-        .to raise_error(ArgumentError, /`on:` inside an `of:` bag on :rows names an ActiveModel validation context/)
+        .to raise_error(ArgumentError, /`on:` isn't allowed in an `of:` bag on expects :rows — drop it/)
     end
 
     # The map's own `of:` bag is a bag too. It was reached by the ENTRY scan instead, so one defect read two
@@ -1440,7 +1441,7 @@ RSpec.describe "recursive of:" do
     # `of:` bag on :rows one line up.
     it "is refused on a map's own of: bag, in the same words the array form uses" do
       expect { build_axn { expects :m, type: Hash, of: { values: Integer, on: :create } } }
-        .to raise_error(ArgumentError, /\A`on:` inside an `of:` bag on :m names an ActiveModel validation context/)
+        .to raise_error(ArgumentError, /\A`on:` isn't allowed in an `of:` bag on expects :m — drop it/)
     end
 
     # The control: `on:` at the DECLARATION level is axn's subfield parent and stays legal, as does a bag
@@ -1482,22 +1483,22 @@ RSpec.describe "recursive of:" do
     # an option nothing reads — the silent no-op the whole `of:` whitelist exists to refuse.
     it "are refused on the values axis, where nothing would read them" do
       expect { build_axn { expects :m, type: Hash, of: { values: { klass: Integer, if: :flag } } } }
-        .to raise_error(ArgumentError, /\Aof: values: does not support if: on :m — an axis is the one position/)
+        .to raise_error(ArgumentError, /\Aof: values: does not support if: on expects :m — an axis is the one position/)
     end
 
     it "are refused on the keys axis, naming every offender at once" do
       expect { build_axn { expects :m, type: Hash, of: { keys: { klass: Symbol, if: :flag, unless: :other_flag } } } }
-        .to raise_error(ArgumentError, /\Aof: keys: does not support if:, unless: on :m/)
+        .to raise_error(ArgumentError, /\Aof: keys: does not support if:, unless: on expects :m/)
     end
 
     it "leaves on: to the context-scope guard, which names a different problem" do
       expect { build_axn { expects :m, type: Hash, of: { values: { klass: Integer, on: :create } } } }
-        .to raise_error(ArgumentError, /\A`on:` inside an `of:` bag on :m names an ActiveModel validation context/)
+        .to raise_error(ArgumentError, /\A`on:` isn't allowed in an `of:` bag on expects :m — drop it/)
     end
 
     it "leaves strict: to the strict guard, which names a different problem" do
       expect { build_axn { expects :m, type: Hash, of: { keys: { klass: Symbol, strict: true } } } }
-        .to raise_error(ArgumentError, /\A`strict:` inside an `of:` bag on :m is ActiveModel's strict-raising mode/)
+        .to raise_error(ArgumentError, /\A`strict:` isn't allowed in an `of:` bag on expects :m — drop it/)
     end
 
     # The tolerance keys are not ActiveModel options at all, so being handed to AM or not is beside the point —
@@ -1554,13 +1555,13 @@ RSpec.describe "recursive of:" do
     it "is refused beside a shape: at the element position" do
       shape = sku_shape
       expect { build_axn { expects :rows, type: Array, of: { shape:, message: "must be a record" } } }
-        .to raise_error(ArgumentError, /\Aof: message: on :rows has nothing to describe — /)
+        .to raise_error(ArgumentError, /\Aof: message: on expects :rows has nothing to describe — /)
     end
 
     it "is refused on the values axis" do
       shape = sku_shape
       expect { build_axn { expects :m, type: Hash, of: { values: { shape:, message: "must be a record" } } } }
-        .to raise_error(ArgumentError, /\Aof: message: on :m has nothing to describe/)
+        .to raise_error(ArgumentError, /\Aof: message: on expects :m has nothing to describe/)
     end
 
     # Emptiness is asked exactly as the runtime asks it, and `_reject_unconstraining_of_bag!` asks the same

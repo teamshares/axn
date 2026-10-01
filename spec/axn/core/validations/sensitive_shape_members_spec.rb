@@ -667,7 +667,7 @@ RSpec.describe "sensitive: on shape members (PRO-2911)" do
             field :company, model: Struct.new(:id)
           end
         end
-      end.to raise_error(ArgumentError, /does not support model:/)
+      end.to raise_error(ArgumentError, /`model:` isn't allowed on shape member `company` in expects :items/)
     end
   end
 

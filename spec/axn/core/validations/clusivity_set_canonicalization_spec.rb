@@ -127,9 +127,9 @@ RSpec.describe "a clusivity set is canonicalized to its members, whatever contai
 
     it "still refuses one whose literals no value of the type could match" do
       expect { build_axn { expects :v, type: Float, inclusion: { in: Set["a"] } } }
-        .to raise_error(ArgumentError, /inclusion: on :v can never match/)
+        .to raise_error(ArgumentError, /inclusion: on expects :v can never match/)
       expect { build_axn { expects :v, type: Float, exclusion: { in: Set["a"] } } }
-        .to raise_error(ArgumentError, /exclusion: on :v enforces nothing/)
+        .to raise_error(ArgumentError, /exclusion: on expects :v enforces nothing/)
     end
   end
 
@@ -257,9 +257,9 @@ RSpec.describe "a clusivity set is canonicalized to its members, whatever contai
         excluded = decorated_set(freeze: true)
 
         expect { build_axn { expects :v, type: Float, inclusion: { in: included } } }
-          .to raise_error(ArgumentError, /inclusion: on :v can never match/)
+          .to raise_error(ArgumentError, /inclusion: on expects :v can never match/)
         expect { build_axn { expects :v, type: Float, exclusion: { in: excluded } } }
-          .to raise_error(ArgumentError, /exclusion: on :v enforces nothing/)
+          .to raise_error(ArgumentError, /exclusion: on expects :v enforces nothing/)
       end
 
       # Those two refusals are EARNED, which is what makes keeping them right rather than merely conservative:
@@ -368,7 +368,7 @@ RSpec.describe "a clusivity set is canonicalized to its members, whatever contai
         set.freeze
 
         expect { build_axn { expects :v, type: Float, inclusion: { in: set } } }
-          .to raise_error(ArgumentError, /inclusion: on :v can never match/)
+          .to raise_error(ArgumentError, /inclusion: on expects :v can never match/)
       end
     end
   end

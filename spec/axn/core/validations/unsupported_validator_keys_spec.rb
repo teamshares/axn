@@ -110,14 +110,14 @@ RSpec.describe "a validator key ActiveModel cannot resolve" do
   [true, false, nil].each do |value|
     it "refuses uniqueness: #{value.inspect}, since a falsy entry raises just the same" do
       expect { build_axn { expects :v, type: String, uniqueness: value } }
-        .to raise_error(ArgumentError, /uniqueness: on :v/)
+        .to raise_error(ArgumentError, /uniqueness: on expects :v/)
     end
   end
 
   ["nope", nil, false].each do |value|
     it "refuses message: #{value.inspect} on the same rule" do
       expect { build_axn { expects :v, type: String, message: value } }
-        .to raise_error(ArgumentError, /message: on :v/)
+        .to raise_error(ArgumentError, /message: on expects :v/)
     end
   end
 

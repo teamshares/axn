@@ -458,21 +458,21 @@ Axn has **no validation contexts.** ActiveModel lets a model gate a validator on
 
 ```ruby
 expects :v, type: { klass: String, on: :create }
-# => ArgumentError: `on:` inside type: on ["v"] names an ActiveModel validation context, and axn validates
-#    with no context — so that check runs on no call and the declaration is left unenforced.
+# => ArgumentError: `on:` isn't allowed in type: on expects :v — drop it, or gate the check with
+#    `if:`/`unless:`, which axn does support. It names an ActiveModel validation context, and axn validates
+#    with no context, so that check runs on no call.
 ```
 
 Use `if:`/`unless:` to gate a check instead. The same rejection covers a shape member's own `on:`, and `on:` on an `exposes`.
 
 Note that this is only about `on:` **inside a validator's options.** A declaration-level `on:` on `expects` is a completely different option — it is axn's [subfield parent](#nested-subfield-expectations) (`expects :zip, on: :address`) — and is unaffected.
 
-Axn also has **no strict-raising mode.** ActiveModel's `strict:` asks `errors.add` to raise instead of recording the error, so the exception reaches the caller in place of a validation result. Axn already settles a contract violation by raising — the errors are collected, composed into one message, and turned into a failed result — so a strict raise arrives at that same handling having skipped the composition, and can only take information away: a `user_facing:` field loses its message to the generic one, co-occurring violations are dropped (`errors.add` raises on the first), and a `strict:` naming a class outside `StandardError` escapes the call, which no axn call otherwise does. It is refused wherever a validator's options are written:
+Axn also has **no strict-raising mode.** ActiveModel's `strict:` asks `errors.add` to raise instead of recording the error. In axn a failed check is already reported — the errors are collected, composed into one message, and turned into a failed result — so where `strict:` takes effect (on an ActiveModel check, when it fails) its `ActiveModel::StrictValidationFailed` replaces that report and can only take information away: a `user_facing:` field loses its message to the generic one, co-occurring violations go unreported (`errors.add` raises on the first), and a `strict:` naming a class outside `StandardError` escapes the call, which no axn call otherwise does. Axn's own checks (`type:`, `of:`, `shape:`, `model:`, `validate:`) ignore it. It is refused wherever a validator's options are written:
 
 ```ruby
 expects :v, numericality: { greater_than: 5 }, strict: true
-# => ArgumentError: `strict:` inside the declaration on ["v"] is ActiveModel's strict-raising mode, and axn
-#    does not have one: a contract violation already raises, and the strict exception lands in the same
-#    handling with LESS to say.
+# => ArgumentError: `strict:` isn't allowed on expects :v — drop it; to shape what a failure says, use
+#    `message:` on the check, `user_facing:` on the field, or `fails_on`. Axn has no strict mode: …
 ```
 
 The refusal covers both tiers ActiveModel reads (`strict:` on the declaration, and inside one validator's own bag), at every position a bag sits — a field, a subfield, an ambient subfield, an `exposes`, a shape member, and an `of:` bag at any depth — and it holds whatever the value is. ActiveModel reads the option by truthiness, so `strict: false` and `strict: nil` raise nothing — but `strict: true` is supported nowhere, which makes the falsy spelling a switch that cannot be turned on rather than a no-op inside a real option (which is what `coerce: false` and `confirmation: false` are, and why those stay legal). Admitting it would also only move the error: a config-driven `strict: flag` would declare cleanly where the flag is false and raise at class definition where it is true. To shape what a failure says, use `message:` on the check, [`user_facing:`](#user-facing) on the field, or [`fails_on`](#fails-on).

@@ -362,12 +362,12 @@ RSpec.describe "value validators in an of: bag" do
     # enforces nothing at a field — so "PRO-3192's two guards" has to mean both of them here.
     it "refuses an exclusion: set no value of the bag's klass could be" do
       expect { build_axn { expects :f, type: Array, of: { klass: Integer, exclusion: { in: ["admin"] } } } }
-        .to raise_error(ArgumentError, /exclusion: on an `of:` bag on :f enforces nothing/)
+        .to raise_error(ArgumentError, /exclusion: on an `of:` bag on expects :f enforces nothing/)
     end
 
     it "refuses comparison: other_than on the same reading" do
       expect { build_axn { expects :f, type: Array, of: { klass: Integer, comparison: { other_than: "admin" } } } }
-        .to raise_error(ArgumentError, /comparison: on an `of:` bag on :f enforces nothing/)
+        .to raise_error(ArgumentError, /comparison: on an `of:` bag on expects :f enforces nothing/)
     end
 
     it "reaches a map axis too" do
@@ -531,17 +531,17 @@ RSpec.describe "value validators in an of: bag" do
   describe "validate: misuse at a position" do
     it "refuses a Hash with no :with at an element position" do
       expect { build_axn { expects :f, type: Array, of: { klass: String, validate: { inclusion: { in: ["a"] } } } } }
-        .to raise_error(ArgumentError, /`validate:` expects a callable/)
+        .to raise_error(ArgumentError, /`validate:` on expects :f needs a callable/)
     end
 
     it "refuses an empty Hash" do
       expect { build_axn { expects :f, type: Array, of: { klass: String, validate: {} } } }
-        .to raise_error(ArgumentError, /`validate:` expects a callable/)
+        .to raise_error(ArgumentError, /`validate:` on expects :f needs a callable/)
     end
 
     it "refuses it on a map axis too" do
       expect { build_axn { expects :f, type: Hash, of: { values: { klass: Integer, validate: { inclusion: { in: [1] } } } } } }
-        .to raise_error(ArgumentError, /`validate:` expects a callable/)
+        .to raise_error(ArgumentError, /`validate:` on expects :f needs a callable/)
     end
 
     it "refuses it in a nested bag" do
@@ -549,7 +549,7 @@ RSpec.describe "value validators in an of: bag" do
         build_axn do
           expects :f, type: Array, of: { klass: Array, of: { klass: String, validate: { inclusion: { in: ["a"] } } } }
         end
-      end.to raise_error(ArgumentError, /`validate:` expects a callable/)
+      end.to raise_error(ArgumentError, /`validate:` on expects :f needs a callable/)
     end
 
     # The remedy the message offers has to be the one that works HERE: declaring the validator directly in the

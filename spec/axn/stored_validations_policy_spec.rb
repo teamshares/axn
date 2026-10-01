@@ -108,7 +108,7 @@ RSpec.describe "constructors of a stored validations bag" do
         expects :v, type: { klass: String, on: :create }
         def call = nil
       end
-    end.to raise_error(ArgumentError, /`on:` inside type:/)
+    end.to raise_error(ArgumentError, /`on:` isn't allowed in type:/)
 
     expect do
       Class.new do
@@ -116,6 +116,6 @@ RSpec.describe "constructors of a stored validations bag" do
         expects :h, type: Hash, shape: { members: [member], container: Hash }
         def call = nil
       end
-    end.to raise_error(ArgumentError, /`on:` inside type:/)
+    end.to raise_error(ArgumentError, /`on:` isn't allowed in type:/)
   end
 end

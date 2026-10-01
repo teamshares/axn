@@ -710,7 +710,7 @@ RSpec.describe "declaration-time property name collisions" do
         end.new([String])
 
         expect { build_axn { expects :choice, type: values } }
-          .to raise_error(ArgumentError, /the `type:` container.*defines methods of its own \(`:any\?`, `:initialize`\)/m)
+          .to raise_error(ArgumentError, /the `type:` on expects :choice container.*defines methods of its own \(`:any\?`, `:initialize`\)/m)
       end
 
       it "rejects an of: element-type container on the same terms" do
@@ -724,7 +724,7 @@ RSpec.describe "declaration-time property name collisions" do
         end.new([String])
 
         expect { build_axn { expects :choice, type: Array, of: { klass: values } } }
-          .to raise_error(ArgumentError, /the `of: \{ klass: … \}` container.*defines methods of its own/m)
+          .to raise_error(ArgumentError, /the `of: \{ klass: … \}` on expects :choice container.*defines methods of its own/m)
       end
 
       # `exclusion:` reaches the same detach and the same ActiveModel `include?` — with the verdict inverted, so
@@ -740,7 +740,7 @@ RSpec.describe "declaration-time property name collisions" do
         end
 
         expect { build_axn { expects :choice, exclusion: { in: klass.new(%w[bad]) } } }
-          .to raise_error(ArgumentError, /the `exclusion: \{ in: … \}` container.*defines methods of its own/m)
+          .to raise_error(ArgumentError, /the `exclusion: \{ in: … \}` on expects :choice container.*defines methods of its own/m)
 
         frozen = build_axn { expects :choice, exclusion: { in: klass.new(%w[bad]).freeze } }
         expect(frozen.call(choice: "bad")).not_to be_ok
@@ -1881,7 +1881,7 @@ RSpec.describe "declaration-time property name collisions" do
       members = [Axn::Core::Contract::ShapeConfig.new(field: :a, validations: {})]
 
       expect { build_axn { expects :par, type: Hash, shape: { members:, container: :junk } } }
-        .to raise_error(ArgumentError, /a shape's `container:` must be a class \(got :junk\)/)
+        .to raise_error(ArgumentError, /a shape's `container:` must be a class on expects :par \(got :junk\)/)
     end
 
     it "names the fix" do
@@ -2101,12 +2101,12 @@ RSpec.describe "declaration-time property name collisions" do
           expects :foo, type: String
           expects :foo, numericality: { greater_than: 10 }
         end
-      end.to raise_error(Axn::ContractViolation::DuplicateFieldError, "Duplicate field(s) declared: foo")
+      end.to raise_error(Axn::ContractViolation::DuplicateFieldError, "Duplicate field(s) declared: foo (on expects :foo)")
     end
 
     it "names every offending occurrence, not just the first" do
       expect { build_axn { expects :foo, :foo, :foo } }
-        .to raise_error(Axn::ContractViolation::DuplicateFieldError, "Duplicate field(s) declared: foo, foo")
+        .to raise_error(Axn::ContractViolation::DuplicateFieldError, "Duplicate field(s) declared: foo, foo (on expects :foo, :foo, :foo)")
     end
 
     # The message names each offender by its canonical property. Naming it by the Symbol would concatenate a
@@ -2133,7 +2133,7 @@ RSpec.describe "declaration-time property name collisions" do
       expect { build_axn { expects(*names) } }.to raise_error(Axn::ContractViolation::DuplicateFieldError) { |error|
         expect(error.message.encoding).to eq(Encoding::UTF_8)
         expect(error.message).to satisfy(&:valid_encoding?)
-        expect(error.message).to eq("Duplicate field(s) declared: café, naïve")
+        expect(error.message).to start_with("Duplicate field(s) declared: café, naïve (on expects :")
       }
     end
   end
@@ -2161,7 +2161,7 @@ RSpec.describe "declaration-time property name collisions" do
             field :a, type: Integer
           end
         end
-      end.to raise_error(Axn::ContractViolation::DuplicateFieldError, /Duplicate shape member declared: :a\b/)
+      end.to raise_error(Axn::ContractViolation::DuplicateFieldError, /Duplicate shape member declared: :a in expects :payload\b/)
     end
 
     # A member name is normalized to a Symbol at declaration, exactly as a top-level field name is, so these
@@ -2176,7 +2176,7 @@ RSpec.describe "declaration-time property name collisions" do
             field "a", type: Integer
           end
         end
-      end.to raise_error(Axn::ContractViolation::DuplicateFieldError, /Duplicate shape member declared: :a —/)
+      end.to raise_error(Axn::ContractViolation::DuplicateFieldError, /Duplicate shape member declared: :a in expects :payload —/)
     end
 
     it "rejects a member name with no UTF-8 rendering" do
@@ -2268,7 +2268,7 @@ RSpec.describe "declaration-time property name collisions" do
 
         expect { build_axn { exposes :payload, type: Hash, shape: { members: [member] } } }
           .to raise_error(ArgumentError) { |error|
-            expect(error.message).to include("does not support user_facing:")
+            expect(error.message).to include("`user_facing:` isn't allowed on shape member")
             expect(error.message.encoding).to eq(Encoding::UTF_8)
             expect(error.message).to satisfy(&:valid_encoding?)
           }
@@ -2423,7 +2423,7 @@ RSpec.describe "declaration-time property name collisions" do
         shape[:container] = Hash
 
         expect { build_axn { exposes :payload, type: Hash, shape: } }
-          .to raise_error(ArgumentError, /`status` does not support user_facing: on exposes/)
+          .to raise_error(ArgumentError, /`user_facing:` isn't allowed on shape member `status` in exposes :/)
       end
 
       it "checks a member that denies the field reader it defines" do
@@ -2498,7 +2498,7 @@ RSpec.describe "declaration-time property name collisions" do
 
         expect(members.map { |m| m.field.class }).to eq([Symbol, Symbol])
         expect { build_axn { expects :payload, type: Hash, shape: { members:, container: Hash } } }
-          .to raise_error(Axn::ContractViolation::DuplicateFieldError, /Duplicate shape member declared: :dup —/)
+          .to raise_error(Axn::ContractViolation::DuplicateFieldError, /Duplicate shape member declared: :dup in expects :payload —/)
       end
 
       # A duck-typed member's reader is not ours to normalize, so this is the one route by which a
@@ -2509,7 +2509,7 @@ RSpec.describe "declaration-time property name collisions" do
         members = [duck_typed_member(hostile.new("dup")), duck_typed_member(hostile.new("dup"))]
 
         expect { build_axn { expects :payload, type: Hash, shape: { members:, container: Hash } } }
-          .to raise_error(Axn::ContractViolation::DuplicateFieldError, /Duplicate shape member declared: "dup" —/)
+          .to raise_error(Axn::ContractViolation::DuplicateFieldError, /Duplicate shape member declared: "dup" in expects :payload —/)
       end
 
       # A shape graph reachable from inside itself has no traversal at all: the walk recurses until the
@@ -2559,7 +2559,7 @@ RSpec.describe "declaration-time property name collisions" do
         members = [member]
 
         expect { build_axn { exposes :payload, type: Hash, shape: { members:, container: Hash } } }
-          .to raise_error(ArgumentError, /`status` does not support user_facing: on exposes/)
+          .to raise_error(ArgumentError, /`user_facing:` isn't allowed on shape member `status` in exposes :/)
       end
 
       # A reader whose own body raises NoMethodError for a DIFFERENT name is a bug inside the member, not an
@@ -3371,7 +3371,7 @@ RSpec.describe "declaration-time property name collisions" do
           members = [duck_typed_member(exotic_name_class.new("dup"))]
 
           expect { build_axn { expects :payload, type: Hash, shape: { members:, container: Hash } } }
-            .to raise_error(ArgumentError, /a shape member name must be a String or a Symbol/)
+            .to raise_error(ArgumentError, /a shape member name in expects :payload must be a String or a Symbol/)
         end
 
         # The block form's own option-rejection messages name the member through the same helper, so they
@@ -3383,7 +3383,7 @@ RSpec.describe "declaration-time property name collisions" do
             build_axn do
               expects(:payload, type: Hash) { field name, model: true }
             end
-          end.to raise_error(ArgumentError, /shape member `a name of class .*` does not support model:/)
+          end.to raise_error(ArgumentError, /`model:` isn't allowed on shape member `a name of class \(anonymous class\)` in expects :/)
         end
 
         # Every declared field name is symbolized before any guard runs, so `config.field` is always a Symbol
@@ -3402,7 +3402,7 @@ RSpec.describe "declaration-time property name collisions" do
           # Named by CLASS, so the offender's own `inspect` — which raises here — never runs while the verdict
           # is being built.
           expect { build_axn { expects exotic } }
-            .to raise_error(ArgumentError, /a field name must be a String or Symbol naming an inbound field \(got a value of class /)
+            .to raise_error(ArgumentError, /an `expects` field name must be a String or Symbol naming an inbound field \(got a value of class /)
         end
       end
 

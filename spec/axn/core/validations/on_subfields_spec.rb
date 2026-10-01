@@ -6,8 +6,7 @@ RSpec.describe Axn do
       it "raises" do
         expect { action }.to raise_error(
           ArgumentError,
-          "expects called with `on: #{on}`, but no such reader exists " \
-          "(are you sure you've declared a field — or alias — named :#{on}?)",
+          /\A`on: #{on}` isn't allowed on expects #{on}\.\w+ — no such reader exists \(are you sure you've declared a field — or alias — named :#{on}\?\)\z/,
         )
       end
     end
@@ -555,7 +554,7 @@ RSpec.describe Axn do
               expects :payload
               expects :bar, on: :payload, readers: false
             end
-          end.to raise_error(ArgumentError, /Unknown key\(s\) :readers in field declaration/)
+          end.to raise_error(ArgumentError, /Unknown key\(s\) :readers on expects payload\.bar\./)
         end
 
         # Every subfield generates a reader now, so an inherited-method name is judged by the same
@@ -617,7 +616,7 @@ RSpec.describe Axn do
               expects :foo
               expects :bar, on: :foo
             end.expects :foo, on: :bar
-          end.to raise_error(ArgumentError, /expects does not support duplicate sub-keys \(i\.e\. `foo` is already defined\).*as: :bar_foo/)
+          end.to raise_error(ArgumentError, /duplicate sub-keys aren.t allowed on expects bar.foo \(`foo` is already defined\).*as: :bar_foo/)
         end
 
         it "resolves via as: (rename instead of the removed readers: false suppression)" do
@@ -698,7 +697,7 @@ RSpec.describe Axn do
               expects :foo, type: Hash
               expects :foo, on: :payload, type: Hash
             end
-          end.to raise_error(ArgumentError, /duplicate sub-keys \(i\.e\. `foo` is already defined\)/)
+          end.to raise_error(ArgumentError, /duplicate sub-keys aren.t allowed on expects \S+ \(`foo` is already defined\)/)
         end
       end
     end

@@ -272,10 +272,14 @@ module Axn
       # key as written, so the key itself has to change — and saying otherwise would send the author
       # after a spelling that cannot help. `exposes` has neither option: an exposed field's name IS the
       # reader defined on the Result, so the only way out there is a different name too.
-      def initialize(name, owner: nil, kind: :input)
+      #
+      # `declaration:` names the declaration that would take the name (`expects :format`), when the caller knows
+      # it — rendered beside the name, so an author with several declarations of one name can tell which.
+      def initialize(name, owner: nil, kind: :input, declaration: nil)
         @name = name
         @owner = owner
         @kind = kind
+        @declaration = declaration
         super()
       end
 
@@ -293,18 +297,19 @@ module Axn
         return "Cannot call expects or exposes with reserved field name: #{name}" if @owner.nil?
 
         owner = Axn::Internal::Text.renderable(@owner.to_s)
+        on = @declaration.nil? ? "" : " (#{Axn::Internal::RenderedText.of(@declaration)})"
 
         case @kind
         when :exposure
-          "Cannot expose `#{name}`: that name belongs to #{owner}, and an exposure cannot share it. " \
+          "Cannot expose `#{name}`#{on}: that name belongs to #{owner}, and an exposure cannot share it. " \
           "`exposes` has no reader alias, so rename the field."
         when :wire_key
-          "Cannot declare an inbound field named `#{name}`: that name belongs to #{owner}. The value a " \
+          "Cannot declare an inbound field named `#{name}`#{on}: that name belongs to #{owner}. The value a " \
           "caller passes under a field's name is read back off axn's inbound context facade, which answers " \
           "to `#{name}` itself — so the caller's value would be unreachable. Rename the field; `as:` and " \
           "`prefix:` rename only the reader and leave the wire key as written."
         else
-          "Cannot declare a reader named `#{name}`: that name belongs to #{owner}. A field's reader is " \
+          "Cannot declare a reader named `#{name}`#{on}: that name belongs to #{owner}. A field's reader is " \
           "defined on the action itself, so declaring it would take the name over. Rename the field, or " \
           "keep the wire key and rename only the reader, with `as:` (or `prefix:`)."
         end

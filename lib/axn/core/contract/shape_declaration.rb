@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "axn/core/contract/declaration_label"
 require "axn/internal/cycle_guard"
 require "axn/internal/shape_graph"
 
@@ -24,9 +25,12 @@ module Axn
         # error with the caller's exception — verified against a member whose `field` raises the second time
         # it is called.
         def _describe_shape_member(member, name)
-          return "of class #{Axn::Internal::Reflection::PropertyNames.renderable_class_name(member)}" if Internal::ShapeGraph.missing?(name)
-
-          "`#{_shape_member_label(name)}`"
+          described = if Internal::ShapeGraph.missing?(name)
+                        "of class #{Axn::Internal::Reflection::PropertyNames.renderable_class_name(member)}"
+                      else
+                        "`#{_shape_member_label(name)}`"
+                      end
+          "#{described}#{DeclarationLabel.placement}"
         end
 
         # A shape member's name is an object property in the reflected schema on exactly the same terms as a
@@ -254,10 +258,11 @@ module Axn
         end
 
         def _distributing_element_container_message(where, container)
-          "#{where} names `container: #{_declared_type_label(container)}` beside `type: Array`, whose shape distributes " \
-            "over the elements — `ShapeValidator` skips an element that is not the container, so any other element " \
-            "has its members checked by nothing. Name the element class where it is checked (`of: { klass: " \
-            "#{_declared_type_label(container)}, shape: { members: [...] } }`), or drop `container:`."
+          named = _declared_type_label(container)
+          "`container: #{named}` isn't allowed in #{where} beside `type: Array`, whose shape distributes over the " \
+            "elements — name the element class where it is checked (`of: { klass: #{named}, shape: { members: [...] } " \
+            "}`), or drop `container:`. `ShapeValidator` skips an element that is not the container, so any other " \
+            "element has its members checked by nothing."
         end
 
         # A hand-written `container:` other than `Array` that leaves the members unchecked on values the declared
@@ -409,12 +414,12 @@ module Axn
         end
 
         def _distributing_container_message(where)
-          "#{where} names `container: Array`, which `ShapeValidator` reads as \"distribute over the elements\" " \
-            "rather than as a gate — so the members describe what is inside each element while the schema " \
-            "publishes them as this value's own properties, and the runtime enforces neither (a `type: Hash` " \
-            "field carrying this shape emits `required: [...]` for the members and validates none of their " \
-            "types). Drop `container:` and let it derive from `type:`; to describe an Array's elements, use " \
-            "`of:` or a `do ... end` block."
+          "`container: Array` isn't allowed in #{where} — drop `container:` and let it derive from `type:`; to " \
+            "describe an Array's elements, use `of:` or a `do ... end` block. That container is what `ShapeValidator` " \
+            "reads as \"distribute over the elements\" rather than as a gate, so the members describe what is inside each " \
+            "element while the schema publishes them as this value's own properties, and the runtime enforces " \
+            "neither (a `type: Hash` field carrying this shape emits `required: [...]` for the members and validates " \
+            "none of their types)."
         end
 
         # Where a `shape:` hanging off an `of:` bag sits, as the phrase the refusal names it by, from the two
@@ -604,7 +609,7 @@ module Axn
         end
 
         def _raise_too_many_member_paths!(fields, edge)
-          raise ArgumentError, _too_many_member_paths_message(_inspect_field_name(fields.first), edge)
+          raise ArgumentError, _too_many_member_paths_message(DeclarationLabel.declaration || _inspect_field_name(fields.first), edge)
         end
 
         # The cost sentence is shared because the cost is: every walk of the stored graph pays one step per
@@ -642,7 +647,7 @@ module Axn
           # them to this walk and not to the snapshot it produces — the reverse mismatch of the one below, and
           # reported as the defect it is rather than as a shape with no members.
           Internal::ShapeGraph.reject_defaulting_option_container!(hash) do
-            nil.equal?(via) ? "the `shape:`" : "the nested `shape:` at shape member #{_describe_shape_member(via, via_name)}"
+            nil.equal?(via) ? "the `shape:`#{DeclarationLabel.locator}" : "the nested `shape:` at shape member #{_describe_shape_member(via, via_name)}"
           end
 
           walk ||= ShapeWalk.new(seen: nil, walked: {}.compare_by_identity, depth: 0)
@@ -759,32 +764,35 @@ module Axn
           height = 0
           edge = SHAPE_EDGE
           copied = keyed.map do |member, name, key|
-            # Charged BEFORE this member is snapshotted, and before its nested shape is walked, so a graph that
-            # multiplies out is rejected while the work done on it is still bounded by the allowance.
-            _spend_paths!(allowance, 1, SHAPE_EDGE)
-            paths += 1
-            # `validations` is read ONCE and threaded to every use — the nested shape to walk, and the snapshot
-            # of this member. A second read is a second answer the caller can give.
-            validations = _symbol_keyed_member_validations(member, name, key)
-            _raise_member_without_validations!(member, name) if nil.equal?(validations)
-            # Every other attribute read (and grammar-checked) BEFORE the nested walk, so a member carrying both
-            # a bad `sensitive:` and an untraversable nested shape is reported as the value defect it is.
-            attributes = _snapshot_member_attributes!(member, name, key, validations)
-            shaped = _snapshot_member_shape!(validations, member, name, child, allowance)
-            # The member's OTHER kind of child. `_symbol_keyed_member_validations` canonicalized the member's
-            # own `of:` exactly as `_parse_field_validations` does a field's — one rung — and this is where the
-            # rest of the chain is descended, off the same walk state the nested `shape:` above used, so both
-            # edges spend one depth budget and one path allowance rather than one each. This is the pass that
-            # knows where the member SITS, and so the only one whose depth verdict is the real one (see
-            # `_walk_declared_inner_contracts!`).
-            walked_of = _walk_inner_contracts!(validations, child, allowance, fields: [key], via: member, via_name: name)
-            both = _combine_inner_contracts(shaped, walked_of)
-            paths += both.paths
-            if both.height > height
-              height = both.height
-              edge = both.edge
+            # Under the member's own label, so a refusal raised anywhere beneath names the member it is about.
+            DeclarationLabel.declaring_member(name) do
+              # Charged BEFORE this member is snapshotted, and before its nested shape is walked, so a graph that
+              # multiplies out is rejected while the work done on it is still bounded by the allowance.
+              _spend_paths!(allowance, 1, SHAPE_EDGE)
+              paths += 1
+              # `validations` is read ONCE and threaded to every use — the nested shape to walk, and the snapshot
+              # of this member. A second read is a second answer the caller can give.
+              validations = _symbol_keyed_member_validations(member, name, key)
+              _raise_member_without_validations!(member, name) if nil.equal?(validations)
+              # Every other attribute read (and grammar-checked) BEFORE the nested walk, so a member carrying both
+              # a bad `sensitive:` and an untraversable nested shape is reported as the value defect it is.
+              attributes = _snapshot_member_attributes!(member, name, key, validations)
+              shaped = _snapshot_member_shape!(validations, member, name, child, allowance)
+              # The member's OTHER kind of child. `_symbol_keyed_member_validations` canonicalized the member's
+              # own `of:` exactly as `_parse_field_validations` does a field's — one rung — and this is where the
+              # rest of the chain is descended, off the same walk state the nested `shape:` above used, so both
+              # edges spend one depth budget and one path allowance rather than one each. This is the pass that
+              # knows where the member SITS, and so the only one whose depth verdict is the real one (see
+              # `_walk_declared_inner_contracts!`).
+              walked_of = _walk_inner_contracts!(validations, child, allowance, fields: [key], via: member, via_name: name)
+              both = _combine_inner_contracts(shaped, walked_of)
+              paths += both.paths
+              if both.height > height
+                height = both.height
+                edge = both.edge
+              end
+              ShapeConfig.new(**attributes)
             end
-            ShapeConfig.new(**attributes)
           end
 
           WalkedShape.new(copy: Internal::ShapeGraph.snapshot_node(hash, copied), paths:, height:, edge:)
@@ -880,7 +888,7 @@ module Axn
         # outside StandardError, so it escapes every rescue in the framework rather than settling into a
         # reported failure. Rejected at declaration, where it is knowable and where the author is present.
         def _raise_cyclic_graph!(member, name, edge:)
-          via = nil.equal?(member) ? "" : " reached from shape member #{_describe_shape_member(member, name)}"
+          via = nil.equal?(member) ? DeclarationLabel.locator : " reached from shape member #{_describe_shape_member(member, name)}"
           raise ArgumentError, _cyclic_graph_message(via, edge)
         end
 
@@ -901,7 +909,7 @@ module Axn
         # — the alternative outcome is a SystemStackError raised while the class is being defined, which
         # no rescue in the framework can settle.
         def _raise_graph_too_deep!(member, name, edge:)
-          via = nil.equal?(member) ? "" : " at shape member #{_describe_shape_member(member, name)}"
+          via = nil.equal?(member) ? DeclarationLabel.locator : " at shape member #{_describe_shape_member(member, name)}"
           raise ArgumentError, _graph_too_deep_message(via, edge)
         end
 
@@ -972,7 +980,7 @@ module Axn
           # like a field and validated like nothing is exactly how the `of:` pair went missing here the first
           # time, when the expansion alone was extracted from `_parse_field_validations`.
           _symbolize_option_bags!(copy)
-          Internal::ShapeGraph.detach_option_containers!(copy)
+          Internal::ShapeGraph.detach_option_containers!(copy, locator: DeclarationLabel.locator)
           _raise_member_model_unsupported!(name) if copy.key?(:model)
           # Truthy, not key presence: `confirmation: false` is the same disabled-validator no-op it is on a
           # field (see Validation::Base.nil_tolerant_validation?), so it is left alone rather than refused.
@@ -1006,7 +1014,7 @@ module Axn
           # and the emitted node stays satisfiable. The vacuity guard takes the same pair
           # and reads it the other way — to discount forbidden literals ActiveModel would skip, never to
           # rescue the declaration.
-          member_where = "shape member `#{_shape_member_label(name)}`"
+          member_where = DeclarationLabel.member(name)
           _reject_unsupported_validator_keys!(copy, where: member_where)
           _reject_validator_context_scope!(copy, where: member_where)
           _reject_strict_validation!(copy, where: member_where)
@@ -1054,9 +1062,10 @@ module Axn
         def _raise_member_model_unsupported!(name)
           label = _shape_member_label(name)
           raise ArgumentError,
-                "shape member `#{label}` does not support model: — a model field resolves a record from an id " \
-                "and exposes a `#{Internal::FieldConfig.model_id_key(label)}` reader, but a shape member is " \
-                "reader-less and validates the element in place (use `type: Klass` for a plain instance check)."
+                "`model:` isn't allowed on #{DeclarationLabel.member(name)} — use `type: Klass` for a plain instance " \
+                "check. A model field resolves a record from an id and exposes a " \
+                "`#{Internal::FieldConfig.model_id_key(label)}` reader, but a shape member is reader-less and " \
+                "validates the element in place."
         end
 
         # A confirmation pair's requiredness rule cannot be written for a shape member: the companion has to be
@@ -1075,10 +1084,10 @@ module Axn
         def _raise_member_confirmation_unsupported!(name)
           label = _shape_member_label(name)
           raise ArgumentError,
-                "shape member `#{label}` does not support confirmation: — the companion is required only when " \
-                "the member is present, and a member's `if:` condition resolves against the action rather than " \
-                "the element, so it cannot refer to a sibling member. Declare the pair as subfields " \
-                "(`expects :#{label}, on: :<parent>`) to get the confirmation contract."
+                "`confirmation:` isn't allowed on #{DeclarationLabel.member(name)} — declare the pair as subfields " \
+                "(`expects :#{label}, on: :<parent>`) to get the confirmation contract. The companion is required " \
+                "only when the member is present, and a member's `if:` condition resolves against the action " \
+                "rather than the element, so it cannot refer to a sibling member."
         end
 
         # Metadata is one level of grammar (`description:` and whatever an extension registered), read as
@@ -1125,7 +1134,7 @@ module Axn
         # An empty list is NOT this: `members: []` is a real declaration (the container type still constrains the
         # value), pointless rather than wrong, and axn's business is not to refuse it.
         def _raise_missing_shape_members!(member, name)
-          via = nil.equal?(member) ? "" : " at shape member #{_describe_shape_member(member, name)}"
+          via = nil.equal?(member) ? DeclarationLabel.locator : " at shape member #{_describe_shape_member(member, name)}"
           raise ArgumentError,
                 "a raw `shape:`#{via} must supply `members:` — a shape describes what is inside a container, so " \
                 "one with no members list constrains nothing beyond the container type, and runtime validation " \
@@ -1151,7 +1160,8 @@ module Axn
         # nothing a name's class can define (an `==` that raises) is dispatched to reach this conclusion.
         def _raise_duplicate_member!(offending)
           raise Axn::ContractViolation::DuplicateFieldError,
-                "Duplicate shape member declared: #{_inspect_field_name(offending)} — two members of one shape would " \
+                "Duplicate shape member declared: #{_inspect_field_name(offending)}#{DeclarationLabel.placement} — two " \
+                "members of one shape would " \
                 "validate the same key, and the reflected schema would keep only the last. Declare each member once."
         end
 

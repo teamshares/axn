@@ -493,7 +493,7 @@ RSpec.describe "expects ..., user_facing:" do
             field :status, type: String, user_facing: "surfaced"
           end
         end
-      end.to raise_error(ArgumentError, /does not support user_facing: on exposes/)
+      end.to raise_error(ArgumentError, /`user_facing:` isn't allowed on shape member `status` in exposes :items/)
     end
 
     it "rejects even an explicit user_facing: false on an exposes shape member (key presence, matching top-level exposes)" do
@@ -503,7 +503,7 @@ RSpec.describe "expects ..., user_facing:" do
             field :status, type: String, user_facing: false
           end
         end
-      end.to raise_error(ArgumentError, /does not support user_facing: on exposes/)
+      end.to raise_error(ArgumentError, /`user_facing:` isn't allowed on shape member `status` in exposes :items/)
     end
 
     it "rejects user_facing: on a nested exposes shape member too" do
@@ -515,7 +515,7 @@ RSpec.describe "expects ..., user_facing:" do
             end
           end
         end
-      end.to raise_error(ArgumentError, /does not support user_facing: on exposes/)
+      end.to raise_error(ArgumentError, /`user_facing:` isn't allowed on shape member `sku` in exposes :order/)
     end
 
     it "rejects a user_facing: member supplied via a raw shape: kwarg on exposes (bypasses the block path)" do
@@ -524,7 +524,7 @@ RSpec.describe "expects ..., user_facing:" do
         build_axn do
           exposes :items, type: Hash, shape: { members: [member] }
         end
-      end.to raise_error(ArgumentError, /`status` does not support user_facing: on exposes/)
+      end.to raise_error(ArgumentError, /`user_facing:` isn't allowed on shape member `status` in exposes :items/)
     end
 
     it "rejects a user_facing: member nested inside a raw exposes shape (any depth)" do
@@ -534,7 +534,7 @@ RSpec.describe "expects ..., user_facing:" do
         build_axn do
           exposes :order, type: Hash, shape: { members: [line], container: Hash }
         end
-      end.to raise_error(ArgumentError, /`sku` does not support user_facing: on exposes/)
+      end.to raise_error(ArgumentError, /`user_facing:` isn't allowed on shape member `sku` in exposes :order/)
     end
   end
 
@@ -1005,7 +1005,7 @@ RSpec.describe "expects ..., user_facing:" do
     it "rejects user_facing: on an ambient_context subfield (framework-supplied, no user to face)" do
       expect do
         build_axn { expects :request_id, on: :ambient_context, user_facing: true }
-      end.to raise_error(ArgumentError, /not supported for an ambient_context subfield/)
+      end.to raise_error(ArgumentError, /`user_facing:` isn't allowed on expects ambient_context\.request_id — drop it; ambient values/)
     end
 
     describe "user_facing: on a field that also carries a shape block" do

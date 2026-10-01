@@ -631,8 +631,8 @@ module Axn
             # serve every route: `:baz`, `:a` for a dotted `on: "a.b"` (the segment that is actually missing,
             # not the whole route), `:café`, and `:"bad\xFF"`.
             raise ArgumentError,
-                  "expects called with `on: #{_schema_name_label(on)}`, but no such reader exists " \
-                  "(are you sure you've declared a field — or alias — named #{root.inspect}?)"
+                  "`on: #{_schema_name_label(on)}` isn't allowed on #{_declared_fields_label(fields)} — no such reader " \
+                  "exists (are you sure you've declared a field — or alias — named #{root.inspect}?)"
           end
 
           # An ambient subfield's value is framework-supplied (the ambient provider /
@@ -640,8 +640,8 @@ module Axn
           # violation as user-facing is a category error.
           if user_facing && _on_roots_at_ambient?(on)
             raise ArgumentError,
-                  "`user_facing:` is not supported for an ambient_context subfield " \
-                  "(ambient values are framework-supplied, not caller input)"
+                  "`user_facing:` isn't allowed on #{_declared_fields_label(fields)} — drop it; ambient values are " \
+                  "framework-supplied, not caller input."
           end
 
           # Deep ambient nesting — a dotted `on:` rooted at ambient (`on: "ambient_context.request"`),
@@ -779,7 +779,7 @@ module Axn
                     !_derived_companion_reader?(reader)
             if taken || seen.include?(reader)
               raise ArgumentError,
-                    "expects does not support duplicate sub-keys (i.e. `#{reader}` is already defined) — " \
+                    "duplicate sub-keys aren't allowed on #{Axn::Core::Contract::DeclarationLabel.subfield(config)} (`#{reader}` is already defined) — " \
                     "rename this subfield's reader, e.g. `expects :#{config.field}, on: #{config.on.inspect}, " \
                     "as: :#{config.on.to_s.tr('.', '_')}_#{config.field}` (or use prefix: for several at once)"
             end

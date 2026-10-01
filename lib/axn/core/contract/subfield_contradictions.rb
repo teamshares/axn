@@ -1,5 +1,8 @@
 # frozen_string_literal: true
 
+require "axn/core/contract/declaration_label"
+require "axn/internal/identity"
+require "axn/internal/rendering"
 require "axn/internal/subfield_tree"
 require "axn/internal/reflection/schema"
 
@@ -78,7 +81,7 @@ module Axn
           # joining one into this message raw would raise Encoding::CompatibilityError from the reporting.
           crossed = path.wire_path[0..reader_index].map { |s| Axn::Internal::Reflection::PropertyNames.renderable_label(s) }.join(".")
           raise ArgumentError,
-                "subfield #{config.field.inspect} (on #{config.on.inspect}) reads through wire path " \
+                "#{Axn::Core::Contract::DeclarationLabel.subfield(config)} reads through wire path " \
                 "#{crossed.inspect}, which two routes declared — they answer to " \
                 "#{readers.map(&:inspect).join(' and ')}, and a dotted path names the wire NODE rather than " \
                 "either route, so only declaration order decides which route's value is read (its " \
@@ -123,9 +126,11 @@ module Axn
         end
 
         def raise_unanswerable!(config, blocker, segment)
-          types = Axn::Internal::Reflection::Schema.object_type_branches(blocker).map { |b| b.is_a?(Class) ? b.name : b.inspect }.join(", ")
+          types = Axn::Internal::Reflection::Schema.object_type_branches(blocker).map do |branch|
+            Axn::Internal::Identity.kind?(branch, ::Module) ? Axn::Internal::Rendering.stable_module_name(branch) : branch.inspect
+          end.join(", ")
           raise ArgumentError,
-                "subfield #{config.field.inspect} (on #{config.on.inspect}) can never resolve: segment #{segment.inspect} " \
+                "#{Axn::Core::Contract::DeclarationLabel.subfield(config)} can never resolve: segment #{segment.inspect} " \
                 "is read from #{blocker.field.inspect}, declared #{types}, which cannot answer it (no key access, no such " \
                 "method) — no contract-valid input ever reaches this subfield. Make #{blocker.field.inspect} object-shaped, " \
                 "or drop the subfield."
@@ -224,8 +229,9 @@ module Axn
                        else
                          ""
                        end
+          declared = config.on.nil? ? "expects #{name}" : Axn::Core::Contract::DeclarationLabel.subfield(config)
           raise ArgumentError,
-                "#{name} is declared nil-tolerant (allow_nil:/optional:/allow_blank:, or an untyped " \
+                "#{declared} is declared nil-tolerant (allow_nil:/optional:/allow_blank:, or an untyped " \
                 "presence: false), but " \
                 "#{stranded || 'its subtree'} is required and nothing rescues an omitted #{name} — " \
                 "the tolerance can never be exercised (every nil/omitted #{name} fails validation). " \
