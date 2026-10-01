@@ -390,9 +390,10 @@ module Axn
           # logic here had pushed past this file's complexity budget. Mutates `prop`/`required_model_ids` in
           # place, exactly as the inlined code it replaces did.
           #
-          # `derived: false` is a child of a merged node's transforming route whose lookup reads past a declared
-          # sibling id: the Proc's output supplies the token, so the sibling keeps exactly the property and
-          # requiredness it declares and nothing of the model is added to it.
+          # `derived: false` is a child of a merged node's transforming route whose lookup reads past whatever is
+          # declared at the id's key — a non-model sibling, or another `model:` route renamed with `as:`: the Proc's
+          # output supplies the token, so nothing of the model's requirement is added there, and a declared sibling
+          # keeps exactly the property and requiredness it declares.
           def apply_model_id_child!(child_loop, key, node, model_configs, derived: true)
             # The id key derives from the LEAF wire segment (a dotted model name digs `<leaf>_id` off
             # the same nested parent at runtime). A user may declare an explicit NON-model nested
@@ -423,19 +424,18 @@ module Axn
             # carried `field :company_id, type: String` claims the key exactly as one on the node's own route does,
             # and leaving the carry out would discard the declared `id_type:` one level up.
             explicit_id ||= emitted_shape_member_at(child_loop.prop, property_routes(child_loop.parent_configs), child_loop.carried, id_field)
-            return unless derived || explicit_id.nil?
-
             if explicit_id
               # Deferred rather than merged here directly (see the post-loop pass in `apply_children!`):
               # this sibling's OWN entry in `children` hasn't necessarily been visited yet, so
               # `prop[:properties][id_field]` isn't guaranteed to hold its FINAL emission until every key
               # in this loop has run.
-              child_loop.model_id_siblings << [id_field, model_configs, explicit_id]
+              child_loop.model_id_siblings << [id_field, model_configs, explicit_id] if derived
             elsif !child_loop.prop[:properties].key?(id_field)
               id_type = reconciled_model_id_type_token(model_configs)
               _, subprop = model_id_property(model_configs.first, id_type)
               child_loop.prop[:properties][id_field] ||= subprop
             end
+            return unless derived
             return if node_optional?(node, child_loop.ann, model_configs)
             # A sibling id whose default supplies the lookup token on the omitted call rescues it, by the one
             # predicate the annotation credit and the declaration guard share.

@@ -7140,6 +7140,8 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         "an id on the model's own route" => "expects :company_id, on: :cooked, type: Integer, optional: true",
         "an `as:`-renamed id the lookup reads past" => "expects :company_id, on: :raw, as: :other_id, type: Integer, optional: true",
         "a model: route at the id's key" => "expects :company_id, on: :raw, model: { klass: MergedRouteCompany, finder: :find }, optional: true",
+        "an `as:`-renamed model: route the lookup reads past" =>
+          "expects :company_id, on: :raw, as: :cid, model: { klass: MergedRouteCompany, finder: :find }, optional: true",
       }.each do |label, sibling|
         it "never rejects what the runtime accepts, with #{label}" do
           klass = account_with(sibling)
@@ -7159,6 +7161,13 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
         expect(account(klass)[:required].to_a).not_to include("company_id")
         expect(account(klass).dig(:properties, :company_id)).to include(type: %w[integer null])
+      end
+
+      it "adds no model requirement beside an `as:`-renamed model: route the lookup reads past" do
+        klass = account_with("expects :company_id, on: :raw, as: :cid, model: { klass: MergedRouteCompany, finder: :find }, optional: true")
+
+        expect(klass.call(payload: { "inner" => { "account" => { "x" => 1 } } })).to be_ok
+        expect(account(klass)[:required].to_a).not_to include("company_id")
       end
 
       it "keeps the requirement of a sibling the lookup reads" do
