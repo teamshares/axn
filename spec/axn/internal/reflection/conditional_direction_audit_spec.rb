@@ -31,9 +31,9 @@ RSpec.describe "conditional validation direction audit" do
     end
     schema = action.input_schema
     expect(schema_accepts_omission?(schema, { flag: false }, :num)).to be true # never stricter
-    expect(action.call(flag: false).ok?).to be true
+    expect(WireCall.call(action, { flag: false }).ok?).to be true
     expect(schema_accepts_omission?(schema, { flag: true }, :num)).to be true  # looser, and reported
-    expect(action.call(flag: true).ok?).to be false
+    expect(WireCall.call(action, { flag: true }).ok?).to be false
     expect(residue_paths(action)).to include([:num])
   end
 
@@ -45,9 +45,9 @@ RSpec.describe "conditional validation direction audit" do
     end
     schema = action.input_schema
     expect(schema_accepts_omission?(schema, { flag: false }, :num)).to be true
-    expect(action.call(flag: false).ok?).to be true
+    expect(WireCall.call(action, { flag: false }).ok?).to be true
     expect(schema_accepts_omission?(schema, { flag: true }, :num)).to be false
-    expect(action.call(flag: true).ok?).to be false
+    expect(WireCall.call(action, { flag: true }).ok?).to be false
   end
 
   it "gated subfield, canonical parent-presence condition: the nested requirement is reported, not listed" do
@@ -58,11 +58,11 @@ RSpec.describe "conditional validation direction audit" do
     end
     schema = action.input_schema
     expect(schema_accepts_omission?(schema, {}, :data)).to be true
-    expect(action.call.ok?).to be true
+    expect(WireCall.call(action).ok?).to be true
     # A Proc gate cannot be read by the schema, so `user` is not listed as required under `data`; the
     # conditional requirement is named on the property instead.
     expect(Array(schema[:properties][:data][:required])).not_to include("user")
-    expect(action.call(data: { role: "x" }).ok?).to be false
+    expect(WireCall.call(action, { data: { role: "x" } }).ok?).to be false
     expect(residue_paths(action)).to include(%i[data user])
   end
 
@@ -76,10 +76,10 @@ RSpec.describe "conditional validation direction audit" do
     schema = action.input_schema
     # The documented divergence: parent omitted + condition true — schema accepts, runtime rejects.
     expect(schema_accepts_omission?(schema, { strict: true }, :data)).to be true
-    expect(action.call(strict: true).ok?).to be false
+    expect(WireCall.call(action, { strict: true }).ok?).to be false
     # Everything else agrees.
-    expect(action.call(strict: false).ok?).to be true
-    expect(action.call(strict: true, data: { user: "x" }).ok?).to be true
+    expect(WireCall.call(action, { strict: false }).ok?).to be true
+    expect(WireCall.call(action, { strict: true, data: { user: "x" } }).ok?).to be true
   end
 
   it "plain boolean unless: gate: schema and runtime agree on every quadrant" do
@@ -91,10 +91,10 @@ RSpec.describe "conditional validation direction audit" do
     schema = action.input_schema
     # gate CLOSED (skip truthy): coupon unvalidated — both accept omission
     expect(schema_accepts_omission?(schema, { skip: true }, :coupon)).to be true
-    expect(action.call(skip: true).ok?).to be true
+    expect(WireCall.call(action, { skip: true }).ok?).to be true
     # gate OPEN (skip falsey): coupon required — both reject omission (exercises the else branch)
     expect(schema_accepts_omission?(schema, { skip: false }, :coupon)).to be false
-    expect(action.call(skip: false).ok?).to be false
+    expect(WireCall.call(action, { skip: false }).ok?).to be false
   end
 
   it "blank same-key nested override: schema requires unconditionally (stricter-or-exact, never looser)" do
@@ -111,10 +111,10 @@ RSpec.describe "conditional validation direction audit" do
     expect(schema[:required]).to include("name")
     # Direction holds on the wire value that used to slip through: schema rejects the omission, runtime does too.
     expect(schema_accepts_omission?(schema, { flag: false }, :name)).to be false
-    expect(action.call(flag: false).ok?).to be false
+    expect(WireCall.call(action, { flag: false }).ok?).to be false
     # And when the gate is "open" runtime still requires name (gate is moot) — schema agrees, exact here.
     expect(schema_accepts_omission?(schema, { flag: true }, :name)).to be false
-    expect(action.call(flag: true).ok?).to be false
+    expect(WireCall.call(action, { flag: true }).ok?).to be false
   end
 
   it "coerced-boolean unless: reference: the inexact clause falls back to optional, never to required" do
@@ -129,10 +129,10 @@ RSpec.describe "conditional validation direction audit" do
     expect(schema[:allOf]).to be_nil
     expect(Array(schema[:required])).not_to include("coupon")
     expect(schema_accepts_omission?(schema, { skip: "true" }, :coupon)).to be true
-    expect(action.call(skip: "true").ok?).to be true
+    expect(WireCall.call(action, { skip: "true" }).ok?).to be true
     # wire "false" coerces to false, the gate opens and coupon is required: looser, and reported.
     expect(schema_accepts_omission?(schema, { skip: "false" }, :coupon)).to be true
-    expect(action.call(skip: "false").ok?).to be false
+    expect(WireCall.call(action, { skip: "false" }).ok?).to be false
     expect(residue_paths(action)).to include([:coupon])
   end
 
@@ -146,7 +146,7 @@ RSpec.describe "conditional validation direction audit" do
     # wire "false" is truthy to the emitted `if` and falsey once coerced, closing the runtime gate.
     expect(schema[:allOf]).to be_nil
     expect(schema_accepts_omission?(schema, { flag: "false" }, :coupon)).to be true
-    expect(action.call(flag: "false").ok?).to be true
+    expect(WireCall.call(action, { flag: "false" }).ok?).to be true
     expect(residue_paths(action)).to include([:coupon])
   end
 end

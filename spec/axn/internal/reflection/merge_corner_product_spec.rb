@@ -305,7 +305,7 @@ module MergeCornerProduct
       document = schemer(schema)
       verdicts = POOL.map do |value|
         payload = payload_for(cell, value)
-        [value, payload, klass.call(**payload).ok?, document.valid?(JSON.parse(JSON.generate(payload)))]
+        [value, payload, WireCall.call(klass, payload).ok?, document.valid?(WireCall.payload(payload))]
       end
       satisfiable = verdicts.any? { |value, _, _, doc_ok| doc_ok && !OMITTED.equal?(value) && !value.nil? && !non_nil_blank?(value) }
       verdicts.each do |value, payload, runtime_ok, doc_ok|

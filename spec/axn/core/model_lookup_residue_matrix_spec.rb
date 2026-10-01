@@ -91,7 +91,7 @@ RSpec.describe "the model lookup residue against the runtime's verdict on an unk
       next if action.nil?
 
       declared << label
-      result = action.call(**miss)
+      result = WireCall.call(action, miss)
       rejects = !result.ok? && result.exception.is_a?(Axn::InboundValidationError)
       residue = lookup_residue_kind(action)
       tolerant_rejecting += 1 if rejects && !label.include?("| required |")

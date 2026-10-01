@@ -407,7 +407,7 @@ RSpec.describe "the declarations the precision-only refusals used to refuse, aga
       reported = klass.input_schema_residues.any?
       verdicts = (RelaxedRefusalProduct::POOL + [RelaxedRefusalProduct::OMITTED]).map do |value|
         payload = payload_for(cell, value)
-        [value, payload, klass.call(**payload).ok?, document.valid?(JSON.parse(JSON.generate(payload)))]
+        [value, payload, WireCall.call(klass, payload).ok?, document.valid?(WireCall.payload(payload))]
       end
       satisfiable = verdicts.any? do |value, _payload, _runtime_ok, document_ok|
         document_ok && !RelaxedRefusalProduct::OMITTED.equal?(value) && !non_nil_blank?(value)

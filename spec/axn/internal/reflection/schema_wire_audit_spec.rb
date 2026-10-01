@@ -266,7 +266,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
       next if klass.nil?
 
       accepted = probe_values.select do |value|
-        klass.call(n: value).ok?
+        WireCall.call(klass, { n: value }).ok?
       rescue StandardError
         false
       end
@@ -340,7 +340,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
           next if known_blank_tolerance_divergence?(tolname, value)
 
           runtime_ok = begin
-            (omitted.equal?(value) ? klass.call : klass.call(n: value)).ok?
+            (omitted.equal?(value) ? WireCall.call(klass) : WireCall.call(klass, { n: value })).ok?
           rescue StandardError
             false
           end
@@ -497,7 +497,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
         coerced = Class.new(klass) { coerce_input_types true }
         enum.compact.each do |wire|
           advertised += 1
-          next if coerced.call(n: payload.call(wire)).ok?
+          next if WireCall.call(coerced, { n: payload.call(wire) }).ok?
 
           rejected << "#{kname} / #{pname}: advertises #{wire.inspect}, which the runtime rejects"
         end
@@ -588,7 +588,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
   def default_variants(tklass, plain)
     blank = { String => "", Array => [], Hash => {} }[tklass]
     accepted = probe_values.find do |value|
-      !value.nil? && plain.call(n: value).ok?
+      !value.nil? && WireCall.call(plain, { n: value }).ok?
     rescue StandardError
       false
     end
@@ -616,7 +616,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
             next if known_blank_tolerance_divergence?(tolname, value)
 
             runtime_ok = begin
-              (omitted.equal?(value) ? klass.call : klass.call(n: value)).ok?
+              (omitted.equal?(value) ? WireCall.call(klass) : WireCall.call(klass, { n: value })).ok?
             rescue StandardError
               false
             end
@@ -664,7 +664,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
         document = schemer(klass.input_schema)
         (probe_values + [omitted]).each do |value|
           runtime_ok = begin
-            (omitted.equal?(value) ? klass.call : klass.call(n: value)).ok?
+            (omitted.equal?(value) ? WireCall.call(klass) : WireCall.call(klass, { n: value })).ok?
           rescue StandardError
             false
           end
@@ -721,7 +721,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
           next if known_blank_tolerance_divergence?(tolname, value)
 
           runtime_ok = begin
-            klass.call(n: value).ok?
+            WireCall.call(klass, { n: value }).ok?
           rescue StandardError
             false
           end
@@ -774,7 +774,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
     probe_values.map do |value|
       wire = wrap_value.call(value)
       runtime_ok = begin
-        klass.call(n: wire).ok?
+        WireCall.call(klass, { n: wire }).ok?
       rescue StandardError
         false
       end
@@ -871,6 +871,9 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
       # member side of an otherwise object-shaped position, paired below with the mirror on the node side,
       # so the reconciliation is exercised rather than merely present.
       "literal object member" => proc { field :inner, type: Hash, inclusion: { in: [{ "b" => 2 }] } },
+      # A JSON object arrives String-keyed, so this set admits nothing the wire sends — which only a runtime called
+      # with the wire's own payload can tell from the String-keyed set above.
+      "Symbol-keyed literal object member" => proc { field :inner, type: Hash, inclusion: { in: [{ b: 2 }] } },
       "floor object member" => proc { field :inner, type: Hash, length: { minimum: 2 } },
       "ceiling object member" => proc { field :inner, type: Hash, length: { maximum: 4 } },
       "map values member" => proc { field :inner, type: Hash, of: { values: { klass: Integer } } },
@@ -1030,7 +1033,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
         reported = residues_for(klass).any?
         nested_payloads.each do |payload|
           runtime_ok = begin
-            klass.call(payload:).ok?
+            WireCall.call(klass, { payload: }).ok?
           rescue StandardError
             false
           end
@@ -1071,7 +1074,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
         document = schemer(klass.input_schema)
         nested_payloads.each do |payload|
           runtime_ok = begin
-            klass.call(payload:).ok?
+            WireCall.call(klass, { payload: }).ok?
           rescue StandardError
             false
           end
@@ -1104,7 +1107,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
         next if plain.nil?
 
         repair = nested_payloads.find do |payload|
-          plain.call(payload:).ok?
+          WireCall.call(plain, { payload: }).ok?
         rescue StandardError
           false
         end
@@ -1117,7 +1120,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
         document = schemer(klass.input_schema)
         nested_payloads.each do |payload|
           runtime_ok = begin
-            klass.call(payload:).ok?
+            WireCall.call(klass, { payload: }).ok?
           rescue StandardError
             false
           end
@@ -1153,7 +1156,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
         next if unrepresentable_deep_drop?(klass)
 
         accepted = nested_payloads.select do |payload|
-          klass.call(payload:).ok?
+          WireCall.call(klass, { payload: }).ok?
         rescue StandardError
           false
         end
@@ -1496,7 +1499,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
       reported = residues_for(klass).any?
 
       payloads.each do |payload|
-        runtime_ok = klass.call(**payload).ok?
+        runtime_ok = WireCall.call(klass, payload).ok?
         document_ok = document.valid?(JSON.parse(JSON.generate(payload)))
         checked += 1
         stricter << "#{name}: runtime accepts #{payload.inspect}, document rejects it — #{klass.input_schema.inspect}" if runtime_ok && !document_ok

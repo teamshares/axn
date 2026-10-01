@@ -23,18 +23,18 @@ RSpec.describe "collision projection ownership" do
     action = collision({ type: { klass: [Array, String], if: -> { false } }, length: { minimum: 2 } },
                        { type: { klass: Array, coerce: false } })
     schema = checker(action)
-    expect(action.call(**input([1]))).not_to be_ok
+    expect(WireCall.call(action, input([1]))).not_to be_ok
     expect(schema.valid?(input([1]))).to be(false)
-    expect(action.call(**input([1, 2]))).to be_ok
+    expect(WireCall.call(action, input([1, 2]))).to be_ok
     expect(schema.valid?(input([1, 2]))).to be(true)
   end
 
   it "retains real bounds beside an unknown type token" do
     action = collision({ type: [Object, Hash], length: { minimum: 2 } }, { type: Hash })
     schema = checker(action)
-    expect(action.call(**input({ "a" => 1 }))).not_to be_ok
+    expect(WireCall.call(action, input({ "a" => 1 }))).not_to be_ok
     expect(schema.valid?(input({ "a" => 1 }))).to be(false)
-    expect(action.call(**input({ "a" => 1, "b" => 2 }))).to be_ok
+    expect(WireCall.call(action, input({ "a" => 1, "b" => 2 }))).to be_ok
     expect(schema.valid?(input({ "a" => 1, "b" => 2 }))).to be(true)
   end
 
@@ -45,7 +45,7 @@ RSpec.describe "collision projection ownership" do
     expect(prop[:description]).to include('"pattern":"^[0-9]+$"')
     expect(prop[:description]).not_to include("d+$")
     expect(checker(action).valid?(input("+12"))).to be(true)
-    expect(action.call(**input("+12"))).to be_ok
+    expect(WireCall.call(action, input("+12"))).to be_ok
   end
 
   it "keeps a transformed subtree with the value its checks judge" do
@@ -57,7 +57,7 @@ RSpec.describe "collision projection ownership" do
     expect(prop).not_to have_key(:properties)
     expect(prop[:description]).to include('"properties":{"a":')
     value = input('{"a":"x"}')
-    expect(action.call(**value)).to be_ok
+    expect(WireCall.call(action, value)).to be_ok
     expect(checker(action).valid?(value)).to be(true)
     expect(checker(action).valid?(input({ "a" => "x" }))).to be(false)
   end
@@ -83,7 +83,7 @@ RSpec.describe "collision projection ownership" do
     schema = checker(action)
     [{ "b" => 2 }, { "c" => 3 }].each do |inner|
       value = { payload: { deep: { inner: } } }
-      expect(schema.valid?(JSON.parse(JSON.generate(value)))).to eq(action.call(**value).ok?)
+      expect(schema.valid?(JSON.parse(JSON.generate(value)))).to eq(WireCall.call(action, value).ok?)
     end
   end
 
@@ -95,7 +95,7 @@ RSpec.describe "collision projection ownership" do
     expect(prop[:description]).to include('"properties":{"a":')
     expect(prop).to include(type: "string")
     expect(checker(action).valid?(input('{"a":"x"}'))).to be(true)
-    expect(action.call(**input('{"a":"x"}'))).to be_ok
+    expect(WireCall.call(action, input('{"a":"x"}'))).to be_ok
   end
 
   it "retains an unconditional absence ceiling when the type is gated" do
@@ -103,7 +103,7 @@ RSpec.describe "collision projection ownership" do
                        { type: { klass: Array, coerce: false }, presence: false })
     schema = checker(action)
     [[], [1]].each do |value|
-      expect(schema.valid?(input(value))).to eq(action.call(**input(value)).ok?)
+      expect(schema.valid?(input(value))).to eq(WireCall.call(action, input(value)).ok?)
     end
   end
 
@@ -112,7 +112,7 @@ RSpec.describe "collision projection ownership" do
                        { type: String })
     schema = checker(action)
     ["12", "+12", "abc"].each do |value|
-      expect(schema.valid?(input(value))).to eq(action.call(**input(value)).ok?)
+      expect(schema.valid?(input(value))).to eq(WireCall.call(action, input(value)).ok?)
     end
   end
 
@@ -122,7 +122,7 @@ RSpec.describe "collision projection ownership" do
       action = collision(member, node)
       schema = checker(action)
       [true, false, nil].each do |value|
-        expect(schema.valid?(input(value))).to eq(action.call(**input(value)).ok?)
+        expect(schema.valid?(input(value))).to eq(WireCall.call(action, input(value)).ok?)
       end
     end
   end
@@ -132,7 +132,7 @@ RSpec.describe "collision projection ownership" do
                        { type: { klass: Integer, coerce: false } })
     schema = checker(action)
     [1, 10, 11].each do |value|
-      expect(schema.valid?(input(value))).to eq(action.call(**input(value)).ok?)
+      expect(schema.valid?(input(value))).to eq(WireCall.call(action, input(value)).ok?)
     end
   end
 
@@ -146,13 +146,13 @@ RSpec.describe "collision projection ownership" do
     expect(summaries.fetch(:inherent).map(&:summary).join).to include('"properties":{"a":')
     expect(summaries.fetch(:inherent).map(&:summary).join).not_to include('"minProperties":2')
     expect(summaries.fetch(:conditional).map(&:summary).join).to include('"minProperties":2', "after transformation")
-    expect(action.call(**input('{"a":"x"}'))).to be_ok
+    expect(WireCall.call(action, input('{"a":"x"}'))).to be_ok
   end
 
   it "preserves numeric strings when projecting a gated type with a numeric bound" do
     action = collision({ type: { klass: String, if: -> { false } }, numericality: { greater_than: 10 } },
                        { type: String })
-    expect(action.call(**input("11"))).to be_ok
+    expect(WireCall.call(action, input("11"))).to be_ok
     expect(checker(action).valid?(input("11"))).to be(true)
     residues = []
     Axn::Internal::Reflection::Schema.build_input_for(action, residues:)
@@ -161,7 +161,7 @@ RSpec.describe "collision projection ownership" do
 
   it "preserves numeric strings from an explicit type union at a collision too" do
     action = collision({ type: [String, Integer], numericality: { greater_than: 10 } }, { type: String })
-    expect(action.call(**input("11"))).to be_ok
+    expect(WireCall.call(action, input("11"))).to be_ok
     expect(checker(action).valid?(input("11"))).to be(true)
   end
 
@@ -169,7 +169,7 @@ RSpec.describe "collision projection ownership" do
     action = collision({ type: Object, presence: false, absence: true }, { type: { klass: :boolean, coerce: false }, presence: false })
     schema = checker(action)
     [true, false].each do |value|
-      expect(schema.valid?(input(value))).to eq(action.call(**input(value)).ok?)
+      expect(schema.valid?(input(value))).to eq(WireCall.call(action, input(value)).ok?)
     end
   end
 
@@ -177,8 +177,8 @@ RSpec.describe "collision projection ownership" do
     action = collision({ type: Object, length: { minimum: 2 } }, { type: { klass: Integer, coerce: false } })
     prop = action.input_schema.dig(:properties, :payload, :properties, :inner)
     expect(checker(action).valid?(input(1))).to be(true)
-    expect(action.call(**input(1))).not_to be_ok
-    expect(action.call(**input(12))).to be_ok
+    expect(WireCall.call(action, input(1))).not_to be_ok
+    expect(WireCall.call(action, input(12))).to be_ok
     expect(prop[:description]).to include("Additional constraints apply", "length", '"minimum":2')
   end
 
@@ -186,8 +186,8 @@ RSpec.describe "collision projection ownership" do
     action = collision({ type: Object, format: { with: /\A\d{2}\z/ } }, { type: { klass: Integer, coerce: false } })
     prop = action.input_schema.dig(:properties, :payload, :properties, :inner)
     expect(checker(action).valid?(input(1))).to be(true)
-    expect(action.call(**input(1))).not_to be_ok
-    expect(action.call(**input(12))).to be_ok
+    expect(WireCall.call(action, input(1))).not_to be_ok
+    expect(WireCall.call(action, input(12))).to be_ok
     expect(prop[:description]).to include("Additional constraints apply", "format")
   end
 
@@ -214,10 +214,10 @@ RSpec.describe "collision projection ownership" do
     report = residues.map(&:last).find { |r| r.summary.include?("JSON Schema cannot fully express this check") }
     expect(report&.kind).to eq(:conditional)
     expect(report.summary).to include("after transformation", "length")
-    expect(action.call(**input("1"))).to be_ok
+    expect(WireCall.call(action, input("1"))).to be_ok
     opened = true
-    expect(action.call(**input("1"))).not_to be_ok
-    expect(action.call(**input("12"))).to be_ok
+    expect(WireCall.call(action, input("1"))).not_to be_ok
+    expect(WireCall.call(action, input("12"))).to be_ok
   end
 
   # Exercise the two routes into conjunction: an explicit subfield and a same-named member
@@ -253,7 +253,7 @@ RSpec.describe "collision projection ownership" do
                 when "Hash" then size.times.to_h { |n| [n.to_s, 1] }
                 end
         data = nested_input(value, depth)
-        expect(schema.valid?(data)).to eq(action.call(**data).ok?), "depth=#{depth}, value=#{value.inspect}"
+        expect(schema.valid?(data)).to eq(WireCall.call(action, data).ok?), "depth=#{depth}, value=#{value.inspect}"
       end
     end
   end
@@ -304,7 +304,7 @@ RSpec.describe "collision projection ownership" do
                 [nil, false, true, 0, 1.5, [], [1], {}, { "x" => 1 }, "", " ", "\u00a0", "x"].each do |value|
                   data = nested_input(value, depth)
                   accepted = emitted.valid?(data)
-                  passed = action.call(**data).ok?
+                  passed = WireCall.call(action, data).ok?
                   expect(accepted).to be(true) if passed
                   if accepted && !passed
                     expect(reports).not_to be_empty
@@ -346,7 +346,7 @@ RSpec.describe "collision projection ownership" do
               (values + [nil]).each do |value|
                 data = nested_input(value, depth)
                 accepted = emitted.valid?(data)
-                passed = action.call(**data).ok?
+                passed = WireCall.call(action, data).ok?
                 expect(reports).not_to be_empty if accepted && !passed
                 expect(passed).to be(true) if value.nil?
               end
@@ -421,7 +421,7 @@ RSpec.describe "collision projection ownership" do
             applied = gate_open ? inherent + conditional : inherent
             post_transform_schema = JSONSchemer.schema({ "allOf" => applied.map { |residue| reported_fragment(residue) } })
             (values + [nil]).each do |value|
-              result = action.call(**input(JSON.generate(value)))
+              result = WireCall.call(action, input(JSON.generate(value)))
               expect(post_transform_schema.valid?(value)).to eq(result.ok?), "gate=#{gate_open}, value=#{value.inspect}"
             end
           end
@@ -449,7 +449,7 @@ RSpec.describe "collision projection ownership" do
                 numeric_reports = residues.map(&:last).select { |r| r.summary.include?("numericality") }
                 ["9", "10", "11", "+11", "1.1e1", "foo", "", 9, 10, 11, nil].each do |value|
                   data = nested_input(value, depth)
-                  passed = action.call(**data).ok?
+                  passed = WireCall.call(action, data).ok?
                   accepted = schema.valid?(data)
                   expect(accepted).to be(true), "lost passing #{value.inspect}" if passed
                   expect(numeric_reports).not_to be_empty if accepted && !passed
@@ -493,7 +493,7 @@ RSpec.describe "collision projection ownership" do
                   values.each do |value|
                     data = nested_input(value, depth)
                     expect(emitted.valid?(data)).to eq(reference_schema.valid?(input(value)))
-                    expect(emitted.valid?(data)).to eq(action.call(**data).ok?), "depth=#{depth}, value=#{value.inspect}"
+                    expect(emitted.valid?(data)).to eq(WireCall.call(action, data).ok?), "depth=#{depth}, value=#{value.inspect}"
                   end
                 end
               end
