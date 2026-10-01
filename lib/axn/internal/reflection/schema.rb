@@ -52,9 +52,18 @@ require "axn/internal/reflection/schema/model_id"
 # Sizing owns the size and blank axes — including the derivations Contract's declaration guard reads back.
 require "axn/internal/reflection/schema/sizing"
 
+# Numericality owns what a `numericality:` entry does to the node its position emits.
+require "axn/internal/reflection/schema/numericality"
+
+# Mentions renders what a residue names — a declined fragment, a caller's literal, an author's description.
+require "axn/internal/reflection/schema/mentions"
+
 # Nestability answers whether a position can hold JSON object properties — the drop pass and the emitter
 # both read it, so neither can decide for itself.
 require "axn/internal/reflection/schema/nestability"
+
+# DroppedSubfields is the drop pass: the deep subfield configs with no JSON-object representation.
+require "axn/internal/reflection/schema/dropped_subfields"
 
 # Merge conjoins two emitted properties that meet at one wire position — every collision the builder finds.
 require "axn/internal/reflection/schema/merge"
@@ -184,7 +193,10 @@ module Axn
         extend Contents
         extend ModelId
         extend Sizing
+        extend Numericality
+        extend Mentions
         extend Nestability
+        extend DroppedSubfields
         extend Merge
         extend Requiredness
         extend Nesting
