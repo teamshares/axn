@@ -1369,6 +1369,22 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
           .to raise_error(ArgumentError, /beside `type: Object` — .*`type: Object` admits values that aren't, which skip them\.\z/)
       end
 
+      # `:params` admits an `ActionController::Parameters`, which is not a Hash, so `container: Hash` skips its
+      # members. The verdict is the same whether or not Rails is loaded (spec_rails holds the Parameters half).
+      it "refuses `container: Hash` beside `type: :params`, which admits a value that is not a Hash" do
+        sku = member
+        expect { build_axn { expects :val, type: :params, shape: { container: Hash, members: [sku] } } }
+          .to raise_error(ArgumentError,
+                          "`container: Hash` #{head} beside `type: :params` — declare `type: Hash` (and pass " \
+                          "`params.to_unsafe_h`) to check the members on every value. The members are checked only " \
+                          "on a value that `is_a?(Hash)`, and `type: :params` admits values that aren't, which skip them.")
+        expect { build_axn { expects :val, type: [Hash, :params], shape: { container: Hash, members: [sku] } } }
+          .to raise_error(ArgumentError, /beside `type: \[Hash, :params\]` — keep in `type:` only classes/)
+        expect { build_axn { expects :val, type: Array, of: { klass: :params, shape: { container: Hash, members: [sku] } } } }
+          .to raise_error(ArgumentError, /inside the `of:` bag on expects :val beside `klass: :params`/)
+        expect { build_axn { expects :val, type: :params, shape: { container: Object, members: [sku] } } }.not_to raise_error
+      end
+
       # The rule weighs the type against the container, so it stands down where the two can part: a `type:` gated on
       # its own skips its check on the calls it closes while the shape still runs.
       it "stands down beside a type: gated on its own, where the shape runs without the class check" do

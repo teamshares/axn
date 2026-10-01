@@ -340,12 +340,18 @@ module Axn
 
         # How one declared type token stands to the container: `:covered` when every value of it is the container,
         # `:disjoint` when no value of it can be, `:narrowed` otherwise. A pseudo-type token stands for the classes
-        # its values have (`:params` a Hash, `:boolean` true or false, `:uuid` a String). Ancestry is read natively,
-        # so a class defining its own `<` or `ancestors` cannot answer for itself.
+        # its values have (`:boolean` true or false, `:uuid` a String, `:params` a Hash or an
+        # `ActionController::Parameters`). Ancestry is read natively, so a class defining its own `<` or `ancestors`
+        # cannot answer for itself.
+        #
+        # Parameters is not a Hash, so `container: Hash` beside `:params` checks the members of a Hash and skips a
+        # Parameters value without a word. It stands in as `Object`, which it descends from directly: that never
+        # names a Rails constant, and it gives the same verdict whether or not Rails is loaded, so a declaration
+        # does not start or stop declaring with the load order.
         def _container_relation(token, container)
           classes =
             case token
-            when :params then [::Hash]
+            when :params then [::Hash, ::Object]
             when :boolean then [::TrueClass, ::FalseClass]
             when :uuid then [::String]
             else [token]
@@ -395,6 +401,8 @@ module Axn
               "shape: { members: [...] } } }`"
           elsif tokens.one? && _shape_compatible_klass?(tokens.first)
             "drop `container:` to check the members on every value #{declared} admits"
+          elsif tokens.one? && Internal::Identity.same?(tokens.first, :params) && ::Hash.equal?(container)
+            "declare `#{option} Hash` (and pass `params.to_unsafe_h`) to check the members on every value"
           else
             "keep in `#{option}` only classes whose values always or never pass `is_a?(#{named})`"
           end
