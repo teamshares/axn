@@ -128,6 +128,8 @@ module Axn
 
             shape_members_at(node.configs + carried, key)
           end
+
+          private :compute_dropped, :blocking_ancestor?, :merged_shape_members, :colliding_shape_members, :merged_explicit_members
         end
       end
     end

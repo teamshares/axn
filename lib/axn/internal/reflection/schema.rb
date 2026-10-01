@@ -46,7 +46,8 @@ require "axn/internal/reflection/schema/type_tokens"
 # Contents is the recursive descent into a container's elements/values/keys and a shape's named members.
 require "axn/internal/reflection/schema/contents"
 
-# ModelId owns the generated `<field>_id` property and the reconciliation deciding its type.
+# ModelId owns the generated `<field>_id` property, the reconciliation deciding its type, and the residues a
+# `model:` route writes about the two keys it reads.
 require "axn/internal/reflection/schema/model_id"
 
 # Sizing owns the size and blank axes — including the derivations Contract's declaration guard reads back.
@@ -427,9 +428,6 @@ module Axn
           finalize_residues!(schema, collected: residues || [])
           schema
         end
-
-        private_class_method :compute_dropped, :blocking_ancestor?, :merged_shape_members, :colliding_shape_members,
-                             :merged_explicit_members
 
         # Whether an active `presence:` check here rejects every blank value: one is declared and it is not
         # blank-tolerant. THE single definition, read by the blank-default judgment and by the size-floor

@@ -16,7 +16,9 @@ module Axn
         # A model field takes a RECORD at runtime but a lookup TOKEN on the wire, so this is the one place the
         # document describes something the declaration never names directly — inferred from the model class's
         # own primary key where it can be, reconciled against an explicitly-declared `id_type:` or an explicit
-        # sibling field where those exist.
+        # sibling field where those exist. It also writes what a route leaves unsaid about the two keys it reads
+        # (`name_model_routes!`): that a lookup miss is rejected, that the raw key is read as the record, and an
+        # `id_type:` the id cannot state.
         module ModelId
           include Vocabulary
 
