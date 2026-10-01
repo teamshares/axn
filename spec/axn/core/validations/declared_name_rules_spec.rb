@@ -186,7 +186,7 @@ RSpec.describe "the rules every declared name is held to" do
         end
         # Spelled `on:` rather than `` `on:` `` — both of this option's rules name it the way its own type rule
         # always has, since they now come from one call.
-      end.to raise_error(ArgumentError, /\Aon: must be written in an ASCII-compatible encoding \(got one encoded as UTF-16LE\)/)
+      end.to raise_error(ArgumentError, /\Aon: on expects :a must be written in an ASCII-compatible encoding \(got one encoded as UTF-16LE\)/)
     end
 
     it "still accepts a dotted route" do

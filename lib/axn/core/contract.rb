@@ -472,7 +472,12 @@ module Axn
           # reader names, duplicate detection, the inbound read path — is symbol-keyed by construction.
           # `expects "note"` and `expects :note` are the same field; a dotted subfield key (`"a.b"`)
           # symbolizes harmlessly (it's only ever compared/split via `.to_s`). See PRO-2790.
+          #
+          # The declaration opens first, so even the name refusals below are this declaration's and never an
+          # enclosing one's (see `DeclarationLabel.enter`); it is named as soon as its names are canonical.
+          declaration = DeclarationLabel.enter
           fields = _canonical_field_names!(fields, kind: "an `expects` field name", names: "an inbound field")
+          DeclarationLabel.declare(:expects, fields)
 
           # A subfield's ROUTE is canonicalized on the same terms, and here — before the first guard reads it.
           # A route is judged as written (its root must name a declared reader; `_duplicate_fields` keys a config
@@ -507,8 +512,8 @@ module Axn
                                               encoding_fix: "Name the parent in UTF-8 (or any other ASCII-compatible " \
                                                             "encoding).")
                end
-          # From here every refusal names this declaration (see `DeclarationLabel`).
-          declaration = DeclarationLabel.enter(:expects, fields, on:)
+          # From here every refusal names this declaration with its route (see `DeclarationLabel`).
+          DeclarationLabel.declare(:expects, fields, on:)
 
           # A field's wire key always names a single key; the nested-path capability lives entirely in a
           # dotted `on:` (`expects :b, on: "a"`). A dotted field NAME is therefore never valid — reject it
@@ -623,8 +628,9 @@ module Axn
           &block
         )
           # Symbolize the wire key (see `expects`) so exposes shares the same symbol-keyed contract.
+          declaration = DeclarationLabel.enter
           fields = _canonical_field_names!(fields, kind: "an `exposes` field name", names: "an outbound field")
-          declaration = DeclarationLabel.enter(:exposes, fields)
+          DeclarationLabel.declare(:exposes, fields)
 
           # Stays pre-build, unlike every other declared name: an exposed field name is a property in the
           # SERIALIZED BODY (`Values.serialize_exposed` iterates these configs and raises on an unrenderable

@@ -1212,7 +1212,7 @@ RSpec.describe "declaration-time property name collisions" do
               expects :par, type: Hash
               expects :a, on: not_a_name, optional: true
             end
-          end.to raise_error(ArgumentError, /\Aon: must be a String or Symbol naming a parent reader \(got a value of class #{klass}\)/)
+          end.to raise_error(ArgumentError, /\Aon: on expects :a must be a String or Symbol naming a parent reader \(got a value of class #{klass}\)/)
         end
       end
 
@@ -1234,7 +1234,7 @@ RSpec.describe "declaration-time property name collisions" do
             expects :par, type: Hash
             expects :a, on: hostile, optional: true
           end
-        end.to raise_error(ArgumentError, /\Aon: must be a String or Symbol naming a parent reader/)
+        end.to raise_error(ArgumentError, /\Aon: on expects :a must be a String or Symbol naming a parent reader/)
       end
     end
   end

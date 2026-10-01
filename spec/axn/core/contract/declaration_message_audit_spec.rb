@@ -6,7 +6,7 @@
 # own `raise_error` expectations take.
 RSpec.describe "the declaration message audit" do
   describe ".defects" do
-    def defects(message, label: "expects :v") = DeclarationMessageAudit.defects(message, label:)
+    def defects(message, label: "expects :v", frames: nil, depth: nil) = DeclarationMessageAudit.defects(message, label:, frames:, depth:)
 
     it "passes a message that names the declaration, renders no Array and no address" do
       expect(defects("`allow_empty:` isn't allowed on expects :v for Integer — drop it.")).to be_empty
@@ -51,6 +51,14 @@ RSpec.describe "the declaration message audit" do
       expect(defects("`x:` isn't allowed on expects :value.")).to include("names a declaration other than the one it refuses (expects :v)")
       expect(defects("`x:` isn't allowed on expects :v.w.")).to include("names a declaration other than the one it refuses (expects :v)")
       expect(defects("`x:` isn't allowed on expects :v.")).to be_empty
+    end
+
+    # The label current at the raise must belong to the declaration that raised: a nested `expects` refusing its
+    # own name before it is known must not borrow the enclosing declaration's label and pass by naming it.
+    it "flags a refusal raised by a declaration whose own label was not current" do
+      expect(defects("`x:` isn't allowed on expects :v.", frames: 2, depth: 1))
+        .to include(/was raised by a declaration whose own label was not current/)
+      expect(defects("`x:` isn't allowed on expects :v.", frames: 1, depth: 1)).to be_empty
     end
 
     it "matches a label carrying regexp characters literally, and whole" do

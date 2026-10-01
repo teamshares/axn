@@ -34,27 +34,42 @@ module Axn
         KEY = :__axn_declaration_label
         private_constant :KEY
 
-        Label = Data.define(:text, :top)
+        # `text` is nil while a declaration's own names are not yet known (it MASKS the enclosing one); `depth` counts
+        # the declarations open on this fiber, members included in their field's, so a reader can tell which
+        # declaration a label belongs to.
+        Label = Data.define(:text, :top, :depth)
         Entry = Data.define(:previous)
         private_constant :Label, :Entry
 
         class << self
-          # Makes the declaration `direction` (`:expects`/`:exposes`) of `fields`, on `on:`'s route, the current
-          # one, answering a token for `leave`. A pair rather than a block so `expects`/`exposes` can enter once
-          # their names are canonical and leave from their own `ensure`, whatever path they return or raise by.
-          #
-          # A declaration naming no field has no label to give (`expects` with nothing in it is a legal no-op), so
-          # it enters none and answers nil.
-          def enter(direction, fields, on: nil)
-            return nil if fields.empty?
-
+          # Opens a declaration on this fiber, answering a token for `leave`. Called on the FIRST line of
+          # `expects`/`exposes`, before anything that can refuse, so the span in which a label is current is exactly
+          # the span of the declaration it names: until `declare` gives it its own label, the declaration MASKS any
+          # enclosing one (a declaration made while another's block runs), and a refusal there names no
+          # declaration rather than the wrong one. A pair rather than a block so the caller leaves from its own
+          # `ensure`, whatever path it returns or raises by.
+          def enter
             entry = Entry.new(previous: _label)
-            _store(Label.new(text: _fields_text(direction, fields, on), top: nil))
+            _store(Label.new(text: nil, top: nil, depth: depth + 1))
             entry
           end
 
-          # Restores whatever was current on this fiber before `enter`; a nil token (the declaration raised before
-          # entering) leaves the label alone.
+          # Gives the declaration `enter` opened its label — the direction `(:expects`/`:exposes`) of `fields` on
+          # `on:`'s route — as soon as each part is canonical, so a refusal of the route can already name the
+          # field. A declaration naming no field has no label to give (`expects` with nothing in it is a legal
+          # no-op), so it stays masked.
+          def declare(direction, fields, on: nil)
+            return if fields.empty?
+
+            label = _label
+            _store(Label.new(text: _fields_text(direction, fields, on), top: nil, depth: label&.depth || (depth + 1)))
+          end
+
+          # How many declarations are open on this fiber — the count a refusal's `expects`/`exposes` frames must
+          # match for the current label to be its own.
+          def depth = _label&.depth || 0
+
+          # Restores whatever was current on this fiber before `enter`; a nil token leaves the label alone.
           def leave(entry)
             _store(entry.previous) unless entry.nil?
           end
@@ -66,7 +81,7 @@ module Axn
             top = _top
             return yield if top.nil?
 
-            _within(Label.new(text: member(name), top:), &)
+            _within(Label.new(text: member(name), top:, depth:), &)
           end
 
           # How a shape member is named wherever a refusal is about it: `shape member `sku` in expects :rows`, or
