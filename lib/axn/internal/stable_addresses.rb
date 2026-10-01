@@ -17,6 +17,15 @@ module Axn
         stable = rendered.gsub(ANONYMOUS_MODULE_ADDRESS) { |address| address.start_with?("#<Class") ? "(anonymous class)" : "(anonymous module)" }
         stable.gsub(OBJECT_ADDRESS, ">").freeze
       end
+
+      # A rendered name set in parentheses (`Handled exception (RuntimeError): …`), unless it is a bare placeholder,
+      # which already carries its own pair: `Handled exception (anonymous class): …` rather than
+      # `((anonymous class))`. A placeholder that opens a longer path (`(anonymous class)::Inner`) is wrapped
+      # like any other name.
+      def self.parenthesized(rendered) = PLACEHOLDER.match?(rendered) ? rendered : "(#{rendered})"
+
+      PLACEHOLDER = /\A\(anonymous (?:class|module)\)\z/
+      private_constant :PLACEHOLDER
     end
   end
 end

@@ -633,7 +633,7 @@ module Axn
         # and this class's own `cycle_reason`) are normalized by one call rather than one each, so which source
         # answered cannot decide whether the message composes.
         def message
-          "Cannot serialize exposed value at `#{Axn::Internal::RenderedText.of(@path)}` (#{value_class_name}): " \
+          "Cannot serialize exposed value at `#{Axn::Internal::RenderedText.of(@path)}` #{Axn::Internal::StableAddresses.parenthesized(value_class_name)}: " \
             "#{Axn::Internal::RenderedText.of(@reason || cycle_reason)}"
         end
 
@@ -687,13 +687,13 @@ module Axn
       # texts, and which text that is must not be able to decide whether this message composes — the ordinary
       # reason `#message` renders every operand of a composition rather than the ones known today to need it.
       def message
-        "Cannot serialize argument `#{Axn::Internal::RenderedText.of(@field)}` (#{value_class_name}) for " \
+        "Cannot serialize argument `#{Axn::Internal::RenderedText.of(@field)}` #{Axn::Internal::StableAddresses.parenthesized(value_class_name)} for " \
           "async execution. #{Axn::Internal::RenderedText.of(Axn::Internal::AsyncSerialization._unserializable_hint(@value))}"
       end
 
       private
 
-      def value_class_name = Axn::Internal::RenderedClassName.of(@value)
+      def value_class_name = Axn::Internal::RenderedClassName.stable_of(@value)
     end
   end
 end

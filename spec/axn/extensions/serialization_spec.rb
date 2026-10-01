@@ -231,7 +231,7 @@ RSpec.describe Axn::Extensions::Serialization do
         expect(error).not_to be_nil
         expect(error.message).to match(/`d`/)
         # Both classes are anonymous, so each is named by its placeholder rather than its address.
-        expect(error.message).to include("`d` ((anonymous class))")
+        expect(error.message).to include("`d` (anonymous class):")
         expect(error.message).to include("declared type (anonymous class)")
         expect(error.message).not_to match(/0x\h+/)
         expect(error.message).to match(/`#as_json`/)

@@ -281,7 +281,7 @@ module Axn
       # Latin-1 detail raised `Encoding::CompatibilityError` — and since this whole handler runs inside
       # `best_effort`, that lost BOTH this log line and the configured `on_exception` callback below. An
       # exception detail reads through the guarded message reader; anything else through the value renderer.
-      msg = "Handled exception (#{Axn::Internal::Rendering.stable_class_name(e)}): #{_rendered_detail(detail)}"
+      msg = "Handled exception #{Axn::Internal::StableAddresses.parenthesized(Axn::Internal::Rendering.stable_class_name(e))}: #{_rendered_detail(detail)}"
       msg = ("#" * 10) + " #{msg} " + ("#" * 10) unless Axn.config.env.production?
       Axn::Internal::ActionState.log(action, msg)
 
