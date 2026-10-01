@@ -881,7 +881,11 @@ module Axn
           return false unless ::String.equal?(Axn::Internal::Identity.class_of(rendered)) && wire_string?(rendered)
 
           coerced = Axn::Internal::Coercion.coerce_value(rendered, tokens)
-          klass.equal?(Axn::Internal::Identity.class_of(coerced)) && klass.instance_method(:==).bind_call(member, coerced)
+          return false unless klass.equal?(Axn::Internal::Identity.class_of(coerced))
+
+          # The class's own `==`, read natively, so a member carrying a singleton `==` is not asked.
+          equality = Axn::Internal::NativeMethods.declared_instance_method(klass, :==)
+          !equality.nil? && equality.bind_call(member, coerced)
         end
 
         # The `enum:` member list for an inclusion set. `nullable` (nil_allowed?) is the runtime truth: when
