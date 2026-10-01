@@ -1001,6 +1001,7 @@ module Axn
           # it. Nothing above depends on the constraint already being there.
           if !for_output && type_info.empty? && !structured?(config)
             apply_untyped_value_constraints!(prop, config.validations, nullable:)
+            drop_floors_blank_refusal_implies!(prop)
           else
             apply_value_constraints!(prop, config.validations, nullable:, for_output:)
           end

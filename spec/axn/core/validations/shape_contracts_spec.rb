@@ -681,7 +681,7 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
         klass = declared_with_member(Struct.new(:field, :validations, :default).new(:a, { presence: true }, "dflt"))
 
         expect(klass.input_schema.dig(:properties, :payload, :properties, :a))
-          .to eq(not: { enum: ["", [], {}, false, nil] }, minItems: 1, minProperties: 1, minLength: 1)
+          .to eq(not: { enum: ["", [], {}, false, nil] })
         expect(klass.input_schema.dig(:properties, :payload, :required)).to eq(["a"])
         expect(klass.call(payload: {})).not_to be_ok
       end

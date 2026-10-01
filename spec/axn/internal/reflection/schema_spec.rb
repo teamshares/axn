@@ -7261,7 +7261,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             properties: {
               address: {
                 properties: {
-                  zip: { default: "x", not: { enum: ["", [], {}, false, nil] }, minItems: 1, minProperties: 1, minLength: 1 },
+                  zip: { default: "x", not: { enum: ["", [], {}, false, nil] } },
                 },
               },
             },
@@ -7359,7 +7359,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
               status: { type: "string", minLength: 1 },
               address: {
                 properties: {
-                  zip: { default: "x", not: { enum: ["", [], {}, false, nil] }, minItems: 1, minProperties: 1, minLength: 1 },
+                  zip: { default: "x", not: { enum: ["", [], {}, false, nil] } },
                 },
               },
             },
@@ -10273,7 +10273,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         expect(action.call(f: [nil])).not_to be_ok
         expect(action.call(f: [""])).not_to be_ok
         expect(action.input_schema.dig(:properties, :f, :items))
-          .to eq(not: { enum: ["", [], {}, false, nil] }, minItems: 1, minProperties: 1, minLength: 1)
+          .to eq(not: { enum: ["", [], {}, false, nil] })
       end
 
       # Outbound the schema may say LESS than the contract and never more, and an untyped OUTPUT position is
@@ -10301,7 +10301,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         expect(bagged.input_schema.dig(:properties, :f, :items, :description)).to include('"format":')
         expect(bagged.input_schema.dig(:properties, :f, :items)).not_to have_key(:type)
         expect(constraints(fielded.input_schema[:properties][:f]))
-          .to eq(not: { enum: ["", [], {}, false, nil] }, minItems: 1, minProperties: 1, minLength: 1, pattern: "^a")
+          .to eq(not: { enum: ["", [], {}, false, nil] }, pattern: "^a")
         expect(fielded.input_schema[:properties][:f][:description]).to include('"format":{"with":')
       end
     end

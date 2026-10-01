@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "axn/internal/identity"
+require "axn/internal/reflection/schema/vocabulary"
 
 module Axn
   module Internal
@@ -92,6 +93,22 @@ module Axn
           end
 
           def emittable_size_key?(key, strings) = strings || !STRING_SIZE_KEYS.include?(key)
+
+          # The value sets a position naming no type refuses its blanks with (`blank_refusal`), either nullability.
+          BLANK_REFUSAL_SETS = [Vocabulary::BLANK_WIRE_VALUES, Vocabulary::NON_NIL_BLANK_WIRE_VALUES].freeze
+          private_constant :BLANK_REFUSAL_SETS
+
+          # A blank refusal (`not: { enum: ["", [], {}, false, …] }`) rejects the empty string, array and object
+          # whatever type the value has, which is everything a floor of 1 rejects for its own type — so beside one
+          # the floor says nothing more, and is left out. A floor above 1 still rejects values the set admits, and
+          # stays. Mutates and returns `node`.
+          def drop_floors_blank_refusal_implies!(node)
+            refusal = node[:not]
+            return node unless refusal.is_a?(::Hash) && refusal.size == 1 && BLANK_REFUSAL_SETS.include?(refusal[:enum])
+
+            SIZE_CONSTRAINT_KEYS.each_value { |key| node.delete(key) if 1.equal?(node[key]) }
+            node
+          end
 
           # The JSON Schema floor key for an emitted type, or nil for a type with no empty state. Reads the
           # single-type String and the `[T, "null"]` nullable pair alike; `"null"` is never size-bearing.

@@ -585,7 +585,9 @@ module Axn
               context.delete(:type)
               prop.merge!(context)
             end
-            presence_rejects_blank?(validations) ? prop.merge(not: blank_refusal(nullable: nil_allowed?(config))) : prop
+            return prop unless presence_rejects_blank?(validations)
+
+            drop_floors_blank_refusal_implies!(prop.merge(not: blank_refusal(nullable: nil_allowed?(config))))
           end
 
           def branch_projection_required?(config)

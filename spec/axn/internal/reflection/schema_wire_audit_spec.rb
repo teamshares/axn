@@ -510,6 +510,76 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
     expect(rejected).to be_empty, "these documents advertise a literal the runtime rejects:\n  #{rejected.join("\n  ")}"
   end
 
+  # A position naming no type refuses its blanks as a value set, `not: { enum: ["", [], {}, false, …] }`, which
+  # already rejects the empty string, array and object a floor of 1 would. So such a floor beside the set is left out,
+  # and this holds both halves over every inbound document the walks here declare: none remains (the emitter's every
+  # site is reached), and putting all three back changes the verdict on no value of any JSON type (it was implied).
+  def blank_refusal?(node)
+    node.is_a?(Hash) && node[:not].is_a?(Hash) && node[:not].size == 1 &&
+      [Axn::Internal::Reflection::Schema::Vocabulary::BLANK_WIRE_VALUES,
+       Axn::Internal::Reflection::Schema::Vocabulary::NON_NIL_BLANK_WIRE_VALUES].include?(node[:not][:enum])
+  end
+
+  def each_schema_node(node, &)
+    case node
+    when Hash
+      yield node
+      node.each_value { |value| each_schema_node(value, &) }
+    when Array then node.each { |value| each_schema_node(value, &) }
+    end
+  end
+
+  def every_json_type = [nil, true, false, 0, 1, 1.5, "", " ", "a", [], [1], [[]], {}, { "a" => 1 }, { "a" => {} }]
+
+  it "leaves out a floor of 1 beside a blank refusal, which implies it for every JSON type" do
+    redundant = []
+    changed = []
+    refusals = 0
+    documents = []
+    each_cell do |tname, tklass, vname, vopts, tolname, tol|
+      closed_gates.each do |gname, gate|
+        next if gname != "ungated" && vopts.empty?
+
+        documents << inbound_cell(tname, vname, tolname, gname) { gate.call({ type: tklass }.merge(vopts)).merge(tol) }
+      end
+    end
+    each_position_cell { |_name, klass, _wrap| documents << klass }
+    nested_members.each { |mname, member| nested_nodes.each { |nname, node| documents << nested_cell(mname, nname, member, node) } }
+    untyped = [{}, { presence: true }, { length: { minimum: 1 } }, { length: { minimum: 2 } }, { allow_nil: true, presence: true }]
+    untyped.each { |opts| documents << declare(:in, opts) << declare(:in, { type: Array, of: opts.merge(klass: Object) }) }
+    # A merged node whose route's own `type:` is gated is projected over every JSON type, a site of its own.
+    documents << Class.new do
+      include Axn
+      expects(:payload, type: Hash) { field :inner, type: { klass: String, if: -> { false } } }
+      expects :inner, on: :payload, type: Hash
+    end
+
+    documents.compact.each do |klass|
+      each_schema_node(klass.input_schema) do |node|
+        next unless blank_refusal?(node)
+
+        refusals += 1
+        floors = node.slice(:minItems, :minProperties, :minLength).select { |_key, floor| floor == 1 }
+        redundant << node.inspect unless floors.empty?
+        refloored = schemer({ minItems: 1, minProperties: 1, minLength: 1 }.merge(node))
+        as_emitted = schemer(node)
+        every_json_type.each do |value|
+          changed << "#{node.inspect}: #{value.inspect}" unless refloored.valid?(value) == as_emitted.valid?(value)
+        end
+      end
+    end
+
+    # The controls: a floor the set does not imply stays — one above 1 beside it, and one of 1 with no set beside it
+    # (a `presence: false` position refuses only null, a nil-tolerant one nothing at all).
+    floors = ->(opts) { declare(:in, opts).input_schema[:properties][:n].slice(:minItems, :minProperties, :minLength).values }
+    expect(floors.call({ length: { minimum: 2 } })).to eq([2, 2, 2])
+    expect(floors.call({ presence: false, length: { minimum: 1 } })).to eq([1, 1, 1])
+    expect(floors.call({ allow_nil: true, length: { minimum: 1 } })).to eq([1, 1, 1])
+    expect(refusals).to be > 100
+    expect(redundant).to be_empty, "a floor of 1 beside a blank refusal:\n  #{redundant.uniq.first(20).join("\n  ")}"
+    expect(changed).to be_empty, "a floor the blank refusal does not imply:\n  #{changed.first(20).join("\n  ")}"
+  end
+
   # `default:` is not a validator, so the walk above never declares one — and a default changes what reaches
   # every check: an omitted value becomes the default, which a gated check may then reject only on some calls.
   # Two defaults per cell: the type's blank (the value a presence check turns on), and one the plain cell
