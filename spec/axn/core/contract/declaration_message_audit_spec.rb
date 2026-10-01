@@ -81,11 +81,73 @@ RSpec.describe "the declaration message audit" do
       expect(defects("expects :payload is declared nil-tolerant. Found while declaring expects :v.")).to be_empty
     end
 
+    # An exempt refusal is spared naming the declaration, never the other two properties.
+    it "still holds a refusal exempt from naming its declaration to rendering no address and no Array" do
+      loop_message = "`on:` loops back on itself — expects a.x (read as :b) -> expects b.y (read as :a) -> expects a.x: each is ..."
+      expect(defects(loop_message, label: "expects b.y")).to be_empty
+      expect(defects("#{loop_message} #<Class:0x000000012b647db0>", label: "expects b.y")).to include("renders a memory address")
+      expect(defects(%(#{loop_message} ["y"]), label: "expects b.y")).to include("renders a declared field as an Array inspect")
+    end
+
     it "reads the field names out of each label shape" do
       expect(DeclarationMessageAudit.field_names("expects :a, :b")).to eq(%w[a b])
       expect(DeclarationMessageAudit.field_names("expects payload.company_id")).to eq(%w[company_id])
       expect(DeclarationMessageAudit.field_names("shape member `sku` in expects :rows")).to eq(%w[sku rows])
       expect(DeclarationMessageAudit.field_names(nil)).to eq([])
+    end
+  end
+
+  describe ".outside_defects" do
+    def outside_defects(message, carried: []) = DeclarationMessageAudit.outside_defects(message, carried:)
+
+    it "flags a class or module axn named by its address" do
+      expect(outside_defects("`tool` was already declared on #<Class:0x000000012b647db0>; declare all adapters"))
+        .to include("renders a class or module by its memory address")
+      expect(outside_defects("got :other after use under #<Module:0x000000012b647db0>"))
+        .to include("renders a class or module by its memory address")
+      expect(outside_defects("got #<#<Class:0x000000012b647db0> (inspect unavailable)>"))
+        .to include("renders a class or module by its memory address")
+    end
+
+    it "passes the placeholder" do
+      expect(outside_defects("`tool` was already declared on (anonymous class); declare all adapters")).to be_empty
+    end
+
+    # The caller's own rendering of their own object, and Ruby's phrasing inside a caller's exception message.
+    it "passes an address that is a caller's object rendering or Ruby's own phrasing" do
+      expect(outside_defects("step if: must be a Symbol or callable (got #<Object:0x000000012b647db0>)")).to be_empty
+      expect(outside_defects("Unclear how to extract leaf from #<#<Class:0x000000012b647db0>:0x000000012b647dc8 @id=7>")).to be_empty
+      expect(outside_defects("failed validation: undefined method `helper' for an instance of #<Class:0x000000012b647db0>")).to be_empty
+      expect(outside_defects("undefined method `log' for class #<Class:0x000000012b647db0>")).to be_empty
+    end
+
+    it "passes an address the error's cause carries, and only that one" do
+      carried = ["#<Class:0x000000012b647db0>"]
+      expect(outside_defects("re-raised ...; its message was: #<Class:0x000000012b647db0>", carried:)).to be_empty
+      expect(outside_defects("not as the original #<Class:0x000000012b647dc8>; its message was: #<Class:0x000000012b647db0>", carried:))
+        .to include("renders a class or module by its memory address")
+    end
+  end
+
+  # End to end, outside a declaration: an error axn raises from lib/ with a class named by its address must fail the
+  # `raise_error` expectation that receives it, while a caller's own error re-raised through lib/ is left alone.
+  describe "the raise_error hook, outside a declaration" do
+    it "fails an expectation whose error names a class by its address" do
+      action = Class.new { include Axn }
+      action.tool :mcp
+      allow(Axn::Internal::Rendering).to receive(:installed_name).and_return("#<Class:0x000000012b647db0>")
+
+      expect { expect { action.tool :mcp }.to raise_error(ArgumentError) }
+        .to raise_error(RSpec::Expectations::ExpectationNotMetError, /error axn raised renders a class or module by its memory address/)
+    end
+
+    it "leaves a caller's error that lib/ re-raises alone" do
+      action = Class.new do
+        include Axn
+        def call = raise(ArgumentError, "the caller's #<Class:0x000000012b647db0>")
+      end
+
+      expect { expect { action.call! }.to raise_error(ArgumentError) }.not_to raise_error
     end
   end
 
