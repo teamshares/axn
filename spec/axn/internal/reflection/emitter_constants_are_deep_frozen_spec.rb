@@ -106,7 +106,7 @@ RSpec.describe "every container constant the emitter holds" do
   it "resolves enough of them to be measuring something" do
     expect(EmitterConstants.modules.size).to be >= 10
     expect(EmitterConstants.containers.map(&:first)).to include(
-      "Axn::Internal::Reflection::Schema::BLANK_BRANCH_WITNESS",
+      "Axn::Internal::Reflection::Schema::Numericality::BLANK_BRANCH_WITNESS",
       "Axn::Internal::Reflection::Schema::Vocabulary::BLANK_WIRE_VALUES",
     )
   end

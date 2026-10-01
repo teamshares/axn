@@ -2259,29 +2259,6 @@ module Axn
           {}
         end
 
-        # The emitted types that name values no Numeric can be, and so the only branches `only_numeric:` may
-        # drop. Listed rather than derived by exclusion for exactly the reason above — an absent or unrecognized
-        # type has to fall through to "keep", not to "drop".
-        NON_NUMERIC_BRANCH_TYPES = %w[array object boolean].freeze
-        private_constant :NON_NUMERIC_BRANCH_TYPES
-
-        # The one blank each of those types can hold. Every branch the numeric check excludes has exactly one, so
-        # a blank-tolerant position narrows the branch TO it rather than losing the branch: the result names the
-        # only value that can occupy the position there, which is right in both directions at once — outbound it
-        # accepts the blank the action can expose, inbound it accepts nothing else, and the runtime agrees on
-        # both counts. `enum` is the spelling because a singleton boolean branch already uses it (`TrueClass`
-        # emits `enum: [true]`) and because `merge_enum!` composes it by intersection.
-        #
-        # Each witness is FROZEN, on the same terms `EMPTY_ENUM` and `NULL_BRANCH` already are: this value is
-        # handed to a consumer inside a schema, schemas are rebuilt per call and caller-mutable, and a shared
-        # mutable `[]`/`{}` let one consumer's mutation reach every schema the process emitted afterwards —
-        # measured, appending to one action's witness changed a DIFFERENT action class's `enum` to `[[99]]`.
-        # Freezing rather than copying is what the neighbours do and buys the same property (AGENTS.md: an
-        # already-frozen container needs no copy), with the difference that a mutating consumer now gets a
-        # FrozenError instead of silently corrupting every later schema.
-        BLANK_BRANCH_WITNESS = { "array" => [].freeze, "object" => {}.freeze, "boolean" => false }.freeze
-        private_constant :BLANK_BRANCH_WITNESS
-
         def enum_scalar_type(value)
           return "string" if value.is_a?(String)
           return "integer" if value.is_a?(Integer)
