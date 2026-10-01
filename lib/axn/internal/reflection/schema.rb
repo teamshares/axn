@@ -829,6 +829,15 @@ module Axn
           ::String.equal?(klass) && !Axn::Internal::Text.utf8_rendering(key).nil?
         end
 
+        # Whether a tool invoker's coercion (`coerce_input_types`, which `Axn::Tools::Invoker` turns on) can parse this
+        # position's wire String into its declared type before its checks run: only a field the read path resolves
+        # (`Coercion.coerce_config_value`, a top-level field or a dotted subfield), and only where its own `coerce:`
+        # does not opt out (`Coercion.field_coerces?`). A shape member, an `of:` element and a map axis have no
+        # reader, so nothing coerces them — the same test `transforms_wire_value?` reads.
+        def wire_value_coerced?(config)
+          config.respond_to?(:preprocess) && Axn::Internal::Coercion.field_coerces?(config.validations[:type], true)
+        end
+
         # Whether an INPUT `inclusion:` set can be stated as an `enum`: every member is a value a JSON document
         # carries and the runtime accepts back as that member. Its literal is what the document advertises, so a
         # member whose literal the runtime rejects — a Symbol or a Time anywhere no declared type parses the String
@@ -836,10 +845,10 @@ module Axn
         # advertise a value no call can send, and one with no literal at all would leave a live object in the
         # document. Either stands the set down, and the caller names it, the direction the schema may always err in.
         #
-        # `tokens` are the position's declared classes. Where one of them parses a String into the member's own
-        # class (`Coercion.coerce_value`, the same step a tool invoker turns on), the member's String form is the
-        # call the schema already states canonically for that type, so it stands — exactly when parsing that form
-        # gives the member back.
+        # `tokens` are the declared classes of a position the runtime coerces (`wire_value_coerced?`), and none
+        # elsewhere. Where one of them parses a String into the member's own class (`Coercion.coerce_value`, the
+        # same step a tool invoker turns on), the member's String form is the call the schema already states
+        # canonically for that type, so it stands — exactly when parsing that form gives the member back.
         def wire_enum?(members, tokens) = LITERAL_ARRAY_ALL.bind_call(members) { |member| wire_member?(member, tokens) }
 
         # The classes whose String form a declared type can parse back (`Coercion::COERCERS`' String-keyed half).
@@ -1008,7 +1017,7 @@ module Axn
             apply_untyped_value_constraints!(prop, config.validations, nullable:)
             drop_floors_blank_refusal_implies!(prop)
           else
-            apply_value_constraints!(prop, config.validations, nullable:, for_output:)
+            apply_value_constraints!(prop, config.validations, nullable:, for_output:, coerced: wire_value_coerced?(config))
           end
 
           return prop if for_output
@@ -1380,8 +1389,8 @@ module Axn
         # Array's element, a map's axis), so a keyword cannot land at one position and be forgotten at another —
         # which is what a mirrored copy would eventually become. The keyword each one lands on is decided by the
         # node's own emitted `type:`, so the same call does the right thing wherever the node sits.
-        def apply_value_constraints!(node, validations, nullable:, for_output:, property_names: false, declared_klass: nil)
-          apply_inclusion_enum!(node, validations, nullable:, for_output:, property_names:, declared_klass:)
+        def apply_value_constraints!(node, validations, nullable:, for_output:, property_names: false, declared_klass: nil, coerced: false)
+          apply_inclusion_enum!(node, validations, nullable:, for_output:, property_names:, declared_klass:, coerced:)
           apply_size_constraints!(node, validations, for_output:, property_names:, declared_klass:)
           apply_numeric_bounds!(node, validations, nullable:, for_output:, declared_klass:)
           apply_pattern!(node, validations, for_output:, property_names:, declared_klass:)
@@ -1431,7 +1440,7 @@ module Axn
         # object key is a string. A Symbol has a faithful form; an Integer does not, and the runtime really does
         # accept `{ 1 => v }`, so a set with any unrenderable member stands the ENUM down (leaving the axis's
         # other, string-shaped constraints in place) rather than emit a set no key can satisfy.
-        def apply_inclusion_enum!(node, validations, nullable:, for_output:, property_names:, declared_klass: nil)
+        def apply_inclusion_enum!(node, validations, nullable:, for_output:, property_names:, declared_klass: nil, coerced: false)
           inclusion = validations[:inclusion]
           return unless inclusion
 
@@ -1444,7 +1453,7 @@ module Axn
           else
             return if for_output && !output_enum_exact?(values, validations, declared_klass)
             return node.merge!(record_residue(node, unstated_check_sentence(:inclusion, inclusion))) if
-              !for_output && !wire_enum?(values, declared_type_tokens(validations, declared_klass))
+              !for_output && !wire_enum?(values, coerced ? declared_type_tokens(validations, declared_klass) : NO_WIRE_TOKENS)
 
             values = enum_for_inclusion(values, nullable:)
             # A member with no JSON literal — a non-finite Float, bytes with no UTF-8 rendering, a value

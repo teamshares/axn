@@ -440,10 +440,16 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
   # [direction, declaration, where the advertised `enum` sits, the payload sending one of its members].
   def literal_positions
     member = ->(v) { Axn::Core::Contract::ShapeConfig.new(field: :m, validations: { inclusion: { in: [v] } }) }
+    typed_member = ->(v) { Axn::Core::Contract::ShapeConfig.new(field: :m, validations: { type: { klass: v.class }, inclusion: { in: [v] } }) }
     {
       "inclusion" => [:in, ->(v) { { inclusion: { in: [v] } } }, [], ->(m) { m }],
       "inclusion beside a String" => [:in, ->(v) { { inclusion: { in: [v, "a"] } } }, [], ->(m) { m }],
       "inclusion under its own class" => [:in, ->(v) { { type: v.class, inclusion: { in: [v] } } }, [], ->(m) { m }],
+      # The same class at the positions with no reader, which nothing coerces: a String sent there stays a String.
+      "element under its own class" => [:in, ->(v) { { type: Array, of: { klass: v.class, inclusion: { in: [v] } } } }, [:items], ->(m) { [m] }],
+      "map value under its own class" =>
+        [:in, ->(v) { { type: Hash, of: { values: { klass: v.class, inclusion: { in: [v] } } } } }, [:additionalProperties], ->(m) { { "k" => m } }],
+      "member under its own class" => [:in, ->(v) { { type: Hash, shape: { members: [typed_member.call(v)] } } }, %i[properties m], ->(m) { { "m" => m } }],
       "element inclusion" => [:in, ->(v) { { type: Array, of: { inclusion: { in: [v] } } } }, [:items], ->(m) { [m] }],
       "map value inclusion" => [:in, ->(v) { { type: Hash, of: { values: { inclusion: { in: [v] } } } } }, [:additionalProperties], ->(m) { { "k" => m } }],
       "map key inclusion" => [:in, ->(v) { { type: Hash, of: { keys: { inclusion: { in: [v, "a"] } } } } }, [:propertyNames], ->(m) { { m => 1 } }],

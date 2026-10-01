@@ -3780,6 +3780,26 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       expect(schema[:properties][:x][:enum]).to eq(%w[draft open])
     end
 
+    # Coercion runs only where the read path resolves a field; an `of:` element, a map value and a shape member
+    # have no reader, so a String sent there reaches the inclusion check as a String.
+    it "states no enum for Symbol members at a position nothing coerces, even under its own class" do
+      member = Axn::Core::Contract::ShapeConfig.new(field: :status, validations: { type: { klass: Symbol }, inclusion: { in: %i[active] } })
+      klass = Class.new do
+        include Axn
+        expects :statuses, type: Array, of: { klass: Symbol, inclusion: { in: %i[active] } }
+        expects :by_key, type: Hash, of: { values: { klass: Symbol, inclusion: { in: %i[active] } } }
+        expects :row, type: Hash, shape: { members: [member] }
+        def call = nil
+      end
+      props = klass.input_schema[:properties]
+
+      expect(props.dig(:statuses, :items)).not_to have_key(:enum)
+      expect(props.dig(:by_key, :additionalProperties)).not_to have_key(:enum)
+      expect(props.dig(:row, :properties, :status)).not_to have_key(:enum)
+      expect(Axn::Tools::Invoker.new.call(klass, { "statuses" => ["active"], "by_key" => {}, "row" => { "status" => :active } })).not_to be_ok
+      expect(klass.input_schema_residues.map(&:path)).to include(%i[statuses], %i[by_key], %i[row status])
+    end
+
     # A String a client sends is never `==` to a Symbol, and with no `type: Symbol` nothing parses it into one,
     # so the String forms are values the runtime rejects: the set is left out and named instead.
     it "states no enum for Symbol members where no declared type parses a String back into one" do
