@@ -59,6 +59,26 @@ module Axn
     # `Internal::Reflection::Values.describe_key_classes`, and `Rendering` itself.
     module RenderedClassName
       def self.of(value) = Text.renderable(ClassName.of(value))
+
+      # The same name with any object address replaced by a placeholder (`StableAddresses`), for a message whose
+      # text should not change from one boot to the next.
+      def self.stable_of(value) = StableAddresses.of(of(value))
+    end
+
+    # An anonymous class or module renders as its object address (`#<Class:0x…>`, and `#<Class:0x…>::Inner` for a
+    # constant set under one), which changes on every boot and tells the reader nothing the placeholder does not:
+    # `(anonymous class)`, `(anonymous module)`, and a bare `#<Name>` for any other address a rendering carries (a
+    # singleton class's object). Here, below `Internal::Rendering`, so the messages built on this file can reach
+    # it, and so `Rendering.stable_class_name`/`stable_module_name` compose through one owner rather than two.
+    module StableAddresses
+      ANONYMOUS_MODULE_ADDRESS = /#<(?:Class|Module):0x\h+>/
+      OBJECT_ADDRESS = /:0x\h+>/
+      private_constant :ANONYMOUS_MODULE_ADDRESS, :OBJECT_ADDRESS
+
+      def self.of(rendered)
+        stable = rendered.gsub(ANONYMOUS_MODULE_ADDRESS) { |address| address.start_with?("#<Class") ? "(anonymous class)" : "(anonymous module)" }
+        stable.gsub(OBJECT_ADDRESS, ">").freeze
+      end
     end
 
     # A caller-supplied value written into one of this file's messages, whatever it turns out to be.
@@ -98,6 +118,9 @@ module Axn
     # rendering. Anything else falls through to `RenderedText`, which names it by its class.
     module RenderedModuleName
       def self.of(mod) = Identity.kind?(mod, ::Module) ? Text.renderable(ClassName.of_module(mod)) : RenderedText.of(mod)
+
+      # The same name with any object address replaced by a placeholder (`StableAddresses`).
+      def self.stable_of(mod) = StableAddresses.of(of(mod))
     end
 
     # A module's INSTALLED name — the one receiver whose name is read by DISPATCH rather than bound.
@@ -626,11 +649,12 @@ module Axn
 
         private
 
-        def value_class_name = Axn::Internal::RenderedClassName.of(@value)
+        def value_class_name = Axn::Internal::RenderedClassName.stable_of(@value)
 
         def cycle_reason
           klass = value_class_name
-          article = klass.match?(/\A[aeiou]/i) ? "an" : "a"
+          # Read past the placeholder's parenthesis, so `(anonymous class)` takes "an".
+          article = klass.delete_prefix("(").match?(/\A[aeiou]/i) ? "an" : "a"
 
           "it is self-referential (#{article} #{klass} cycle), which has no JSON representation. " \
             "Expose a finite projection of it instead (e.g. ids rather than the objects that point back)."

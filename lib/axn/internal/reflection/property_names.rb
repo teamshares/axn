@@ -228,9 +228,12 @@ module Axn
         # recurse back into `inspect_field_name`'s class branch above: `Module#to_s` always answers with a genuine
         # String (`"#<Class:0x…>"` for an anonymous class), so `field_name_spelling` resolves it from its String
         # branch.
-        def renderable_class_name(value) = Axn::Internal::Rendering.class_name(value)
+        #
+        # An anonymous class renders as its stable placeholder rather than its object address
+        # (`Rendering.stable_class_name`), so a message naming one reads the same on every boot.
+        def renderable_class_name(value) = Axn::Internal::Rendering.stable_class_name(value)
 
-        def renderable_module_name(mod) = Axn::Internal::Rendering.module_name(mod)
+        def renderable_module_name(mod) = Axn::Internal::Rendering.stable_module_name(mod)
 
         # How a name is written into a message that names ONE thing rather than distinguishing two spellings: the
         # UTF-8 property it canonicalizes to, falling back to the escaped form above when its bytes have no UTF-8

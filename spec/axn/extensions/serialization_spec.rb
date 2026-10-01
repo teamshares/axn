@@ -230,8 +230,10 @@ RSpec.describe Axn::Extensions::Serialization do
 
         expect(error).not_to be_nil
         expect(error.message).to match(/`d`/)
-        expect(error.message).to match(/\(#{Regexp.escape(public_s.to_s)}\)/)
-        expect(error.message).to match(/declared type #{Regexp.escape(s.to_s)}/)
+        # Both classes are anonymous, so each is named by its placeholder rather than its address.
+        expect(error.message).to include("`d` ((anonymous class))")
+        expect(error.message).to include("declared type (anonymous class)")
+        expect(error.message).not_to match(/0x\h+/)
         expect(error.message).to match(/`#as_json`/)
         # public_s is itself anonymous (never assigned to a constant), so the owner is named the way
         # `NameOwnership#owner_label` names any anonymous module: by where it was written, not its address.

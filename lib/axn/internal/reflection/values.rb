@@ -610,9 +610,13 @@ module Axn
         # `axn/exceptions` require brings in — the one owner of that composition below `Internal::Rendering`,
         # which this layer cannot reach without a cycle.
         def describe_key_classes(first_key, second_key)
-          first = Axn::Internal::RenderedClassName.of(first_key)
-          second = Axn::Internal::RenderedClassName.of(second_key)
-          return "both of class #{first}" if first == second
+          # Compared before the placeholder replaces an address, so two anonymous classes are still told apart.
+          if Axn::Internal::RenderedClassName.of(first_key) == Axn::Internal::RenderedClassName.of(second_key)
+            return "both of class #{Axn::Internal::RenderedClassName.stable_of(first_key)}"
+          end
+
+          first = Axn::Internal::RenderedClassName.stable_of(first_key)
+          second = Axn::Internal::RenderedClassName.stable_of(second_key)
 
           "one of class #{first}, one of class #{second}"
         end
@@ -1019,7 +1023,7 @@ module Axn
           return generic_as_json_projection_reason(declared) if Axn::Internal::Identity.same?(method, GENERIC_AS_JSON_PROJECTION)
 
           "its position in `output_schema` was reflected from the declared type " \
-            "#{Axn::Internal::RenderedModuleName.of(declared)} — an object keyed by its members — but this " \
+            "#{Axn::Internal::RenderedModuleName.stable_of(declared)} — an object keyed by its members — but this " \
             "value serializes through its own `##{method.name}`, " \
             "#{displaced_projection_owner_label(method, table)}, so the rendered body would not match the " \
             "published schema. #{DISPLACED_PROJECTION_FIX}"
@@ -1031,7 +1035,7 @@ module Axn
         # with — that one still leaves this position honestly opaque either way.
         def undefined_projection_reason(declared)
           "its position in `output_schema` was reflected from the declared type " \
-            "#{Axn::Internal::RenderedModuleName.of(declared)} — an object keyed by its members — but this " \
+            "#{Axn::Internal::RenderedModuleName.stable_of(declared)} — an object keyed by its members — but this " \
             "value's own class has no `#to_h` at all (it was removed, e.g. via `undef_method`), so it would " \
             "render through `#to_s` instead, and the rendered body would not match the published schema. " \
             "Restore `#to_h`, or if the removal is intentional, define the projection you want on the " \
@@ -1043,7 +1047,7 @@ module Axn
         # job here has nothing to point at.
         def method_missing_projection_reason(declared)
           "its position in `output_schema` was reflected from the declared type " \
-            "#{Axn::Internal::RenderedModuleName.of(declared)} — an object keyed by its members — but this " \
+            "#{Axn::Internal::RenderedModuleName.stable_of(declared)} — an object keyed by its members — but this " \
             "value's own class serves `#as_json`/`#to_h` through `method_missing` (advertised via its own " \
             "`respond_to_missing?`), which routes to a different projection than the declared type's own, " \
             "so the rendered body would not match the published schema. #{DISPLACED_PROJECTION_FIX}"
@@ -1054,7 +1058,7 @@ module Axn
         # override that suppresses everything, degrading `projection_for` all the way to `#to_s`.
         def denied_projection_reason(declared)
           "its position in `output_schema` was reflected from the declared type " \
-            "#{Axn::Internal::RenderedModuleName.of(declared)} — an object keyed by its members — but this " \
+            "#{Axn::Internal::RenderedModuleName.stable_of(declared)} — an object keyed by its members — but this " \
             "value's own class overrides `#respond_to?` to deny both `#as_json` and `#to_h`, degrading it " \
             "to `#to_s` instead, so the rendered body would not match the published schema. Stop denying " \
             "`#to_h` (or `#as_json`), or if the denial is intentional, define the projection you want on " \
@@ -1068,7 +1072,7 @@ module Axn
         # entirely (round 16) rather than being routed around by it.
         def generic_as_json_projection_reason(declared)
           "its position in `output_schema` was reflected from the declared type " \
-            "#{Axn::Internal::RenderedModuleName.of(declared)} — an object keyed by its members — but this " \
+            "#{Axn::Internal::RenderedModuleName.stable_of(declared)} — an object keyed by its members — but this " \
             "value's own class denies `#to_h` (via an overridden `#respond_to?`), routing it through " \
             "ActiveSupport's generic `Object#as_json` instead (an instance-variable dump, or a `#to_hash` " \
             "delegate), so the rendered body would not match the published schema. Stop denying `#to_h`, or " \
@@ -1090,7 +1094,7 @@ module Axn
           return "defined on this value itself (a singleton method)#{location}" if Axn::Internal::Identity.same?(owner, table)
 
           name = Axn::Internal::NativeMethods.declared_module_name(owner)
-          named = name ? Axn::Internal::RenderedModuleName.of(owner) : "an anonymous module"
+          named = name ? Axn::Internal::RenderedModuleName.stable_of(owner) : "an anonymous module"
           "defined in #{named}#{location}"
         end
 

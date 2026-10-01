@@ -1161,7 +1161,7 @@ RSpec.describe "expects ..., user_facing:" do
       it "names the offender by class rather than by running its #inspect" do
         expect do
           Axn::Core::Contract::FieldConfig.new(field: :note, reader_as: :note, validations: { presence: true }, user_facing: hostile)
-        end.to raise_error(ArgumentError, /got a value of class #<Class:0x/)
+        end.to raise_error(ArgumentError, /got a value of class \(anonymous class\)/)
       end
 
       it "holds a shape member to the same rule, whatever the member's class" do

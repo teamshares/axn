@@ -1017,10 +1017,12 @@ RSpec.describe Axn::Internal::Reflection::Values do
 
     # `class.name` is nil for an anonymous class, so the article is keyed off `class.to_s`, which is a
     # String either way.
-    it "takes 'a' for an anonymous class, whose to_s renders as #<Class:0x…>" do
+    it "names an anonymous class by its placeholder rather than its address, taking 'an'" do
       anonymous = Class.new.new
 
-      expect(described_class.new(path: "items", value: anonymous).message).to match(/\(a #<Class:0x[0-9a-f]+> cycle\)/)
+      message = described_class.new(path: "items", value: anonymous).message
+      expect(message).to include("(an (anonymous class) cycle)")
+      expect(message).not_to match(/0x\h+/)
     end
 
     # `Module#to_s` hands back a constant path's own bytes, and a constant may hold non-UTF-8 ones — so
