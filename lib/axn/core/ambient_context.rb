@@ -119,7 +119,8 @@ module Axn
                     "has no nested subfields — this node also has subfield children, so the ambient filter " \
                     "rebuilds it from those children alone and the shape's members can't be validated. Declare " \
                     "the nested structure ONE way: keep the `shape:` (validation only), or use subfields " \
-                    "(`expects :<member>, on: :#{shape_configs.first.field}`), which also give readers and `sensitive:`."
+                    "(`expects :<member>, on: :#{shape_configs.first.field}`), which also give readers and `sensitive:`." \
+                    "#{Axn::Core::Contract::DeclarationLabel.found_while(Axn::Core::Contract::DeclarationLabel.subfield(shape_configs.first))}"
             end
 
             # PRO-3441. Off ambient, a Hash's `of:` bag colliding with a subfield is now permitted — the
@@ -138,7 +139,8 @@ module Axn
                   "nested subfields — this node also has subfield children, so the ambient filter rebuilds it " \
                   "from those children alone and the map's other keys are never copied. Declare the nested " \
                   "structure ONE way: keep the `of:` (the value is copied whole, no subfield needed to reach a " \
-                  "key of it), or use subfields (`expects :<member>, on: :#{map_configs.first.field}`)."
+                  "key of it), or use subfields (`expects :<member>, on: :#{map_configs.first.field}`)." \
+                  "#{Axn::Core::Contract::DeclarationLabel.found_while(Axn::Core::Contract::DeclarationLabel.subfield(map_configs.first))}"
           end
         end
 
@@ -152,7 +154,8 @@ module Axn
             raise ArgumentError,
                   "`user_facing:` isn't allowed on a shape member of " \
                   "#{Axn::Core::Contract::DeclarationLabel.subfield(config)} — drop it; ambient values are " \
-                  "framework-supplied, not caller input, so there is no caller to face."
+                  "framework-supplied, not caller input, so there is no caller to face." \
+                  "#{Axn::Core::Contract::DeclarationLabel.found_while(Axn::Core::Contract::DeclarationLabel.subfield(config))}"
           end
         end
 

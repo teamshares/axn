@@ -32,10 +32,22 @@ RSpec.describe "the declaration message audit" do
     end
 
     it "accepts every label shape a declaration has" do
-      ["expects :v", "exposes :\"a.b\"", "expects payload.company_id", "shape member `sku` in expects :rows",
-       "an `expects` field name"].each do |named|
-        expect(defects("`x:` isn't allowed on #{named}.")).to be_empty
+      ["expects :v", "exposes :\"a.b\"", "expects payload.company_id", "shape member `sku` in expects :rows"].each do |named|
+        expect(defects("`x:` isn't allowed on #{named}.", label: named)).to be_empty
       end
+      expect(defects("an `expects` field name must be a String or Symbol", label: nil)).to be_empty
+    end
+
+    # Something shaped like a declaration is not enough: a sibling's, an outer field's or a stale label reads just
+    # as well and points the author at the wrong line.
+    it "flags a refusal that names a different, valid declaration" do
+      expect(defects("`x:` isn't allowed on expects :w.")).to include("names a declaration other than the one it refuses (expects :v)")
+      expect(defects("`x:` isn't allowed on expects :rows.", label: "shape member `sku` in expects :rows"))
+        .to include("names a declaration other than the one it refuses (shape member `sku` in expects :rows)")
+    end
+
+    it "accepts a refusal about another config that names this declaration as well" do
+      expect(defects("expects :payload is declared nil-tolerant. Found while declaring expects :v.")).to be_empty
     end
 
     it "reads the field names out of each label shape" do
@@ -68,6 +80,20 @@ RSpec.describe "the declaration message audit" do
 
     it "fails an expectation whose refusal does not name the declaration" do
       refused_with(":v").to raise_error(RSpec::Expectations::ExpectationNotMetError, /does not name the declaration/)
+    end
+
+    it "fails an expectation whose refusal names a sibling declaration instead" do
+      refused_with("expects :w")
+        .to raise_error(RSpec::Expectations::ExpectationNotMetError, /names a declaration other than the one it refuses \(expects :v\)/)
+    end
+
+    # An audit that cannot read the message fails the example rather than passing it unjudged — a spec asserting
+    # only the class would otherwise see nothing.
+    it "fails the example when the refusal's message cannot be rendered" do
+      unreadable = Class.new(ArgumentError) { def message = raise("message cannot be rendered") }.new
+      DeclarationMessageAudit.tag(unreadable, "expects :v")
+
+      expect { expect { raise unreadable }.to raise_error(ArgumentError) }.to raise_error(RuntimeError, "message cannot be rendered")
     end
 
     it "leaves an error raised outside a declaration alone" do

@@ -30,20 +30,33 @@ module DeclarationMessageAudit
     [/\Acircular on: chain:/, "spans several declarations"],
   ].freeze
 
-  Tag = Data.define(:label)
+  # `current` is the label of what was being declared when the error was raised — a member's label while its
+  # block is built — and `declaration` the label of the field that declaration belongs to.
+  Tag = Data.define(:current, :declaration)
 
   TAGS = ObjectSpace::WeakMap.new
 
   class << self
-    # The defects a refusal's message has, given the declaration label that was current when it was raised.
+    # The defects a refusal's message has, given the label that was current when it was raised. A refusal must
+    # name THAT declaration — the text `DeclarationLabel` holds, verbatim — not merely something shaped like one:
+    # a sibling's, an outer field's or a stale label reads just as well and points the author at the wrong line.
+    # A refusal about another config (a re-anchored subfield, a crossed route) names that config as well, never
+    # instead.
     def defects(message, label:)
       return [] if EXEMPT.any? { |pattern, _reason| message.match?(pattern) }
 
       found = []
       found << "renders a declared field as an Array inspect" if field_names(label).any? { |name| message.include?(%(["#{name}")) }
       found << "renders a memory address" if message.match?(ADDRESS)
-      found << "does not name the declaration (direction and field) it refuses" if label && !message.match?(DIRECTION)
+      found.concat(naming_defects(message, label)) unless label.nil?
       found
+    end
+
+    def naming_defects(message, label)
+      return ["does not name the declaration (direction and field) it refuses"] unless message.match?(DIRECTION)
+      return ["names a declaration other than the one it refuses (#{label})"] unless message.include?(label)
+
+      []
     end
 
     def field_names(label)
@@ -52,7 +65,7 @@ module DeclarationMessageAudit
       label.scan(/`([^`]+)`|:"([^"]+)"|:([^\s,"]+)|\.([^\s,.]+)(?=,|\z)/).flatten.compact.uniq
     end
 
-    def tag(error, label) = TAGS[error] = Tag.new(label:)
+    def tag(error, current, declaration = current) = TAGS[error] = Tag.new(current:, declaration:)
 
     def tag_for(error) = TAGS.key?(error) ? TAGS[error] : nil
 
@@ -72,11 +85,13 @@ module DeclarationMessageAudit
     next if DeclarationMessageAudit.tag_for(error)
     next unless DeclarationMessageAudit.under_declaration?
 
-    DeclarationMessageAudit.tag(error, Axn::Core::Contract::DeclarationLabel.current)
+    label = Axn::Core::Contract::DeclarationLabel
+    DeclarationMessageAudit.tag(error, label.current, label.declaration)
   end
 
   # Judges the error a `raise_error` matcher received. Raising from here fails the example with the defect named,
-  # beside whatever the matcher itself asserted about the text.
+  # beside whatever the matcher itself asserted about the text. Nothing is rescued: an audit that cannot read the
+  # message, or breaks judging it, fails the example rather than passing it unjudged.
   module Matcher
     # RSpec's own signature, positional flag included.
     def matches?(given_proc, negative_expectation = false, &) # rubocop:disable Style/OptionalBooleanParameter
@@ -91,15 +106,11 @@ module DeclarationMessageAudit
 
     def audit!(error, tag)
       message = error.message
-      problems = DeclarationMessageAudit.defects(message, label: tag.label)
+      problems = DeclarationMessageAudit.defects(message, label: tag.current)
       return if problems.empty?
 
       raise RSpec::Expectations::ExpectationNotMetError,
-            "declaration refusal #{problems.join('; ')} (declared as #{tag.label.inspect}):\n  #{message}"
-    rescue RSpec::Expectations::ExpectationNotMetError
-      raise
-    rescue StandardError
-      nil
+            "declaration refusal #{problems.join('; ')} (declared as #{tag.current.inspect}):\n  #{message}"
     end
   end
 end

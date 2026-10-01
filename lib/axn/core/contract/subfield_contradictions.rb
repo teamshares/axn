@@ -87,7 +87,8 @@ module Axn
                 "either route, so only declaration order decides which route's value is read (its " \
                 "`preprocess:`, `default:` and `model:` included). Declare that wire key once, split the " \
                 "routes onto distinct wire keys, or anchor this subfield on the route you mean " \
-                "(#{readers.map { |r| "`on: #{r.inspect}`" }.join(' or ')})."
+                "(#{readers.map { |r| "`on: #{r.inspect}`" }.join(' or ')})." \
+                "#{Axn::Core::Contract::DeclarationLabel.found_while(Axn::Core::Contract::DeclarationLabel.subfield(config))}"
         end
 
         # The UNANSWERABLE-SEGMENT check: a subfield whose resolution provably cannot traverse some
@@ -133,7 +134,7 @@ module Axn
                 "#{Axn::Core::Contract::DeclarationLabel.subfield(config)} can never resolve: segment #{segment.inspect} " \
                 "is read from #{blocker.field.inspect}, declared #{types}, which cannot answer it (no key access, no such " \
                 "method) — no contract-valid input ever reaches this subfield. Make #{blocker.field.inspect} object-shaped, " \
-                "or drop the subfield."
+                "or drop the subfield.#{Axn::Core::Contract::DeclarationLabel.found_while(Axn::Core::Contract::DeclarationLabel.subfield(config))}"
         end
 
         # Families 1+3: a statically-declared nil-tolerance (allow_nil:/optional:/allow_blank:/
@@ -238,7 +239,8 @@ module Axn
                 "Drop the tolerance on #{name}, or mark #{stranded || 'the subtree'} optional: or give it a " \
                 "default: (declare rescuing defaults BEFORE the dependent subfield). If it is only required when " \
                 "#{name} is supplied, gate it conditionally: `expects ..., if: -> { " \
-                "#{Axn::Internal::Reflection::PropertyNames.renderable_label(owner)}.present? }`.#{model_hint}"
+                "#{Axn::Internal::Reflection::PropertyNames.renderable_label(owner)}.present? }`.#{model_hint}" \
+                "#{Axn::Core::Contract::DeclarationLabel.found_while(declared)}"
         end
       end
     end

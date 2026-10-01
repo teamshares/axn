@@ -609,7 +609,8 @@ module Axn
         end
 
         def _raise_too_many_member_paths!(fields, edge)
-          raise ArgumentError, _too_many_member_paths_message(DeclarationLabel.declaration || _inspect_field_name(fields.first), edge)
+          field = DeclarationLabel.declaration || _inspect_field_name(fields.first)
+          raise ArgumentError, "#{_too_many_member_paths_message(field, edge)}#{DeclarationLabel.found_while(field)}"
         end
 
         # The cost sentence is shared because the cost is: every walk of the stored graph pays one step per
@@ -1118,7 +1119,7 @@ module Axn
         # own runs while the declaration error is being built.
         def _raise_nameless_member!(member, name)
           raise ArgumentError,
-                "a shape member must answer to `field`, naming the key it validates — the member " \
+                "a shape member must answer to `field`, naming the key it validates — shape member " \
                 "#{_describe_shape_member(member, name)} answers to none. Runtime validation reads " \
                 "`member.field` for every member, so such a member would validate nothing, be omitted from " \
                 "the reflected schema entirely, and raise NoMethodError on the first call. Give it a `field` " \
@@ -1148,7 +1149,7 @@ module Axn
         # the first call. `validations: {}` is the honest spelling of "constrains nothing".
         def _raise_member_without_validations!(member, name)
           raise ArgumentError,
-                "a shape member must answer to `validations` as well as `field` — the member " \
+                "a shape member must answer to `validations` as well as `field` — shape member " \
                 "#{_describe_shape_member(member, name)} answers to `field` only. Runtime validation reads " \
                 "`member.validations` for every member, so such a member would raise NoMethodError on the first " \
                 "call. Give it a `validations` reader (`{}` when it constrains nothing), or declare the member " \

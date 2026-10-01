@@ -68,6 +68,16 @@ module Axn
           # about a config other than the one being declared — a re-anchored subfield, a crossed route.
           def subfield(config) = _fields_text(:expects, [config.field], config.on)
 
+          # The closing sentence of a refusal whose subject (`named`) is some OTHER declaration than the one being
+          # judged — a parent a later subfield strands, a config re-anchored onto a new root, the field whose path
+          # allowance a member's walk ran out — naming the declaration that tripped it, so the author is pointed at
+          # both lines: ` Found while declaring expects payload.id.` Nothing when the two are the same, or outside a
+          # declaration. A sentence of its own, after the gist, so the refusal still leads with its subject.
+          def found_while(named)
+            label = current
+            label.nil? || label == named ? "" : " Found while declaring #{label}."
+          end
+
           # The current declaration's label, or nil outside a declaration.
           def current = ActiveSupport::IsolatedExecutionState[KEY]&.text
 

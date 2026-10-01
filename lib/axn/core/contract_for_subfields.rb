@@ -781,7 +781,8 @@ module Axn
               raise ArgumentError,
                     "duplicate sub-keys aren't allowed on #{Axn::Core::Contract::DeclarationLabel.subfield(config)} (`#{reader}` is already defined) — " \
                     "rename this subfield's reader, e.g. `expects :#{config.field}, on: #{config.on.inspect}, " \
-                    "as: :#{config.on.to_s.tr('.', '_')}_#{config.field}` (or use prefix: for several at once)"
+                    "as: :#{config.on.to_s.tr('.', '_')}_#{config.field}` (or use prefix: for several at once)" \
+                    "#{Axn::Core::Contract::DeclarationLabel.found_while(Axn::Core::Contract::DeclarationLabel.subfield(config))}"
             end
 
             seen << reader
