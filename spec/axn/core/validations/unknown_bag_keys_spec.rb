@@ -26,14 +26,14 @@ RSpec.describe "an unknown key in an axn-owned validator bag" do
 
       expect { build_axn { expects :lead, model: { klass:, bogus: 1 } } }
         .to raise_error(ArgumentError,
-                        "model: does not support bogus: (supported: klass:, finder:, not_found_on:, id_type:, message:)")
+                        "model: on expects :lead does not support bogus: (supported: klass:, finder:, not_found_on:, id_type:, message:)")
     end
 
     it "is refused on an exposes" do
       klass = lead_class
 
       expect { build_axn { exposes :lead, model: { klass:, bogus: 1 } } }
-        .to raise_error(ArgumentError, /model: does not support bogus:/)
+        .to raise_error(ArgumentError, /model: on .* does not support bogus:/)
     end
 
     it "is refused on an on: subfield" do
@@ -44,14 +44,14 @@ RSpec.describe "an unknown key in an axn-owned validator bag" do
           expects :params, type: Hash
           expects :lead, on: :params, model: { klass:, bogus: 1 }
         end
-      end.to raise_error(ArgumentError, /model: does not support bogus:/)
+      end.to raise_error(ArgumentError, /model: on .* does not support bogus:/)
     end
 
     it "is refused through Axn::Factory.build" do
       klass = lead_class
 
       expect { Axn::Factory.build(expects: { lead: { model: { klass:, bogus: 1 } } }) { nil } }
-        .to raise_error(ArgumentError, /model: does not support bogus:/)
+        .to raise_error(ArgumentError, /model: on .* does not support bogus:/)
     end
 
     # The two spellings the ticket measured: a typo'd finder that silently kept the default, and a typo'd
@@ -60,7 +60,7 @@ RSpec.describe "an unknown key in an axn-owned validator bag" do
       klass = lead_class
 
       expect { build_axn { expects :lead, model: { klass:, fnder: :find_by_slug } } }
-        .to raise_error(ArgumentError, /model: does not support fnder:/)
+        .to raise_error(ArgumentError, /model: on .* does not support fnder:/)
     end
 
     it "refuses the ticket's exact typo: class: instead of klass:" do
@@ -68,14 +68,14 @@ RSpec.describe "an unknown key in an axn-owned validator bag" do
       stub_const("Lead", klass)
 
       expect { build_axn { expects :lead, model: { class: klass } } }
-        .to raise_error(ArgumentError, /model: does not support class:/)
+        .to raise_error(ArgumentError, /model: on .* does not support class:/)
     end
 
     it "names every offender at once" do
       klass = lead_class
 
       expect { build_axn { expects :lead, model: { klass:, fnder: :x, bogus: 1 } } }
-        .to raise_error(ArgumentError, /model: does not support fnder:, bogus:/)
+        .to raise_error(ArgumentError, /model: on .* does not support fnder:, bogus:/)
     end
 
     # ActiveModel's own const_get-before-truthiness-check discipline is not in play here — this is axn's own
@@ -86,7 +86,7 @@ RSpec.describe "an unknown key in an axn-owned validator bag" do
         klass = lead_class
 
         expect { build_axn { expects :lead, model: { klass:, bogus: value } } }
-          .to raise_error(ArgumentError, /model: does not support bogus:/)
+          .to raise_error(ArgumentError, /model: on .* does not support bogus:/)
       end
     end
 
@@ -119,21 +119,21 @@ RSpec.describe "an unknown key in an axn-owned validator bag" do
         klass = lead_class
 
         expect { build_axn { expects :lead, model: { klass:, on: :create } } }
-          .to raise_error(ArgumentError, /`on:` inside model:/)
+          .to raise_error(ArgumentError, /`on:` isn't allowed in model:/)
       end
 
       it "still raises the except_on: message rather than 'unknown key'" do
         klass = lead_class
 
         expect { build_axn { expects :lead, model: { klass:, except_on: :create } } }
-          .to raise_error(ArgumentError, /`except_on:` inside model:/)
+          .to raise_error(ArgumentError, /`except_on:` isn't allowed in model:/)
       end
 
       it "still raises the strict: message rather than 'unknown key'" do
         klass = lead_class
 
         expect { build_axn { expects :lead, model: { klass:, strict: true } } }
-          .to raise_error(ArgumentError, /`strict:` inside model:/)
+          .to raise_error(ArgumentError, /`strict:` isn't allowed in model:/)
       end
 
       # A dedicated refusal names why these belong on the declaration, in both directions, rather than calling
@@ -164,12 +164,13 @@ RSpec.describe "an unknown key in an axn-owned validator bag" do
   describe "type:" do
     it "is refused on a top-level expects" do
       expect { build_axn { expects :v, type: { klass: String, bogus: 1 } } }
-        .to raise_error(ArgumentError, "type: does not support bogus: (supported: klass:, coerce:, message:, if:, unless:, allow_blank:, allow_nil:)")
+        .to raise_error(ArgumentError,
+                        "type: on expects :v does not support bogus: (supported: klass:, coerce:, message:, if:, unless:, allow_blank:, allow_nil:)")
     end
 
     it "is refused on an exposes" do
       expect { build_axn { exposes :v, type: { klass: String, bogus: 1 } } }
-        .to raise_error(ArgumentError, /type: does not support bogus:/)
+        .to raise_error(ArgumentError, /type: on .* does not support bogus:/)
     end
 
     it "is refused on an on: subfield" do
@@ -178,29 +179,29 @@ RSpec.describe "an unknown key in an axn-owned validator bag" do
           expects :parent, type: Hash
           expects :v, on: :parent, type: { klass: String, bogus: 1 }
         end
-      end.to raise_error(ArgumentError, /type: does not support bogus:/)
+      end.to raise_error(ArgumentError, /type: on .* does not support bogus:/)
     end
 
     it "is refused on a block-form shape member" do
       expect { build_axn { expects(:h, type: Hash) { field :v, type: { klass: String, bogus: 1 } } } }
-        .to raise_error(ArgumentError, /type: does not support bogus:/)
+        .to raise_error(ArgumentError, /type: on .* does not support bogus:/)
     end
 
     it "is refused on a raw shape: member" do
       member = Axn::Core::Contract::ShapeConfig.new(field: :v, validations: { type: { klass: String, bogus: 1 } })
 
       expect { build_axn { expects :h, type: Hash, shape: { members: [member], container: Hash } } }
-        .to raise_error(ArgumentError, /type: does not support bogus:/)
+        .to raise_error(ArgumentError, /type: on .* does not support bogus:/)
     end
 
     it "is refused through Axn::Factory.build" do
       expect { Axn::Factory.build(expects: { v: { type: { klass: String, bogus: 1 } } }) { nil } }
-        .to raise_error(ArgumentError, /type: does not support bogus:/)
+        .to raise_error(ArgumentError, /type: on .* does not support bogus:/)
     end
 
     it "names every offender at once" do
       expect { build_axn { expects :v, type: { klass: String, foo: 1, bar: 2 } } }
-        .to raise_error(ArgumentError, /type: does not support foo:, bar:/)
+        .to raise_error(ArgumentError, /type: on .* does not support foo:, bar:/)
     end
 
     describe "positive controls" do
@@ -216,7 +217,7 @@ RSpec.describe "an unknown key in an axn-owned validator bag" do
     describe "does not preempt the dedicated guards" do
       it "still raises the on: context-scope message rather than 'unknown key'" do
         expect { build_axn { expects :v, type: { klass: String, on: :create } } }
-          .to raise_error(ArgumentError, /`on:` inside type:/)
+          .to raise_error(ArgumentError, /`on:` isn't allowed in type:/)
       end
 
       it "declares clean with if:/unless:/allow_nil:/allow_blank:" do
@@ -232,12 +233,12 @@ RSpec.describe "an unknown key in an axn-owned validator bag" do
     # inside a `validate:` bag, so recommending it would trade one silently-ignored option for another.
     it "is refused on a top-level expects, without advertising the inert message:" do
       expect { build_axn { expects :v, validate: { with: ->(value) { value }, bogus: 1 } } }
-        .to raise_error(ArgumentError, "validate: does not support bogus: (supported: with:, if:, unless:, allow_blank:, allow_nil:)")
+        .to raise_error(ArgumentError, "validate: on expects :v does not support bogus: (supported: with:, if:, unless:, allow_blank:, allow_nil:)")
     end
 
     it "is refused on an exposes" do
       expect { build_axn { exposes :v, validate: { with: ->(value) { value }, bogus: 1 } } }
-        .to raise_error(ArgumentError, /validate: does not support bogus:/)
+        .to raise_error(ArgumentError, /validate: on .* does not support bogus:/)
     end
 
     it "is refused on an on: subfield" do
@@ -246,24 +247,24 @@ RSpec.describe "an unknown key in an axn-owned validator bag" do
           expects :parent, type: Hash
           expects :v, on: :parent, validate: { with: ->(value) { value }, bogus: 1 }
         end
-      end.to raise_error(ArgumentError, /validate: does not support bogus:/)
+      end.to raise_error(ArgumentError, /validate: on .* does not support bogus:/)
     end
 
     it "is refused inside an of: element bag, where validate: is positional" do
       expect { build_axn { expects :list, type: Array, of: { klass: String, validate: { with: ->(value) { value }, bogus: 1 } } } }
-        .to raise_error(ArgumentError, /validate: does not support bogus:/)
+        .to raise_error(ArgumentError, /validate: on .* does not support bogus:/)
     end
 
     it "is refused through Axn::Factory.build" do
       expect { Axn::Factory.build(expects: { v: { validate: { with: ->(value) { value }, bogus: 1 } } }) { nil } }
-        .to raise_error(ArgumentError, /validate: does not support bogus:/)
+        .to raise_error(ArgumentError, /validate: on .* does not support bogus:/)
     end
 
     # The bag's own misuse guard (a Hash with no `:with` at all is almost always a standard validator nested
     # by mistake) is the more useful diagnosis, and must not be preempted by this one.
     it "does not preempt the with:-less misuse message" do
       expect { build_axn { expects :v, validate: { inclusion: { in: %w[a b] } } } }
-        .to raise_error(ArgumentError, /`validate:` expects a callable/)
+        .to raise_error(ArgumentError, /`validate:` on expects :v needs a callable/)
     end
 
     describe "positive controls" do
@@ -279,7 +280,7 @@ RSpec.describe "an unknown key in an axn-owned validator bag" do
     describe "does not preempt the dedicated guards" do
       it "still raises the on: context-scope message rather than 'unknown key'" do
         expect { build_axn { expects :v, validate: { with: ->(value) { value }, on: :create } } }
-          .to raise_error(ArgumentError, /`on:` inside validate:/)
+          .to raise_error(ArgumentError, /`on:` isn't allowed in validate:/)
       end
     end
   end
@@ -291,7 +292,7 @@ RSpec.describe "an unknown key in an axn-owned validator bag" do
       member = shape_member(type: String)
 
       expect { build_axn { expects :h, type: Hash, shape: { members: [member], container: Hash, bogus: 1 } } }
-        .to raise_error(ArgumentError, "shape: does not support bogus: (supported: members:, container:, if:, unless:, allow_blank:, allow_nil:)")
+        .to raise_error(ArgumentError, "shape: on expects :h does not support bogus: (supported: members:, container:, if:, unless:, allow_blank:, allow_nil:)")
     end
 
     it "is refused on a shape MEMBER's own nested shape:" do
@@ -301,28 +302,28 @@ RSpec.describe "an unknown key in an axn-owned validator bag" do
             field :a, type: Hash, shape: { members: { b: { type: String } }, bogus: 1 }
           end
         end
-      end.to raise_error(ArgumentError, /shape: does not support bogus:/)
+      end.to raise_error(ArgumentError, /shape: on .* does not support bogus:/)
     end
 
     it "is refused on an of: element bag's nested shape:" do
       member = shape_member(type: String)
 
       expect { build_axn { expects :list, type: Array, of: { klass: Hash, shape: { members: [member], container: Hash, bogus: 1 } } } }
-        .to raise_error(ArgumentError, /shape: does not support bogus:/)
+        .to raise_error(ArgumentError, /shape: on .* does not support bogus:/)
     end
 
     it "is refused on a map's values: axis nested shape:" do
       member = shape_member(type: String)
 
       expect { build_axn { expects :m, type: Hash, of: { values: { klass: Hash, shape: { members: [member], container: Hash, bogus: 1 } } } } }
-        .to raise_error(ArgumentError, /shape: does not support bogus:/)
+        .to raise_error(ArgumentError, /shape: on .* does not support bogus:/)
     end
 
     it "is refused through Axn::Factory.build" do
       member = shape_member(type: String)
 
       expect { Axn::Factory.build(expects: { h: { type: Hash, shape: { members: [member], container: Hash, bogus: 1 } } }) { nil } }
-        .to raise_error(ArgumentError, /shape: does not support bogus:/)
+        .to raise_error(ArgumentError, /shape: on .* does not support bogus:/)
     end
 
     describe "positive controls" do
@@ -354,12 +355,12 @@ RSpec.describe "an unknown key in an axn-owned validator bag" do
     describe "beside a block, which fully overwrites the raw shape:" do
       it "still refuses an unknown key on expects" do
         expect { build_axn { expects(:h, type: Hash, shape: { members: [], bogus: 1 }) { field :a, type: String } } }
-          .to raise_error(ArgumentError, /shape: does not support bogus:/)
+          .to raise_error(ArgumentError, /shape: on .* does not support bogus:/)
       end
 
       it "still refuses an unknown key on exposes" do
         expect { build_axn { exposes(:h, type: Hash, shape: { members: [], bogus: 1 }) { field :a, type: String } } }
-          .to raise_error(ArgumentError, /shape: does not support bogus:/)
+          .to raise_error(ArgumentError, /shape: on .* does not support bogus:/)
       end
 
       it "still refuses an unknown key on a member's own subblock" do
@@ -369,7 +370,7 @@ RSpec.describe "an unknown key in an axn-owned validator bag" do
               field(:inner, type: Hash, shape: { members: [], bogus: 1 }) { field :leaf, type: String }
             end
           end
-        end.to raise_error(ArgumentError, /shape: does not support bogus:/)
+        end.to raise_error(ArgumentError, /shape: on .* does not support bogus:/)
       end
 
       it "still refuses a non-Hash raw shape: on expects" do
@@ -394,7 +395,7 @@ RSpec.describe "an unknown key in an axn-owned validator bag" do
       # A distributing raw shape beside a block would be discarded by it, so the pairing is refused.
       it "refuses a distributing raw shape: beside a block" do
         expect { build_axn { expects(:rows, type: Array, shape: { members: [] }) { field :a, type: String } } }
-          .to raise_error(ArgumentError, /\A`shape:` on :rows isn't allowed beside a `do ... end` block — declare the members once, in the block\./)
+          .to raise_error(ArgumentError, /\A`shape:` on expects :rows isn't allowed beside a `do ... end` block — declare the members once, in the block\./)
       end
 
       # The block replaces a well-formed raw shape just the same, so its members would be checked by nothing: refused
@@ -406,26 +407,26 @@ RSpec.describe "an unknown key in an axn-owned validator bag" do
         it "is refused on expects" do
           member = sku
           expect { build_axn { expects(:h, type: Hash, shape: { members: [member] }) { field :a, type: String } } }
-            .to raise_error(ArgumentError, "`shape:` on :h #{head}The block builds this value's shape and replaces the " \
+            .to raise_error(ArgumentError, "`shape:` on expects :h #{head}The block builds this value's shape and replaces the " \
                                            "option, so everything the option names is discarded.")
         end
 
         it "is refused on exposes" do
           member = sku
           expect { build_axn { exposes(:h, type: Hash, shape: { members: [member] }) { field :a, type: String } } }
-            .to raise_error(ArgumentError, /\A`shape:` on :h #{Regexp.escape(head)}/)
+            .to raise_error(ArgumentError, /\A`shape:` on exposes :h #{Regexp.escape(head)}/)
         end
 
         it "is refused on a member's own subblock" do
           member = sku
           expect do
             build_axn { expects(:o, type: Hash) { field(:inner, type: Hash, shape: { members: [member] }) { field :leaf, type: String } } }
-          end.to raise_error(ArgumentError, /\A`shape:` on shape member `inner` #{Regexp.escape(head)}/)
+          end.to raise_error(ArgumentError, /\A`shape:` on shape member `inner` in expects :o #{Regexp.escape(head)}/)
         end
 
         it "is refused with an empty members list and only a container:" do
           expect { build_axn { expects(:h, type: Hash, shape: { members: [], container: Hash }) { field :a, type: String } } }
-            .to raise_error(ArgumentError, /\A`shape:` on :h #{Regexp.escape(head)}/)
+            .to raise_error(ArgumentError, /\A`shape:` on expects :h #{Regexp.escape(head)}/)
         end
 
         it "still declares the block alone, and the raw shape alone" do
@@ -441,17 +442,17 @@ RSpec.describe "an unknown key in an axn-owned validator bag" do
       # shape, so they never saw it either (Codex review round 3, PR #275).
       it "still refuses on: inside a raw shape: beside a block" do
         expect { build_axn { expects(:h, type: Hash, shape: { members: [], on: :create }) { field :a, type: String } } }
-          .to raise_error(ArgumentError, /`on:` inside shape:/)
+          .to raise_error(ArgumentError, /`on:` isn't allowed in shape:/)
       end
 
       it "still refuses except_on: inside a raw shape: beside a block" do
         expect { build_axn { expects(:h, type: Hash, shape: { members: [], except_on: :create }) { field :a, type: String } } }
-          .to raise_error(ArgumentError, /`except_on:` inside shape:/)
+          .to raise_error(ArgumentError, /`except_on:` isn't allowed in shape:/)
       end
 
       it "still refuses strict: inside a raw shape: beside a block" do
         expect { build_axn { expects(:h, type: Hash, shape: { members: [], strict: true }) { field :a, type: String } } }
-          .to raise_error(ArgumentError, /`strict:` inside shape:/)
+          .to raise_error(ArgumentError, /`strict:` isn't allowed in shape:/)
       end
 
       it "still refuses on: inside a raw shape: beside a subblock" do
@@ -461,12 +462,12 @@ RSpec.describe "an unknown key in an axn-owned validator bag" do
               field(:inner, type: Hash, shape: { members: [], on: :create }) { field :leaf, type: String }
             end
           end
-        end.to raise_error(ArgumentError, /`on:` inside shape:/)
+        end.to raise_error(ArgumentError, /`on:` isn't allowed in shape:/)
       end
 
       it "does not disturb the ordinary (block-free) on: inside shape: message" do
         expect { build_axn { expects :h, type: Hash, shape: { members: [], on: :create } } }
-          .to raise_error(ArgumentError, /`on:` inside shape: on :h/)
+          .to raise_error(ArgumentError, /`on:` isn't allowed in shape: on expects :h/)
       end
 
       # A raw shape's own on:/except_on:/strict: check is scoped to just the `:shape` entry, never the whole
@@ -475,7 +476,7 @@ RSpec.describe "an unknown key in an axn-owned validator bag" do
         klass = Struct.new(:id) { def self.find(id) = new(id) }
 
         expect { build_axn { expects :lead, model: { klass:, on: :create } } }
-          .to raise_error(ArgumentError, /`on:` inside model:/)
+          .to raise_error(ArgumentError, /`on:` isn't allowed in model:/)
       end
     end
   end

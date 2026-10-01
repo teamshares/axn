@@ -623,7 +623,7 @@ RSpec.describe "Axn class-level schema reflection" do
     # See spec/axn/core/validations/unsupported_validator_keys_spec.rb.
     it "never gets to judge uniqueness:, which is refused at declaration" do
       expect { declare(presence: false, uniqueness: true) }
-        .to raise_error(ArgumentError, /uniqueness: on :v is not supported/)
+        .to raise_error(ArgumentError, /uniqueness: on expects :v is not supported/)
     end
   end
 

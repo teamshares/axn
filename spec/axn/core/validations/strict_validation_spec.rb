@@ -57,24 +57,24 @@ RSpec.describe "a `strict:` that asks for ActiveModel's raising mode" do
   describe "at the top of a declaration" do
     it "is refused on a top-level expects, naming the field and the fix" do
       expect { build_axn { expects :v, presence: true, strict: true } }
-        .to raise_error(ArgumentError, /`strict:` inside the declaration on :v.*axn does not have one.*Drop `strict:`/m)
+        .to raise_error(ArgumentError, /`strict:` isn't allowed on expects :v — drop it.*Axn has no strict mode/m)
     end
 
     it "is refused whatever the value — an option supported only in the off position is not one axn has" do
       expect { build_axn { expects :v, presence: true, strict: false } }
-        .to raise_error(ArgumentError, /`strict:` inside the declaration on :v/)
+        .to raise_error(ArgumentError, /`strict:` isn't allowed on expects :v/)
       expect { build_axn { expects :v, presence: true, strict: ArgumentError } }
-        .to raise_error(ArgumentError, /`strict:` inside the declaration on :v/)
+        .to raise_error(ArgumentError, /`strict:` isn't allowed on expects :v/)
     end
 
     it "is refused where it is the declaration's ONLY option, which validated nothing at all" do
       expect { build_axn { expects :v, optional: true, strict: true } }
-        .to raise_error(ArgumentError, /`strict:` inside the declaration on :v/)
+        .to raise_error(ArgumentError, /`strict:` isn't allowed on expects :v/)
     end
 
     it "is refused on an exposes" do
       expect { build_axn { exposes :v, presence: true, strict: true } }
-        .to raise_error(ArgumentError, /`strict:` inside the declaration on :v/)
+        .to raise_error(ArgumentError, /`strict:` isn't allowed on exposes :v/)
     end
 
     it "is refused on a subfield" do
@@ -83,12 +83,12 @@ RSpec.describe "a `strict:` that asks for ActiveModel's raising mode" do
           expects :parent, type: Hash
           expects :zip, on: :parent, presence: true, strict: true
         end
-      end.to raise_error(ArgumentError, /`strict:` inside the declaration on :zip/)
+      end.to raise_error(ArgumentError, /`strict:` isn't allowed on expects parent.zip/)
     end
 
     it "is refused on an ambient subfield" do
       expect { build_axn { expects :cid, on: :ambient_context, presence: true, strict: true } }
-        .to raise_error(ArgumentError, /`strict:` inside the declaration on :cid/)
+        .to raise_error(ArgumentError, /`strict:` isn't allowed on expects ambient_context.cid/)
     end
 
     it "cannot be routed around as field metadata — registering :strict is refused" do
@@ -101,38 +101,38 @@ RSpec.describe "a `strict:` that asks for ActiveModel's raising mode" do
   describe "inside a validator's option bag" do
     it "is refused beside an ActiveModel validator, which is where it did raise" do
       expect { build_axn { expects :v, presence: { strict: true } } }
-        .to raise_error(ArgumentError, /`strict:` inside presence: on :v/)
+        .to raise_error(ArgumentError, /`strict:` isn't allowed in presence: on expects :v/)
     end
 
     it "is refused beside one of axn's own validators, where it was dropped" do
       expect { build_axn { expects :v, type: { klass: String, strict: true } } }
-        .to raise_error(ArgumentError, /`strict:` inside type: on :v/)
+        .to raise_error(ArgumentError, /`strict:` isn't allowed in type: on expects :v/)
       expect { build_axn { expects :v, validate: { with: ->(_v) {}, strict: true } } }
-        .to raise_error(ArgumentError, /`strict:` inside validate: on :v/)
+        .to raise_error(ArgumentError, /`strict:` isn't allowed in validate: on expects :v/)
     end
 
     it "names every offender at once, both tiers included" do
       expect { build_axn { expects :v, strict: true, presence: { strict: true }, format: { with: /z/, strict: true } } }
-        .to raise_error(ArgumentError, %r{`strict:` inside the declaration / presence: / format: on :v})
+        .to raise_error(ArgumentError, %r{`strict:` isn't allowed in the declaration / presence: / format: on expects :v})
     end
   end
 
   describe "inside an `of:` bag" do
     it "is refused at an Array's element position" do
       expect { build_axn { expects :v, type: Array, of: { klass: Integer, strict: true } } }
-        .to raise_error(ArgumentError, /`strict:` inside an `of:` bag on :v/)
+        .to raise_error(ArgumentError, /`strict:` isn't allowed in an `of:` bag on expects :v/)
     end
 
     it "is refused in a bag nested inside a bag, which the entry scan cannot see" do
       expect { build_axn { expects :v, type: Array, of: { klass: Array, of: { klass: Integer, strict: true } } } }
-        .to raise_error(ArgumentError, /`strict:` inside an `of:` bag on :v/)
+        .to raise_error(ArgumentError, /`strict:` isn't allowed in an `of:` bag on expects :v/)
     end
 
     it "is refused at each of a map's axes" do
       expect { build_axn { expects :v, type: Hash, of: { keys: { klass: Symbol, strict: true } } } }
-        .to raise_error(ArgumentError, /`strict:` inside an `of:` bag on :v/)
+        .to raise_error(ArgumentError, /`strict:` isn't allowed in an `of:` bag on expects :v/)
       expect { build_axn { expects :v, type: Hash, of: { values: { klass: Integer, strict: true } } } }
-        .to raise_error(ArgumentError, /`strict:` inside an `of:` bag on :v/)
+        .to raise_error(ArgumentError, /`strict:` isn't allowed in an `of:` bag on expects :v/)
     end
 
     # The axis guard refuses the other shared options with a reason particular to the axis ("nothing reads them
@@ -140,35 +140,35 @@ RSpec.describe "a `strict:` that asks for ActiveModel's raising mode" do
     # every position — is the one an author sees, exactly as for `on:`.
     it "is reported as strict: rather than as an option the axis would not read" do
       expect { build_axn { expects :v, type: Hash, of: { keys: { klass: Symbol, strict: true } } } }
-        .to raise_error(ArgumentError, /\A`strict:` inside an `of:` bag/)
+        .to raise_error(ArgumentError, /\A`strict:` isn't allowed in an `of:` bag/)
     end
 
     it "is refused in a bag reached through a shape member" do
       member = Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { type: Array, of: { klass: Integer, strict: true } })
 
       expect { build_axn { expects :v, type: Hash, shape: { members: [member], container: Hash } } }
-        .to raise_error(ArgumentError, /`strict:` inside an `of:` bag on :a/)
+        .to raise_error(ArgumentError, /`strict:` isn't allowed in an `of:` bag on shape member `a` in expects :v/)
     end
   end
 
   describe "on a shape member" do
     it "is refused on a block-form member" do
       expect { build_axn { expects(:h, type: Hash) { field :x, presence: true, strict: true } } }
-        .to raise_error(ArgumentError, /`strict:` inside the declaration on :x/)
+        .to raise_error(ArgumentError, /`strict:` isn't allowed on shape member `x` in expects :h/)
     end
 
     it "is refused on a raw member, naming the member" do
       member = Axn::Core::Contract::ShapeConfig.new(field: :x, validations: { presence: true, strict: true })
 
       expect { build_axn { expects :h, type: Hash, shape: { members: [member], container: Hash } } }
-        .to raise_error(ArgumentError, /`strict:` inside the declaration on shape member `x`/)
+        .to raise_error(ArgumentError, /`strict:` isn't allowed on shape member `x`/)
     end
 
     it "is refused inside a raw member's validator bag" do
       member = Axn::Core::Contract::ShapeConfig.new(field: :x, validations: { presence: { strict: true } })
 
       expect { build_axn { expects :h, type: Hash, shape: { members: [member], container: Hash } } }
-        .to raise_error(ArgumentError, /`strict:` inside presence: on shape member `x`/)
+        .to raise_error(ArgumentError, /`strict:` isn't allowed in presence: on shape member `x`/)
     end
   end
 
@@ -229,17 +229,17 @@ RSpec.describe "a `strict:` that asks for ActiveModel's raising mode" do
   describe "except_on:" do
     it "is refused on a field's validator entry" do
       expect { build_axn { expects :f, type: String, format: { with: /x/, except_on: :publish } } }
-        .to raise_error(ArgumentError, /`except_on:`.*excludes nothing/m)
+        .to raise_error(ArgumentError, /`except_on:` isn't allowed in .* on expects :f — drop it.*so it skips nothing/m)
     end
 
     it "is refused inside an of: bag" do
       expect { build_axn { expects :f, type: Array, of: { klass: String, except_on: :publish } } }
-        .to raise_error(ArgumentError, /`except_on:`.*excludes nothing/m)
+        .to raise_error(ArgumentError, /`except_on:` isn't allowed in .* on expects :f — drop it.*so it skips nothing/m)
     end
 
     it "is refused at a map axis" do
       expect { build_axn { expects :f, type: Hash, of: { values: { klass: String, except_on: :publish } } } }
-        .to raise_error(ArgumentError, /`except_on:`.*excludes nothing/m)
+        .to raise_error(ArgumentError, /`except_on:` isn't allowed in .* on expects :f — drop it.*so it skips nothing/m)
     end
 
     # The whole trio — `on:`, `except_on:`, `strict:` — is refused at every bag position, and a map carrier
@@ -249,12 +249,12 @@ RSpec.describe "a `strict:` that asks for ActiveModel's raising mode" do
     it "refuses strict: on a nested map carrier, where no field-level scan reaches" do
       expect do
         build_axn { expects :f, type: Array, of: { klass: Hash, of: { values: String, strict: true } } }
-      end.to raise_error(ArgumentError, /`strict:`.*inside an `of:` bag/m)
+      end.to raise_error(ArgumentError, /`strict:` isn't allowed in an `of:` bag on expects :f/m)
     end
 
     it "refuses strict: on a top-level map carrier with the same message" do
       expect { build_axn { expects :f, type: Hash, of: { values: String, strict: true } } }
-        .to raise_error(ArgumentError, /`strict:`.*inside an `of:` bag/m)
+        .to raise_error(ArgumentError, /`strict:` isn't allowed in an `of:` bag on expects :f/m)
     end
 
     it "still admits the options a carrier legitimately carries" do
@@ -266,19 +266,19 @@ RSpec.describe "a `strict:` that asks for ActiveModel's raising mode" do
 
     it "is refused on a map carrier bag, which is canonicalized outside the shared bag seam" do
       expect { build_axn { expects :f, type: Hash, of: { values: String, except_on: :publish } } }
-        .to raise_error(ArgumentError, /`except_on:`.*excludes nothing/m)
+        .to raise_error(ArgumentError, /`except_on:` isn't allowed in .* on expects :f — drop it.*so it skips nothing/m)
     end
 
     it "is refused on a NESTED map carrier bag" do
       expect do
         build_axn { expects :f, type: Array, of: { klass: Hash, of: { values: String, except_on: :publish } } }
-      end.to raise_error(ArgumentError, /`except_on:`.*excludes nothing/m)
+      end.to raise_error(ArgumentError, /`except_on:` isn't allowed in .* on expects :f — drop it.*so it skips nothing/m)
     end
 
     it "is refused inside a nested bag" do
       expect do
         build_axn { expects :f, type: Array, of: { klass: Array, of: { klass: String, except_on: :publish } } }
-      end.to raise_error(ArgumentError, /`except_on:`.*excludes nothing/m)
+      end.to raise_error(ArgumentError, /`except_on:` isn't allowed in .* on expects :f — drop it.*so it skips nothing/m)
     end
 
     # A raw `ShapeConfig` member never passes through `_parse_field_validations`, so it needs its own guard call
@@ -302,7 +302,7 @@ RSpec.describe "a `strict:` that asks for ActiveModel's raising mode" do
       member = Axn::Core::Contract::ShapeConfig.new(field: :x, validations: { presence: { except_on: :publish } })
 
       expect { build_axn { expects :h, type: Hash, shape: { members: [member], container: Hash } } }
-        .to raise_error(ArgumentError, /`except_on:` inside presence: on shape member `x`/)
+        .to raise_error(ArgumentError, /`except_on:` isn't allowed in presence: on shape member `x`/)
     end
 
     it "leaves a supported gate alone" do

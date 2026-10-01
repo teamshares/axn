@@ -229,13 +229,13 @@ RSpec.describe "a validator at a container position" do
   describe "an inclusion: set no value of the declared type can satisfy is refused" do
     it "refuses the element-wise spelling on an Array field, naming the position" do
       expect { build_axn { expects :tags, type: Array, of: String, inclusion: { in: %w[a b] } } }
-        .to raise_error(ArgumentError, /inclusion: on :tags can never match.*of:/m)
+        .to raise_error(ArgumentError, /inclusion: on expects :tags can never match.*of:/m)
     end
 
     it "names the declared type in the message, not the field name" do
       expect { build_axn { expects :tags, type: Array, inclusion: { in: %w[a b] } } }
         .to raise_error(ArgumentError,
-                        /inclusion: on :tags can never match — nothing it compares against is of type Array/)
+                        /inclusion: on expects :tags can never match — nothing it compares against is of type Array/)
     end
 
     it "refuses the bare-Array shorthand identically" do
@@ -520,7 +520,7 @@ RSpec.describe "a validator at a container position" do
     it "refuses the set the positional rule stopped enforcing, naming the position and the type" do
       expect { build_axn { expects :roles, type: Array, exclusion: { in: %w[admin] } } }
         .to raise_error(ArgumentError,
-                        /exclusion: on :roles enforces nothing — no value of type Array/)
+                        /exclusion: on expects :roles enforces nothing — no value of type Array/)
     end
 
     it "refuses the bare-Array shorthand identically" do
@@ -548,7 +548,7 @@ RSpec.describe "a validator at a container position" do
     it "refuses a wrong-type other_than: bound, the operator the satisfiability guard left for this one" do
       # An Integer position: no Integer is blank, so the bound really is the only thing the entry can reject.
       expect { build_axn { expects :n, type: Integer, comparison: { other_than: "a" } } }
-        .to raise_error(ArgumentError, /comparison: on :n enforces nothing/)
+        .to raise_error(ArgumentError, /comparison: on expects :n enforces nothing/)
     end
 
     it "stands down where a BLANK value would reach the check, which the bound does not decide" do
@@ -565,7 +565,7 @@ RSpec.describe "a validator at a container position" do
 
     it "judges the bound once allow_blank: takes the blank values out of reach" do
       expect { build_axn { expects :tags, type: Array, comparison: { other_than: 1, allow_blank: true } } }
-        .to raise_error(ArgumentError, /comparison: on :tags enforces nothing/)
+        .to raise_error(ArgumentError, /comparison: on expects :tags enforces nothing/)
     end
 
     # `other_than:` is `!=` (activemodel 7.2.2.2, comparison.rb COMPARE_CHECKS), not `<=>` — so it is judged
@@ -585,7 +585,7 @@ RSpec.describe "a validator at a container position" do
       # One entry, two operators, one verdict from each guard: `equal_to: ["a"]` is satisfiable, so the
       # satisfiability guard admits the entry, and `other_than: 1` is what makes it enforce less than it says.
       expect { build_axn { expects :n, type: Integer, comparison: { equal_to: 1, other_than: "a" } } }
-        .to raise_error(ArgumentError, /comparison: on :n enforces nothing/)
+        .to raise_error(ArgumentError, /comparison: on expects :n enforces nothing/)
     end
 
     it "reaches a subfield and a block-form member, which share the field's own call site" do
@@ -775,7 +775,7 @@ RSpec.describe "a validator at a container position" do
       # `other_than:` is `!=`, and `Float::NAN != Float::NAN` — so the check reports a difference from every
       # value, the bound included, and passes always.
       expect { build_axn { expects :n, type: Float, comparison: { other_than: Float::NAN } } }
-        .to raise_error(ArgumentError, /comparison: on :n enforces nothing/)
+        .to raise_error(ArgumentError, /comparison: on expects :n enforces nothing/)
     end
 
     it "keeps a bound carrying its own equality, rather than probing it" do
@@ -1049,31 +1049,31 @@ RSpec.describe "a validator at a container position" do
 
     it "refuses an unsatisfiable inclusion: set on a member, as the block form does" do
       expect { raw_shape({ type: Array, inclusion: { in: %w[a] } }) }
-        .to raise_error(ArgumentError, /inclusion: on shape member `x` can never match/)
+        .to raise_error(ArgumentError, /inclusion: on shape member `x` in expects :row can never match/)
     end
 
     it "refuses format: at a member's container position" do
       expect { raw_shape({ type: Array, format: { with: /a/ } }) }
-        .to raise_error(ArgumentError, /format: on shape member `x` cannot constrain a container/)
+        .to raise_error(ArgumentError, /format: on shape member `x` in expects :row cannot constrain a container/)
     end
 
     it "refuses numericality: at a member's container position" do
       expect { raw_shape({ type: Hash, numericality: true }) }
-        .to raise_error(ArgumentError, /numericality: on shape member `x` cannot constrain a container/)
+        .to raise_error(ArgumentError, /numericality: on shape member `x` in expects :row cannot constrain a container/)
     end
 
     it "refuses an unsatisfiable acceptance: and comparison: on a member too" do
       expect { raw_shape({ type: Array, acceptance: true }) }
-        .to raise_error(ArgumentError, /acceptance: on shape member `x` can never match/)
+        .to raise_error(ArgumentError, /acceptance: on shape member `x` in expects :row can never match/)
       expect { raw_shape({ type: Array, comparison: { greater_than: 1 } }) }
-        .to raise_error(ArgumentError, /comparison: on shape member `x` can never match/)
+        .to raise_error(ArgumentError, /comparison: on shape member `x` in expects :row can never match/)
     end
 
     it "refuses a vacuous exclusion: and other_than: on a member too" do
       expect { raw_shape({ type: Array, exclusion: { in: %w[a] } }) }
-        .to raise_error(ArgumentError, /exclusion: on shape member `x` enforces nothing/)
+        .to raise_error(ArgumentError, /exclusion: on shape member `x` in expects :row enforces nothing/)
       expect { raw_shape({ type: Integer, comparison: { other_than: "a" } }) }
-        .to raise_error(ArgumentError, /comparison: on shape member `x` enforces nothing/)
+        .to raise_error(ArgumentError, /comparison: on shape member `x` in expects :row enforces nothing/)
     end
 
     it "still declares a member whose set IS of the declared type" do
@@ -1119,7 +1119,7 @@ RSpec.describe "a validator at a container position" do
     it "reaches the shaped values of a map declared with of:" do
       members = [member_struct.new(:x, { type: Array, inclusion: { in: %w[a] } })]
       expect { build_axn { expects :m, type: Hash, of: { values: { klass: Hash, shape: { members: } } } } }
-        .to raise_error(ArgumentError, /inclusion: on shape member `x` can never match/)
+        .to raise_error(ArgumentError, /inclusion: on shape member `x` in expects :m can never match/)
     end
 
     it "leaves a legal member inside a map's shaped values declaring" do

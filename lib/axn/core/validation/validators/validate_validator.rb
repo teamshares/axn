@@ -2,6 +2,7 @@
 
 require "active_model"
 
+require "axn/core/contract/declaration_label"
 require "axn/internal/rendering"
 
 module Axn
@@ -20,7 +21,8 @@ module Axn
           # fix, since this runs during `expects`/`exposes`.
           unless value.key?(:with)
             raise ArgumentError,
-                  "`validate:` expects a callable — `validate: ->(value) { ... }` or " \
+                  "`validate:`#{Axn::Core::Contract::DeclarationLabel.locator} needs a callable — " \
+                  "`validate: ->(value) { ... }` or " \
                   "`validate: { with: <callable>, message: \"...\" }` — but got a Hash with no `:with` key " \
                   "(keys: #{value.keys.inspect}). If you meant a standard validation such as an " \
                   "allowed-value set, declare it directly (e.g. `inclusion: { in: [...] }`), which constrains " \
@@ -73,7 +75,8 @@ module Axn
         return if legal_with_value?(value)
 
         raise ArgumentError,
-              "`validate:` expects a callable or a Symbol naming an action method — " \
+              "`validate:`#{Axn::Core::Contract::DeclarationLabel.locator} needs a callable or a Symbol naming an " \
+              "action method — " \
               "`validate: ->(value) { ... }`, `validate: :method_name`, or " \
               "`validate: { with: <callable or Symbol> }` — but got a value of class " \
               "#{Axn::Internal::Reflection::PropertyNames.renderable_class_name(value)}."

@@ -634,7 +634,7 @@ RSpec.describe "Axn deeply nested ambient_context (PRO-2909)" do
             field :ip, type: String, user_facing: "bad"
           end
         end
-      end.to raise_error(ArgumentError, /user_facing.*shape member of an `on: :ambient_context`/)
+      end.to raise_error(ArgumentError, /\A`user_facing:` isn't allowed on a shape member of expects .* — drop it; ambient values are framework-supplied/)
 
       expect do
         build_axn do
@@ -644,7 +644,7 @@ RSpec.describe "Axn deeply nested ambient_context (PRO-2909)" do
             end
           end
         end
-      end.to raise_error(ArgumentError, /user_facing.*shape member of an `on: :ambient_context`/)
+      end.to raise_error(ArgumentError, /\A`user_facing:` isn't allowed on a shape member of expects .* — drop it; ambient values are framework-supplied/)
     end
 
     it "checks EVERY shape config on a merged ambient node for a user_facing: member" do
@@ -660,7 +660,7 @@ RSpec.describe "Axn deeply nested ambient_context (PRO-2909)" do
             field :ip, type: String, user_facing: "bad"
           end
         end
-      end.to raise_error(ArgumentError, /user_facing.*shape member of an `on: :ambient_context`/)
+      end.to raise_error(ArgumentError, /\A`user_facing:` isn't allowed on a shape member of expects .* — drop it; ambient values are framework-supplied/)
     end
 
     it "still allows the equivalent nested structure declared as subfields" do
@@ -714,7 +714,7 @@ RSpec.describe "Axn deeply nested ambient_context (PRO-2909)" do
 
       expect do
         build_axn { expects :items, on: :ambient_context, type: Array, of: { klass: Hash, shape: } }
-      end.to raise_error(ArgumentError, /user_facing.*shape member of an `on: :ambient_context`/)
+      end.to raise_error(ArgumentError, /\A`user_facing:` isn't allowed on a shape member of expects .* — drop it; ambient values are framework-supplied/)
     end
 
     it "reaches a member two containers deep" do
@@ -722,7 +722,7 @@ RSpec.describe "Axn deeply nested ambient_context (PRO-2909)" do
 
       expect do
         build_axn { expects :matrix, on: :ambient_context, type: Array, of: { klass: Array, of: { klass: Hash, shape: } } }
-      end.to raise_error(ArgumentError, /user_facing.*shape member of an `on: :ambient_context`/)
+      end.to raise_error(ArgumentError, /\A`user_facing:` isn't allowed on a shape member of expects .* — drop it; ambient values are framework-supplied/)
     end
 
     it "reaches a member under a map's values: axis" do
@@ -730,7 +730,7 @@ RSpec.describe "Axn deeply nested ambient_context (PRO-2909)" do
 
       expect do
         build_axn { expects :by_region, on: :ambient_context, type: Hash, of: { values: { klass: Hash, shape: } } }
-      end.to raise_error(ArgumentError, /user_facing.*shape member of an `on: :ambient_context`/)
+      end.to raise_error(ArgumentError, /\A`user_facing:` isn't allowed on a shape member of expects .* — drop it; ambient values are framework-supplied/)
     end
 
     # The two edges interleave: a shape MEMBER can itself declare a container, whose bag carries the next shape.
@@ -742,7 +742,7 @@ RSpec.describe "Axn deeply nested ambient_context (PRO-2909)" do
 
       expect do
         build_axn { expects :request, on: :ambient_context, type: Hash, shape: }
-      end.to raise_error(ArgumentError, /user_facing.*shape member of an `on: :ambient_context`/)
+      end.to raise_error(ArgumentError, /\A`user_facing:` isn't allowed on a shape member of expects .* — drop it; ambient values are framework-supplied/)
     end
 
     # PRO-3441. Off ambient, this exact combination is now PERMITTED — the emitted schema conjoins the
@@ -759,7 +759,7 @@ RSpec.describe "Axn deeply nested ambient_context (PRO-2909)" do
           expects :m, on: :ambient_context, type: Hash, of: { values: Integer }
           expects :foo, on: :m
         end
-      end.to raise_error(ArgumentError, /`of:` on the ambient subfield `m` is only supported when it has no nested subfields/)
+      end.to raise_error(ArgumentError, /`of:` on expects ambient_context.m is only supported when it has no nested subfields/)
     end
 
     it "still refuses a subfield rooted at an ambient Array, which cannot answer one" do
@@ -768,7 +768,7 @@ RSpec.describe "Axn deeply nested ambient_context (PRO-2909)" do
           expects :m, on: :ambient_context, type: Array, of: Integer
           expects :foo, on: :m
         end
-      end.to raise_error(ArgumentError, /\Asubfield :foo \(on :m\) can never resolve: segment :foo is read from :m, declared Array/)
+      end.to raise_error(ArgumentError, /\Aexpects m\.foo can never resolve: segment :foo is read from :m, declared Array/)
     end
 
     # The descent adds a refusal, never a rejection of what already declared: a bag's shape with nothing to
@@ -805,7 +805,7 @@ RSpec.describe "Axn deeply nested ambient_context (PRO-2909)" do
       shape = user_facing_shape
       expect do
         build_axn { expects :request, on: :ambient_context, type: Hash, shape: }
-      end.to raise_error(ArgumentError, /user_facing.*shape member of an `on: :ambient_context`/)
+      end.to raise_error(ArgumentError, /\A`user_facing:` isn't allowed on a shape member of expects .* — drop it; ambient values are framework-supplied/)
     end
 
     # Declaring a LATER ambient subfield rebuilds the tree over every ambient config, so the walk re-reads a
@@ -839,7 +839,10 @@ RSpec.describe "Axn deeply nested ambient_context (PRO-2909)" do
         expect { build_axn { expects :m, type: Array, of: at_cap } }.not_to raise_error
 
         klass = holding(of_chain(64, leaf_shape: user_facing_shape))
-        expect { rewalk(klass) }.to raise_error(ArgumentError, /user_facing.*shape member of an `on: :ambient_context`/)
+        expect do
+          rewalk(klass)
+        end.to raise_error(ArgumentError,
+                           /\A`user_facing:` isn't allowed on a shape member of expects .* — drop it; ambient values are framework-supplied/)
       end
 
       it "rejects a shape one rung past the cap" do

@@ -72,7 +72,7 @@ RSpec.describe "nil and empty axes" do
 
     it "rejects a declaration with no type at all" do
       expect { build(allow_empty: true) }
-        .to raise_error(ArgumentError, /allow_empty:.*requires a `type:`/)
+        .to raise_error(ArgumentError, /`allow_empty:` isn't allowed on expects :v without a `type:`/)
     end
 
     it "accepts :params" do
@@ -296,7 +296,7 @@ RSpec.describe "nil and empty axes" do
         end
 
         expect { build(type: hostile, allow_empty: true) }
-          .to raise_error(ArgumentError, /allow_empty: is not supported/)
+          .to raise_error(ArgumentError, /`allow_empty:` isn't allowed on expects :v for /)
       end
 
       it "survives an inspect that raises outside StandardError" do
@@ -305,18 +305,18 @@ RSpec.describe "nil and empty axes" do
         end
 
         expect { build(type: hostile, allow_empty: true) }
-          .to raise_error(ArgumentError, /allow_empty: is not supported/)
+          .to raise_error(ArgumentError, /`allow_empty:` isn't allowed on expects :v for /)
       end
 
       it "still names each offending type recognizably" do
         expect { build(type: Integer, allow_empty: true) }
-          .to raise_error(ArgumentError, /is not supported for Integer on .*Drop allow_empty:/m)
+          .to raise_error(ArgumentError, /`allow_empty:` isn't allowed on expects :v for Integer — drop it/m)
         expect { build(type: :boolean, allow_empty: true) }
-          .to raise_error(ArgumentError, /is not supported for :boolean/)
+          .to raise_error(ArgumentError, /`allow_empty:` isn't allowed on expects :v for :boolean/)
         expect { build(type: :uuid, allow_empty: true) }
-          .to raise_error(ArgumentError, /is not supported for :uuid/)
+          .to raise_error(ArgumentError, /`allow_empty:` isn't allowed on expects :v for :uuid/)
         expect { build(type: [Array, Integer, :boolean], allow_empty: true) }
-          .to raise_error(ArgumentError, %r{is not supported for Integer/:boolean})
+          .to raise_error(ArgumentError, %r{`allow_empty:` isn't allowed on expects :v for Integer/:boolean — drop it})
       end
     end
 
@@ -909,9 +909,9 @@ RSpec.describe "nil and empty axes" do
       # declaration at both tiers — on the declaration and inside an entry — so no declaration reaches
       # this collapse carrying one, and the type error is always the whole account of the nil.
       expect { build(type: String, strict: true) }
-        .to raise_error(ArgumentError, /`strict:` inside the declaration on :v/)
+        .to raise_error(ArgumentError, /`strict:` isn't allowed on expects :v/)
       expect { build(type: String, presence: { strict: true }) }
-        .to raise_error(ArgumentError, /`strict:` inside presence: on :v/)
+        .to raise_error(ArgumentError, /`strict:` isn't allowed in presence: on expects :v/)
     end
 
     it "collapses the duplicate messages for an entry carrying its own tolerance keys" do

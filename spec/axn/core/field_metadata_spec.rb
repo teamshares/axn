@@ -75,7 +75,7 @@ RSpec.describe "Field metadata" do
         build_axn do
           expects :a, :b, description: "Both fields"
         end
-      end.to raise_error(ArgumentError, /can only be provided when declaring a single field/)
+      end.to raise_error(ArgumentError, /isn't allowed on (?:expects|exposes) :\w+, :\w+ — provide it when declaring a single field/)
     end
 
     it "allows multiple fields without metadata" do
@@ -91,7 +91,7 @@ RSpec.describe "Field metadata" do
         build_axn do
           exposes :x, :y, description: "Multiple outputs"
         end
-      end.to raise_error(ArgumentError, /can only be provided when declaring a single field/)
+      end.to raise_error(ArgumentError, /isn't allowed on (?:expects|exposes) :\w+, :\w+ — provide it when declaring a single field/)
     end
   end
 
@@ -201,7 +201,7 @@ RSpec.describe "Field metadata" do
           expects :parent, type: Hash
           expects :child, on: :parent, readers: false
         end
-      end.to raise_error(ArgumentError, /Unknown key\(s\) :readers in field declaration/)
+      end.to raise_error(ArgumentError, /Unknown key\(s\) :readers on expects (?:parent\.child|:value)\./)
     end
 
     it "raises the generic unknown-key error for readers: true too (the kwarg is gone entirely)" do
@@ -209,7 +209,7 @@ RSpec.describe "Field metadata" do
         build_axn do
           expects :value, readers: true
         end
-      end.to raise_error(ArgumentError, /Unknown key\(s\) :readers in field declaration/)
+      end.to raise_error(ArgumentError, /Unknown key\(s\) :readers on expects (?:parent\.child|:value)\./)
     end
   end
 

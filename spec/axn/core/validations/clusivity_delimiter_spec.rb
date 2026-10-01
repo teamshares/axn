@@ -94,7 +94,7 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
     }.each do |label, spelling|
       it "refuses #{label}" do
         expect { build_axn { expects :v, inclusion: spelling } }
-          .to raise_error(ArgumentError, /inclusion: on :v names a set of class \w+, which ActiveModel cannot use/)
+          .to raise_error(ArgumentError, /inclusion: on expects :v names a set of class \w+, which ActiveModel cannot use/)
       end
     end
 
@@ -109,7 +109,7 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
     # "no delimiter at all" case below; documented here since it looks like a set literal at a glance.
     it "reads a bare Hash as the options bag, not as a Hash-keyed set — refused as naming no delimiter" do
       expect { build_axn { expects :v, inclusion: { 1 => :x } } }
-        .to raise_error(ArgumentError, /inclusion: on :v names no set at all/)
+        .to raise_error(ArgumentError, /inclusion: on expects :v names no set at all/)
     end
   end
 
@@ -199,7 +199,7 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
     }.each do |label, spelling|
       it "refuses #{label}" do
         expect { build_axn { expects :v, inclusion: spelling } }
-          .to raise_error(ArgumentError, /inclusion: on :v names no set at all/)
+          .to raise_error(ArgumentError, /inclusion: on expects :v names no set at all/)
       end
     end
 
@@ -213,7 +213,7 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
   describe "a String delimiter, refused even though it answers include?" do
     it "is refused as the bare shorthand" do
       expect { build_axn { expects :v, inclusion: "abc" } }
-        .to raise_error(ArgumentError, /inclusion: on :v names a String as its set/)
+        .to raise_error(ArgumentError, /inclusion: on expects :v names a String as its set/)
     end
 
     it "is refused in the long form" do
@@ -307,14 +307,14 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
       stub_const("MutableSet", Class.new(Set))
 
       expect { build_axn { expects :v, inclusion: MutableSet[1, 2] } }
-        .to raise_error(ArgumentError, /inclusion: on :v names a set of class MutableSet that is not frozen/)
+        .to raise_error(ArgumentError, /inclusion: on expects :v names a set of class MutableSet that is not frozen/)
     end
 
     it "refuses an unfrozen custom object answering include?" do
       stub_const("MutableMembership", Class.new { def include?(_value) = true })
 
       expect { build_axn { expects :v, inclusion: { in: MutableMembership.new } } }
-        .to raise_error(ArgumentError, /inclusion: on :v names a set of class MutableMembership that is not frozen/)
+        .to raise_error(ArgumentError, /inclusion: on expects :v names a set of class MutableMembership that is not frozen/)
     end
 
     it "accepts a frozen bare Set SUBCLASS and its membership cannot change after declaring" do
@@ -351,7 +351,7 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
       broken.freeze
 
       expect { build_axn { expects :v, inclusion: broken } }
-        .to raise_error(ArgumentError, /inclusion: on :v names a set of class ZeroArgIncludeSet, which ActiveModel cannot use/)
+        .to raise_error(ArgumentError, /inclusion: on expects :v names a set of class ZeroArgIncludeSet, which ActiveModel cannot use/)
     end
 
     it "does not require an unfrozen Proc or callable to be frozen, since what it compares against is decided per call" do
@@ -368,17 +368,17 @@ RSpec.describe "a clusivity delimiter ActiveModel cannot use is refused at decla
   describe "the exclusion mirror" do
     it "refuses an unusable delimiter the same way inclusion does" do
       expect { build_axn { expects :v, exclusion: 5 } }
-        .to raise_error(ArgumentError, /exclusion: on :v names a set of class Integer/)
+        .to raise_error(ArgumentError, /exclusion: on expects :v names a set of class Integer/)
     end
 
     it "refuses a String delimiter the same way inclusion does" do
       expect { build_axn { expects :v, exclusion: "abc" } }
-        .to raise_error(ArgumentError, /exclusion: on :v names a String as its set/)
+        .to raise_error(ArgumentError, /exclusion: on expects :v names a String as its set/)
     end
 
     it "refuses a wrong-arity lambda the same way inclusion does" do
       expect { build_axn { expects :v, exclusion: ->(_record, _second) { [1] } } }
-        .to raise_error(ArgumentError, /exclusion: on :v names a set of class Proc, which ActiveModel cannot use/)
+        .to raise_error(ArgumentError, /exclusion: on expects :v names a set of class Proc, which ActiveModel cannot use/)
     end
   end
 

@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "axn/core/contract/declaration_label"
 require "axn/internal/subfield_tree"
 require "axn/internal/shape_graph"
 require "axn/internal/reflection/schema"
@@ -114,11 +115,12 @@ module Axn
             # children is rebuilt from those children alone, dropping shape-only members.
             if shape_configs.any? && !(node.children.empty? || _ambient_model_node?(node))
               raise ArgumentError,
-                    "a `shape:` block on the ambient subfield `#{shape_configs.first.field}` is only supported when it " \
+                    "a `shape:` block on #{Axn::Core::Contract::DeclarationLabel.subfield(shape_configs.first)} is only supported when it " \
                     "has no nested subfields — this node also has subfield children, so the ambient filter " \
                     "rebuilds it from those children alone and the shape's members can't be validated. Declare " \
                     "the nested structure ONE way: keep the `shape:` (validation only), or use subfields " \
-                    "(`expects :<member>, on: :#{shape_configs.first.field}`), which also give readers and `sensitive:`."
+                    "(`expects :<member>, on: :#{shape_configs.first.field}`), which also give readers and `sensitive:`." \
+                    "#{Axn::Core::Contract::DeclarationLabel.found_while(Axn::Core::Contract::DeclarationLabel.subfield(shape_configs.first))}"
             end
 
             # PRO-3441. Off ambient, a Hash's `of:` bag colliding with a subfield is now permitted — the
@@ -133,11 +135,12 @@ module Axn
             next if map_configs.empty? || node.children.empty? || _ambient_model_node?(node)
 
             raise ArgumentError,
-                  "`of:` on the ambient subfield `#{map_configs.first.field}` is only supported when it has no " \
+                  "`of:` on #{Axn::Core::Contract::DeclarationLabel.subfield(map_configs.first)} is only supported when it has no " \
                   "nested subfields — this node also has subfield children, so the ambient filter rebuilds it " \
                   "from those children alone and the map's other keys are never copied. Declare the nested " \
                   "structure ONE way: keep the `of:` (the value is copied whole, no subfield needed to reach a " \
-                  "key of it), or use subfields (`expects :<member>, on: :#{map_configs.first.field}`)."
+                  "key of it), or use subfields (`expects :<member>, on: :#{map_configs.first.field}`)." \
+                  "#{Axn::Core::Contract::DeclarationLabel.found_while(Axn::Core::Contract::DeclarationLabel.subfield(map_configs.first))}"
           end
         end
 
@@ -149,8 +152,10 @@ module Axn
             next unless Internal::ShapeGraph.read(member, :user_facing)
 
             raise ArgumentError,
-                  "`user_facing:` is not supported on a shape member of an `on: :ambient_context` subfield " \
-                  "(ambient values are framework-supplied, not caller input — there is no caller to face)"
+                  "`user_facing:` isn't allowed on a shape member of " \
+                  "#{Axn::Core::Contract::DeclarationLabel.subfield(config)} — drop it; ambient values are " \
+                  "framework-supplied, not caller input, so there is no caller to face." \
+                  "#{Axn::Core::Contract::DeclarationLabel.found_while(Axn::Core::Contract::DeclarationLabel.subfield(config))}"
           end
         end
 

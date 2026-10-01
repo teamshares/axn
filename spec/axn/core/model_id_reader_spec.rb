@@ -317,14 +317,14 @@ RSpec.describe "model: id reader and consistency" do
       klass = co_class
       expect do
         build_axn { expects :company, model: { klass: }, coerce: Integer }
-      end.to raise_error(ArgumentError, /coerce:.*not supported on a `model:` field.*<field>_id/m)
+      end.to raise_error(ArgumentError, /`coerce:` isn't allowed beside `model:` on expects :company.*<field>_id/m)
     end
 
     it "rejects preprocess: on a top-level model field" do
       klass = co_class
       expect do
         build_axn { expects :company, model: { klass: }, preprocess: ->(v) { v } }
-      end.to raise_error(ArgumentError, /preprocess:.*not supported on a `model:` field/)
+      end.to raise_error(ArgumentError, /`preprocess:` isn't allowed beside `model:` on expects/)
     end
 
     it "rejects coerce: on a model subfield" do
@@ -334,7 +334,7 @@ RSpec.describe "model: id reader and consistency" do
           expects :payload, type: Hash
           expects :company, on: :payload, model: { klass: }, coerce: Integer
         end
-      end.to raise_error(ArgumentError, /coerce:.*not supported on a `model:` field.*with on: payload/m)
+      end.to raise_error(ArgumentError, /`coerce:` isn't allowed beside `model:` on expects payload\.company/m)
     end
 
     it "rejects preprocess: on a model subfield" do
@@ -344,7 +344,7 @@ RSpec.describe "model: id reader and consistency" do
           expects :payload, type: Hash
           expects :company, on: :payload, model: { klass: }, preprocess: ->(v) { v }
         end
-      end.to raise_error(ArgumentError, /preprocess:.*not supported on a `model:` field/)
+      end.to raise_error(ArgumentError, /`preprocess:` isn't allowed beside `model:` on expects/)
     end
 
     it "still allows a plain model field (no transform)" do

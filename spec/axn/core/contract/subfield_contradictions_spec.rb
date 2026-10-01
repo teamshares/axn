@@ -41,7 +41,7 @@ RSpec.describe Axn::Core::Contract::SubfieldContradictions do
           expects :meta, on: :payload, type: Hash, allow_nil: true
           expects :id, on: :meta, type: Integer
         end
-      end.to raise_error(ArgumentError, /:meta is declared nil-tolerant/)
+      end.to raise_error(ArgumentError, /expects payload\.meta is declared nil-tolerant/)
     end
 
     it "rejects optional: spelling the same way" do
@@ -215,7 +215,7 @@ RSpec.describe Axn::Core::Contract::SubfieldContradictions do
           end
           expects :baz, on: "payload.bar", type: Integer
         end
-      end.to raise_error(ArgumentError, /:baz.*can never resolve.*baz/m)
+      end.to raise_error(ArgumentError, /expects payload\.bar\.baz can never resolve.*baz/m)
     end
 
     it "rejects a multi-segment path off a declared-scalar explicit parent" do
@@ -396,7 +396,7 @@ RSpec.describe Axn::Core::Contract::SubfieldContradictions do
             expects :company, on: :meta, model: { klass: DeadCo, finder: :fetch }, allow_nil: true
             expects :company, on: "payload.meta", type: DeadCo, as: :meta_company
           end
-        end.to raise_error(ArgumentError, /:meta is declared nil-tolerant/)
+        end.to raise_error(ArgumentError, /expects payload\.meta is declared nil-tolerant/)
       end
 
       it "accepts when the merged non-model route is itself nil-tolerant (optional:)" do
@@ -705,7 +705,7 @@ RSpec.describe Axn::Core::Contract::SubfieldContradictions do
           expects :n, on: :counts, type: Integer
           expects :counts, type: String
         end
-      end.to raise_error(ArgumentError, /subfield :n \(on :counts\) can never resolve.*declared String/m)
+      end.to raise_error(ArgumentError, /expects counts\.n can never resolve.*declared String/m)
     end
 
     it "rejects a re-anchor onto an Array parent" do
@@ -760,7 +760,7 @@ RSpec.describe Axn::Core::Contract::SubfieldContradictions do
           expects :ip, on: :request, type: String
           expects :request, type: String
         end
-      end.to raise_error(ArgumentError, /subfield :ip \(on :request\) can never resolve/)
+      end.to raise_error(ArgumentError, /expects request\.ip can never resolve/)
     end
 
     it "accepts a re-anchor onto a parent that CAN still answer the subfield, and re-points the read" do

@@ -1015,7 +1015,7 @@ RSpec.describe "confirmation:" do
     it "refuses confirmation: on exposes" do
       expect do
         build_axn { exposes :token, type: String, confirmation: true }
-      end.to raise_error(ArgumentError, /does not support confirmation:/)
+      end.to raise_error(ArgumentError, /`confirmation:` isn't allowed on exposes :token/)
     end
 
     it "refuses confirmation: on a shape member" do
@@ -1025,7 +1025,7 @@ RSpec.describe "confirmation:" do
             field :password, type: String, confirmation: true
           end
         end
-      end.to raise_error(ArgumentError, /shape member `password` does not support confirmation:/)
+      end.to raise_error(ArgumentError, /`confirmation:` isn't allowed on shape member `password` in expects :payload/)
     end
   end
 end

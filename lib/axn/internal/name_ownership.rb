@@ -162,7 +162,8 @@ module Axn
         _anonymous_label(owner)
       end
 
-      # `Module#to_s` bound, which answers "#<Module:0x…>" for an anonymous module and never nil.
+      # `Module#to_s` bound, which answers "#<Module:0x…>" for an anonymous module and never nil — rendered with
+      # the stable placeholder (`(anonymous module)`) in place of the address.
       def _anonymous_label(owner) = Axn::Internal::Reflection::PropertyNames.renderable_module_name(owner)
     end
   end

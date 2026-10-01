@@ -192,7 +192,7 @@ RSpec.describe "non-UTF-8 declared names in messages" do
         build_axn { expects :par, type: Hash, shape: { members: [member], container: Hash } }
       end.to raise_error(ArgumentError) { |error|
         expect(error.message).to be_readable_utf8
-        expect(error.message).to include("a shape member name must be a String or a Symbol", "Café")
+        expect(error.message).to include("a shape member name in expects :par must be a String or a Symbol", "Café")
       }
     end
 

@@ -7,8 +7,8 @@
 # — this pins the field-level guard that closes it (PRO-3207), reusing the same predicate rather than a
 # fourth copy of it.
 RSpec.describe "an unsupported type: token" do
-  def unsupported(named)
-    "type: must name a type — a Class, a union of them, or one of :boolean, :uuid, :params (got #{named})"
+  def unsupported(named, on = "expects :v")
+    "type: must name a type on #{on} — a Class, a union of them, or one of :boolean, :uuid, :params (got #{named})"
   end
 
   describe "every non-class spelling" do
@@ -97,7 +97,7 @@ RSpec.describe "an unsupported type: token" do
   describe "every position, not just expects" do
     it "refuses one on exposes" do
       expect { build_axn { exposes :v, type: false } }
-        .to raise_error(ArgumentError, unsupported("a value of class FalseClass"))
+        .to raise_error(ArgumentError, unsupported("a value of class FalseClass", "exposes :v"))
     end
 
     it "refuses one on a subfield" do
@@ -106,28 +106,28 @@ RSpec.describe "an unsupported type: token" do
           expects :v
           expects :a, on: :v, type: false
         end
-      end.to raise_error(ArgumentError, unsupported("a value of class FalseClass"))
+      end.to raise_error(ArgumentError, unsupported("a value of class FalseClass", "expects v.a"))
     end
 
     it "refuses one on an ambient subfield" do
       expect { build_axn { expects :a, on: :ambient_context, type: false } }
-        .to raise_error(ArgumentError, unsupported("a value of class FalseClass"))
+        .to raise_error(ArgumentError, unsupported("a value of class FalseClass", "expects ambient_context.a"))
     end
 
     it "refuses one on a block-form shape member" do
       expect { build_axn { expects(:items, type: Array) { field :a, type: false } } }
-        .to raise_error(ArgumentError, unsupported("a value of class FalseClass"))
+        .to raise_error(ArgumentError, unsupported("a value of class FalseClass", "shape member `a` in expects :items"))
     end
 
     it "refuses a union carrying nil on a block-form shape member" do
       expect { build_axn { expects(:items, type: Array) { field :a, type: [String, nil] } } }
-        .to raise_error(ArgumentError, unsupported("a value of class NilClass"))
+        .to raise_error(ArgumentError, unsupported("a value of class NilClass", "shape member `a` in expects :items"))
     end
 
     it "refuses one on a raw ShapeConfig member" do
       member = Axn::Core::Contract::ShapeConfig.new(field: :n, validations: { type: false })
       expect { build_axn { expects :m, type: Hash, shape: { members: [member] } } }
-        .to raise_error(ArgumentError, unsupported("a value of class FalseClass"))
+        .to raise_error(ArgumentError, unsupported("a value of class FalseClass", "shape member `n` in expects :m"))
     end
   end
 
@@ -138,12 +138,12 @@ RSpec.describe "an unsupported type: token" do
   describe "deferred to the of: container refusal" do
     it "leaves a non-class type: beside of: to the container message" do
       expect { build_axn { expects :v, type: false, of: Integer } }
-        .to raise_error(ArgumentError, "of: requires type: Array or Hash (got [a value of class FalseClass])")
+        .to raise_error(ArgumentError, "of: requires type: Array or Hash on expects :v (got [a value of class FalseClass])")
     end
 
     it "leaves a non-class union beside of: to the container message" do
       expect { build_axn { expects :v, type: [Array, nil], of: Integer } }
-        .to raise_error(ArgumentError, "of: requires type: Array or Hash (got [Array, a value of class NilClass])")
+        .to raise_error(ArgumentError, "of: requires type: Array or Hash on expects :v (got [Array, a value of class NilClass])")
     end
 
     # The container derivation this defers to (`_declared_of_container!`) reads `type:`'s klass through the
@@ -156,7 +156,7 @@ RSpec.describe "an unsupported type: token" do
       liar.define_singleton_method(:to_ary) { [Array] }
 
       expect { build_axn { expects :v, type: liar, of: Integer } }
-        .to raise_error(ArgumentError, "of: requires type: Array or Hash (got [a value of class Object])")
+        .to raise_error(ArgumentError, "of: requires type: Array or Hash on expects :v (got [a value of class Object])")
     end
 
     it "reports the declaration error rather than a raising to_ary's own exception, even though of: is present" do
@@ -164,7 +164,7 @@ RSpec.describe "an unsupported type: token" do
       hostile.define_singleton_method(:to_ary) { raise("to_ary ran") }
 
       expect { build_axn { expects :v, type: hostile, of: Integer } }
-        .to raise_error(ArgumentError, "of: requires type: Array or Hash (got [a value of class Object])")
+        .to raise_error(ArgumentError, "of: requires type: Array or Hash on expects :v (got [a value of class Object])")
     end
   end
 
@@ -219,7 +219,7 @@ RSpec.describe "an unsupported type: token" do
       member = Axn::Core::Contract::ShapeConfig.new(field: :n, validations: { type: false, shape: lying_shape })
 
       expect { build_axn { expects :m, type: Hash, shape: { members: [member] } } }
-        .to raise_error(ArgumentError, unsupported("a value of class FalseClass"))
+        .to raise_error(ArgumentError, unsupported("a value of class FalseClass", "shape member `n` in expects :m"))
     end
 
     # A GOOD `type:` still leaves a genuinely bad explicit `container:` to the shape's own message — this
@@ -322,7 +322,7 @@ end
 # a union or a pseudo-type Symbol has nothing to dispatch through and is refused rather than accepted.
 RSpec.describe "an unsupported model: token" do
   def unsupported_model(named)
-    "model: klass: must name a single Class or Module (got #{named}) — a model field resolves a record " \
+    "model: klass: must name a single Class or Module on expects :v (got #{named}) — a model field resolves a record " \
       "by calling a finder method on this class, so a union or a pseudo-type has nothing to dispatch through."
   end
 
@@ -414,7 +414,7 @@ RSpec.describe "an unsupported model: token" do
     it "rejects a falsy klass: outright, regardless of whether the inferred constant happens to exist" do
       stub_const("V", Class.new { def self.find(_id) = new })
 
-      message = "model: klass: false/nil is not a type to resolve a record through — pass `model: true` " \
+      message = "model: klass: false/nil is not a type to resolve a record through on expects :v — pass `model: true` " \
                 "(or omit klass: entirely) to infer the class from the field name, or name the class explicitly."
       expect { build_axn { expects :v, model: false } }.to raise_error(ArgumentError, message)
       expect { build_axn { expects :v, model: nil } }.to raise_error(ArgumentError, message)

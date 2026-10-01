@@ -39,10 +39,10 @@ RSpec.describe "the rules every declared name is held to" do
     it "rejects a value that is not a name, naming the DSL and the offending class" do
       not_names.each do |value, klass|
         expect { build_axn { expects value } }
-          .to raise_error(ArgumentError, /\Aa field name must be a String or Symbol naming an inbound field \(got a value of class #{klass}\)/)
+          .to raise_error(ArgumentError, /\Aan `expects` field name must be a String or Symbol naming an inbound field \(got a value of class #{klass}\)/)
         expect { build_axn { exposes value } }
           .to raise_error(ArgumentError,
-                          /\Aan exposure name must be a String or Symbol naming an outbound field \(got a value of class #{klass}\)/)
+                          /\Aan `exposes` field name must be a String or Symbol naming an outbound field \(got a value of class #{klass}\)/)
       end
     end
 
@@ -51,8 +51,8 @@ RSpec.describe "the rules every declared name is held to" do
     # at `on:`/`as:` would accept both as declaring nothing at all.
     it "rejects nil and false, which mean `absent` at every optional name option" do
       [nil, false].each do |value|
-        expect { build_axn { expects value } }.to raise_error(ArgumentError, /\Aa field name must be a String or Symbol/)
-        expect { build_axn { exposes value } }.to raise_error(ArgumentError, /\Aan exposure name must be a String or Symbol/)
+        expect { build_axn { expects value } }.to raise_error(ArgumentError, /\Aan `expects` field name must be a String or Symbol/)
+        expect { build_axn { exposes value } }.to raise_error(ArgumentError, /\Aan `exposes` field name must be a String or Symbol/)
       end
     end
 
@@ -79,9 +79,9 @@ RSpec.describe "the rules every declared name is held to" do
         name = wide("ab").public_send(conversion)
 
         expect { build_axn { expects name } }
-          .to raise_error(ArgumentError, /\Aa field name must be written in an ASCII-compatible encoding \(got one encoded as UTF-16LE\)/)
+          .to raise_error(ArgumentError, /\Aan `expects` field name must be written in an ASCII-compatible encoding \(got one encoded as UTF-16LE\)/)
         expect { build_axn { exposes name } }
-          .to raise_error(ArgumentError, /\Aan exposure name must be written in an ASCII-compatible encoding/)
+          .to raise_error(ArgumentError, /\Aan `exposes` field name must be written in an ASCII-compatible encoding/)
       end
     end
 
@@ -114,10 +114,11 @@ RSpec.describe "the rules every declared name is held to" do
     it "rejects a value that is not a name, naming the option and the offending class" do
       not_names.each do |value, klass|
         expect { build_axn { expects :a, as: value } }
-          .to raise_error(ArgumentError, /\A`as:` must be a String or Symbol naming the generated reader \(got a value of class #{klass}\)/)
+          .to raise_error(ArgumentError,
+                          /\A`as:` isn't allowed on expects :a — it must be a String or Symbol naming the generated reader \(got a value of class #{klass}\)/)
         expect { build_axn { expects :a, prefix: value } }
           .to raise_error(ArgumentError,
-                          /\A`prefix:` must be a String or Symbol naming a prefix for each generated reader \(got a value of class #{klass}\)/)
+                          /\A`prefix:` isn't allowed on expects :a — it must be a String or Symbol naming a prefix .* \(got a value of class #{klass}\)/)
       end
     end
 
@@ -145,9 +146,10 @@ RSpec.describe "the rules every declared name is held to" do
         prefix = wide("p_").public_send(conversion)
 
         expect { build_axn { expects :a, as: reader } }
-          .to raise_error(ArgumentError, /\A`as:` must be written in an ASCII-compatible encoding \(got one encoded as UTF-16LE\)/)
+          .to raise_error(ArgumentError,
+                          /\A`as:` isn't allowed on expects :a — it must be written in an ASCII-compatible encoding \(got one encoded as UTF-16LE\)/)
         expect { build_axn { expects :a, prefix: } }
-          .to raise_error(ArgumentError, /\A`prefix:` must be written in an ASCII-compatible encoding/)
+          .to raise_error(ArgumentError, /\A`prefix:` isn't allowed on expects :a — it must be written in an ASCII-compatible encoding/)
       end
     end
 
@@ -155,9 +157,10 @@ RSpec.describe "the rules every declared name is held to" do
     # last member of that family, closed with the type rule that reached the same helper.
     it "rejects a dotted value at either option" do
       expect { build_axn { expects :a, as: "x.y" } }
-        .to raise_error(ArgumentError, /`as:` reader name may not be dotted/)
+        .to raise_error(ArgumentError, /`as: :"x\.y"` isn't allowed on expects :a — name the reader without a dot/)
       expect { build_axn { expects :a, prefix: "x." } }
-        .to raise_error(ArgumentError, /`prefix:` may not be dotted \(:"x\." would compose a reader that does not name a method\)/)
+        .to raise_error(ArgumentError,
+                        /`prefix: :"x\."` isn't allowed on expects :a — name the prefix without a dot; a dotted prefix composes a reader/)
     end
 
     it "still renames readers through every legal spelling" do
@@ -168,7 +171,7 @@ RSpec.describe "the rules every declared name is held to" do
     end
 
     it "leaves the combined-options rejection where it was" do
-      expect { build_axn { expects :a, as: :x, prefix: :y } }.to raise_error(ArgumentError, /`as:` and `prefix:` cannot be combined/)
+      expect { build_axn { expects :a, as: :x, prefix: :y } }.to raise_error(ArgumentError, /`as:` isn't allowed beside `prefix:` on expects :a — keep one/)
     end
   end
 
@@ -185,7 +188,8 @@ RSpec.describe "the rules every declared name is held to" do
         end
         # Spelled `on:` rather than `` `on:` `` — both of this option's rules name it the way its own type rule
         # always has, since they now come from one call.
-      end.to raise_error(ArgumentError, /\Aon: must be written in an ASCII-compatible encoding \(got one encoded as UTF-16LE\)/)
+      end.to raise_error(ArgumentError,
+                         /\A`on:` isn't allowed on expects :a — it must be written in an ASCII-compatible encoding \(got one encoded as UTF-16LE\)/)
     end
 
     it "still accepts a dotted route" do
@@ -210,9 +214,13 @@ RSpec.describe "the rules every declared name is held to" do
         def to_sym = :hijacked
       end.new
 
-      expect { build_axn { expects hostile } }.to raise_error(ArgumentError, /\Aa field name must be a String or Symbol/)
-      expect { build_axn { expects :a, as: hostile } }.to raise_error(ArgumentError, /\A`as:` must be a String or Symbol/)
-      expect { build_axn { expects :a, prefix: hostile } }.to raise_error(ArgumentError, /\A`prefix:` must be a String or Symbol/)
+      expect { build_axn { expects hostile } }.to raise_error(ArgumentError, /\Aan `expects` field name must be a String or Symbol/)
+      expect { build_axn { expects :a, as: hostile } }.to raise_error(ArgumentError, /\A`as:` isn't allowed on expects :a — it must be a String or Symbol/)
+      expect do
+        build_axn do
+          expects :a, prefix: hostile
+        end
+      end.to raise_error(ArgumentError, /\A`prefix:` isn't allowed on expects :a — it must be a String or Symbol/)
     end
 
     # The encoding is read from the bound base implementation rather than asked of the value, for the same reason

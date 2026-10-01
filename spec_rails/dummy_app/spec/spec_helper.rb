@@ -19,6 +19,9 @@ require "sidekiq/testing"
 # Load support files
 Dir[File.expand_path("support/**/*.rb", __dir__)].each { |f| require f }
 
+# The core suite's declaration message audit, so a refusal only the Rails suite reaches is held to it too.
+require File.expand_path("../../../spec/support/declaration_message_audit", __dir__)
+
 $LOAD_PATH.unshift(File.expand_path(__dir__))
 
 RSpec.configure do |config|

@@ -389,7 +389,7 @@ RSpec.describe "expects reader alias (as:/prefix:)" do
           expects :foo
           expects :zip, on: :foo, as: :"a.b"
         end
-      end.to raise_error(ArgumentError, /reader name may not be dotted/)
+      end.to raise_error(ArgumentError, /`as: :"a\.b"` isn't allowed on expects foo\.zip — name the reader without a dot/)
     end
 
     # The dotted check and the reader definition are two conversions of the same `as:` value, so a name that
@@ -406,25 +406,25 @@ RSpec.describe "expects reader alias (as:/prefix:)" do
           expects :foo
           expects :zip, on: :foo, as: dotted
         end
-      end.to raise_error(ArgumentError, /reader name may not be dotted/)
+      end.to raise_error(ArgumentError, /`as: :"a\.b"` isn't allowed on expects foo\.zip — name the reader without a dot/)
     end
 
     it "rejects a dotted top-level field name (the path belongs in on:, not the field name)" do
       expect do
         build_axn { expects "a.b" }
-      end.to raise_error(ArgumentError, /dotted field name.*not supported.*on: "a"/m)
+      end.to raise_error(ArgumentError, /dotted field name isn't allowed on expects :"a\.b".*on: "a"/m)
     end
 
     it "rejects a dotted top-level field name even with `as:` (top-level readers aren't path-aware)" do
       expect do
         build_axn { expects "a.b", as: :ab }
-      end.to raise_error(ArgumentError, /dotted field name.*not supported/m)
+      end.to raise_error(ArgumentError, /dotted field name isn't allowed on expects :"a\.b"/m)
     end
 
     it "rejects a dotted `exposes` field name (outbound fields have no nested-path reader)" do
       expect do
         build_axn { exposes "a.b" }
-      end.to raise_error(ArgumentError, /dotted field name.*not valid for exposes/m)
+      end.to raise_error(ArgumentError, /dotted field name isn't allowed on exposes :"a\.b"/m)
     end
 
     it "rejects a dotted subfield field name even WITH on: (dotted names dropped, PRO-2926)" do
@@ -454,7 +454,7 @@ RSpec.describe "expects reader alias (as:/prefix:)" do
           expects :foo
           expects :id, on: :foo, readers: false
         end
-      end.to raise_error(ArgumentError, /Unknown key\(s\) :readers in field declaration/)
+      end.to raise_error(ArgumentError, /Unknown key\(s\) :readers on expects foo\.id\./)
     end
 
     it "rejects a reserved reader name" do

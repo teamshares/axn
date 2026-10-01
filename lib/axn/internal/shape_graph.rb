@@ -162,23 +162,26 @@ module Axn
       # `inclusion:` set answers membership with its own `include?`, and reflection withholds an enum for
       # anything but an exact Array. A bag becomes a plain Hash — which is what it already became, and axn
       # reads bags with `[]`/`dig` only.
-      def self.detach_option_containers!(validations)
+      #
+      # `locator` places a refusal in the declaration that carries the container (`" on expects :tags"`); this
+      # layer cannot name the declaration itself, so the caller supplies it.
+      def self.detach_option_containers!(validations, locator: "")
         validations.each do |key, value|
           next if key == :shape
 
           case value
-          when ::Hash then validations[key] = detached_option_bag(key, value)
-          when ::Array then validations[key] = detached_option_array(value, "`#{key}:`")
+          when ::Hash then validations[key] = detached_option_bag(key, value, locator)
+          when ::Array then validations[key] = detached_option_array(value, "`#{key}:`", locator)
           end
         end
       end
 
-      def self.detached_option_bag(key, bag)
-        reject_defaulting_option_container!(bag) { "the `#{key}:` option bag" }
+      def self.detached_option_bag(key, bag, locator = "")
+        reject_defaulting_option_container!(bag) { "the `#{key}:` option bag#{locator}" }
         copy = copy_entries(bag)
         copy.each do |option_key, option|
           case option
-          when ::Array then copy[option_key] = detached_option_array(option, "`#{key}: { #{option_key}: … }`")
+          when ::Array then copy[option_key] = detached_option_array(option, "`#{key}: { #{option_key}: … }`", locator)
           end
         end
         copy
@@ -250,14 +253,14 @@ module Axn
       # must not run while the declaration error it caused is being built, and both the class name and each
       # method name are rendered like any other name reaching prose (bytes with no UTF-8 rendering, from a
       # constant or from a method name, would otherwise raise while the error is built).
-      def self.detached_option_array(value, label)
+      def self.detached_option_array(value, label, locator = "")
         return value if NativeMethods.frozen?(value)
 
         own = NativeMethods.own_array_methods(value)
         return detached_dup(value) if own.empty?
 
         raise ArgumentError,
-              "the #{label} container (of class #{Axn::Internal::Reflection::PropertyNames.renderable_class_name(value)}) " \
+              "the #{label} container#{locator} (of class #{Axn::Internal::Reflection::PropertyNames.renderable_class_name(value)}) " \
               "defines methods of its " \
               "own (#{describe_own_methods(own)}), so axn cannot copy it. A declared contract is copied at " \
               "declaration so that mutating what you still hold cannot change it — and `dup` copies the " \

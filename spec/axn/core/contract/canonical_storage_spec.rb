@@ -168,7 +168,7 @@ RSpec.describe "canonical storage of a container's contents" do
         end
       end
     end.to raise_error(Axn::ContractViolation::DuplicateFieldError,
-                       "Duplicate shape member declared: :sku — the `shape:` inside the `of:` bag on :rows and " \
+                       "Duplicate shape member declared: :sku — the `shape:` inside the `of:` bag on expects :rows and " \
                        "the shape distributed over its elements both declare it, and the two member lists are " \
                        "unioned into one. The reflected schema would name it twice in `required:` while emitting " \
                        "one property for it, and only one of the two declarations would validate. Declare :sku " \
@@ -182,7 +182,7 @@ RSpec.describe "canonical storage of a container's contents" do
                Axn::Core::Contract::ShapeConfig.new(field: :sku, validations: { type: { klass: Integer } })]
 
     expect { build_axn { expects :rows, type: Array, of: { klass: Hash, shape: { members: } } } }
-      .to raise_error(Axn::ContractViolation::DuplicateFieldError, /\ADuplicate shape member declared: :sku — two members of one shape/)
+      .to raise_error(Axn::ContractViolation::DuplicateFieldError, /\ADuplicate shape member declared: :sku in expects :rows — two members of one shape/)
   end
 end
 

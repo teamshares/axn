@@ -8,6 +8,8 @@ require "pry-byebug"
 
 $LOAD_PATH.unshift(File.expand_path(__dir__))
 
+require "support/declaration_message_audit"
+
 RSpec.configure do |config|
   # Enable flags like --only-failures and --next-failure
   # Per-lane when the Rakefile asks for it, because flatware balances its chunks from these recorded

@@ -53,7 +53,8 @@ RSpec.describe "an `on:` that names a validation context" do
           expects :v, type: { klass: String, on: :create }
           def call = nil
         end
-      end.to raise_error(ArgumentError, /`on:` inside type: on :v.*validation context.*no context.*if:.*unless:/m)
+      end.to raise_error(ArgumentError,
+                         %r{`on:` isn't allowed in type: on expects :v — drop it, or gate the check with `if:`/`unless:`.*validation context.*no context}m)
     end
 
     it "is refused on an exposes" do
@@ -63,7 +64,7 @@ RSpec.describe "an `on:` that names a validation context" do
           exposes :v, type: { klass: String, on: :create }
           def call = expose(v: "x")
         end
-      end.to raise_error(ArgumentError, /`on:` inside type:/)
+      end.to raise_error(ArgumentError, /`on:` isn't allowed in type:/)
     end
 
     it "is refused on an on: subfield, whose own on: is the parent and stays legal" do
@@ -74,7 +75,7 @@ RSpec.describe "an `on:` that names a validation context" do
           expects :zip, on: :parent, type: { klass: String, on: :create }
           def call = nil
         end
-      end.to raise_error(ArgumentError, /`on:` inside type: on :zip/)
+      end.to raise_error(ArgumentError, /`on:` isn't allowed in type: on expects parent.zip/)
     end
 
     it "is refused on a block-form shape member" do
@@ -84,13 +85,13 @@ RSpec.describe "an `on:` that names a validation context" do
           expects(:h, type: Hash) { field :x, type: { klass: String, on: :create } }
           def call = nil
         end
-      end.to raise_error(ArgumentError, /`on:` inside type:/)
+      end.to raise_error(ArgumentError, /`on:` isn't allowed in type:/)
     end
 
     it "is refused through Axn::Factory.build" do
       expect do
         Axn::Factory.build(expects: { v: { type: { klass: String, on: :create } } }) { nil }
-      end.to raise_error(ArgumentError, /`on:` inside type:/)
+      end.to raise_error(ArgumentError, /`on:` isn't allowed in type:/)
     end
 
     # AM installs the context gate on the KEY's presence whatever the value, and `Array(nil) & anything` is
@@ -103,7 +104,7 @@ RSpec.describe "an `on:` that names a validation context" do
             expects :v, type: { klass: String, on: spelling }
             def call = nil
           end
-        end.to raise_error(ArgumentError, /`on:` inside type:/)
+        end.to raise_error(ArgumentError, /`on:` isn't allowed in type:/)
       end
     end
 
@@ -133,7 +134,7 @@ RSpec.describe "an `on:` that names a validation context" do
             def call = nil
           end
           klass.expects :v, **opts
-        end.to raise_error(ArgumentError, /`on:` inside #{Regexp.escape(inside)}/)
+        end.to raise_error(ArgumentError, /`on:` isn't allowed in #{Regexp.escape(inside)}/)
       end
     end
 
@@ -147,7 +148,7 @@ RSpec.describe "an `on:` that names a validation context" do
           expects :v, type: Hash, of: { values: Integer, on: :create }
           def call = nil
         end
-      end.to raise_error(ArgumentError, /\A`on:` inside an `of:` bag on :v names an ActiveModel validation context/)
+      end.to raise_error(ArgumentError, /\A`on:` isn't allowed in an `of:` bag on expects :v — drop it/)
     end
 
     # A raw `shape:` bag is itself a validator entry, so it is caught here — and the check sits ahead of
@@ -159,7 +160,7 @@ RSpec.describe "an `on:` that names a validation context" do
           expects :h, type: Hash, shape: { members: [], container: Hash, on: :create }
           def call = nil
         end
-      end.to raise_error(ArgumentError, /`on:` inside shape:/)
+      end.to raise_error(ArgumentError, /`on:` isn't allowed in shape:/)
     end
 
     it "names every offending entry, not only the first" do
@@ -181,7 +182,7 @@ RSpec.describe "an `on:` that names a validation context" do
           expects :h, type: Hash, shape: { members: [member], container: Hash }
           def call = nil
         end
-      end.to raise_error(ArgumentError, /shape member `x`.*`on:` inside type:|`on:` inside type:.*shape member `x`/m)
+      end.to raise_error(ArgumentError, /shape member `x`.*`on:` isn't allowed in type:|`on:` isn't allowed in type:.*shape member `x`/m)
     end
 
     it "is refused on an object-backed member, which only the declaration walk sees" do
@@ -196,7 +197,7 @@ RSpec.describe "an `on:` that names a validation context" do
           expects :h, type: Hash, shape: { members: [member], container: Hash }
           def call = nil
         end
-      end.to raise_error(ArgumentError, /`on:` inside type:/)
+      end.to raise_error(ArgumentError, /`on:` isn't allowed in type:/)
     end
   end
 
@@ -265,7 +266,7 @@ RSpec.describe "an `on:` that names a validation context" do
           expects :h, type: Hash, shape: { members: [member], container: Hash }
           def call = nil
         end
-      end.to raise_error(ArgumentError, /shape member `x` does not support on:.*validation context.*no subfield parent/m)
+      end.to raise_error(ArgumentError, /`on:` isn't allowed on shape member `x` in expects :h.*validation context.*no subfield parent/m)
     end
 
     it "is refused on a block-form member" do
@@ -275,7 +276,7 @@ RSpec.describe "an `on:` that names a validation context" do
           expects(:h, type: Hash) { field :x, presence: true, on: :create }
           def call = nil
         end
-      end.to raise_error(ArgumentError, /shape member `x` does not support on:/)
+      end.to raise_error(ArgumentError, /`on:` isn't allowed on shape member `x` in expects :h/)
     end
 
     it "keeps reporting an unknown key as unknown rather than as a context option" do
@@ -295,7 +296,7 @@ RSpec.describe "an `on:` that names a validation context" do
           expects(:h, type: Hash) { field :x, type: String, as: :y }
           def call = nil
         end
-      end.to raise_error(ArgumentError, /does not support as:.*reader-less/m)
+      end.to raise_error(ArgumentError, /`as:` isn't allowed on shape member `x` in expects :h.*reader-less/m)
     end
 
     it "still accepts the tolerance a member's bag may legitimately carry" do
@@ -318,7 +319,7 @@ RSpec.describe "an `on:` that names a validation context" do
           exposes :v, presence: true, on: :create
           def call = expose(v: "x")
         end
-      end.to raise_error(ArgumentError, /exposes does not support `on:` on \["v"\].*no subfield parent.*no ActiveModel validation contexts/m)
+      end.to raise_error(ArgumentError, /\A`on:` isn't allowed on exposes :v — drop it.*no subfield parent.*no ActiveModel validation contexts/m)
     end
 
     it "is refused whatever the value, since nothing reads it either way" do
@@ -328,7 +329,7 @@ RSpec.describe "an `on:` that names a validation context" do
           exposes :v, presence: true, on: nil
           def call = expose(v: "x")
         end
-      end.to raise_error(ArgumentError, /exposes does not support `on:`/)
+      end.to raise_error(ArgumentError, /`on:` isn't allowed on exposes :v/)
     end
 
     it "leaves an ordinary exposes untouched" do
@@ -355,7 +356,7 @@ RSpec.describe "an `on:` that names a validation context" do
           exposes :v, presence: true, on: :create
           def call = expose(v: "x")
         end
-      end.to raise_error(ArgumentError, /exposes does not support `on:`/)
+      end.to raise_error(ArgumentError, /`on:` isn't allowed on exposes :v/)
     ensure
       Axn::Extensions.config.registered_field_metadata_keys.delete(:on)
     end

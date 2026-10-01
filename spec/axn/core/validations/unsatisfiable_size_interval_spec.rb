@@ -264,7 +264,7 @@ RSpec.describe "a declaration whose admissible sizes form an empty interval" do
       [["an Array-backed set", [[]]], ["a Hash-backed set", { [] => 1 }], ["a Set-backed set", Set[[]]]].each do |label, set|
         it "refuses #{label} alike" do
           expect { declare(type: Array, inclusion: { in: set }) }
-            .to raise_error(ArgumentError, /inclusion: on :f can never match/)
+            .to raise_error(ArgumentError, /inclusion: on expects :f can never match/)
         end
 
         it "keeps #{label} once the floor it collides with is dropped" do
@@ -784,7 +784,7 @@ RSpec.describe "a declaration whose admissible sizes form an empty interval" do
 
     it "refuses a floor above its own ceiling, as the block form does" do
       expect { raw_member({ type: { klass: Array }, length: { minimum: 3, maximum: 2 } }) }
-        .to raise_error(ArgumentError, /shape member `m` admits no value at all/)
+        .to raise_error(ArgumentError, /shape member `m` in expects :bag admits no value at all/)
     end
 
     # A raw member's bag is the author's own and carries no inferred presence check, so the non-emptiness

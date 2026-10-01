@@ -34,7 +34,7 @@ RSpec.describe "coerce: DSL" do
 
     it "raises when coerce: and type: are combined" do
       expect { build_axn { expects :date, coerce: Date, type: Date } }
-        .to raise_error(ArgumentError, /coerce: and type: cannot be combined/)
+        .to raise_error(ArgumentError, /`coerce:` isn't allowed beside `type:` on expects :date/)
     end
 
     it "raises when coerce: is given a boolean at the top level" do
@@ -72,7 +72,7 @@ RSpec.describe "coerce: DSL" do
   describe "boundary" do
     it "rejects coerce: on exposes" do
       expect { build_axn { exposes :date, coerce: Date } }
-        .to raise_error(ArgumentError, /coerce: is not supported on exposes/)
+        .to raise_error(ArgumentError, /`coerce:` isn't allowed on exposes :date — drop it/)
     end
 
     it "accepts coerce: on a subfield (kwarg parity) and coerces the wire string" do
@@ -107,7 +107,7 @@ RSpec.describe "coerce: DSL" do
             field :when, coerce: Date
           end
         end
-      end.to raise_error(ArgumentError, /coerce: is not supported on a shape member/)
+      end.to raise_error(ArgumentError, /`coerce:` isn't allowed on shape member `when` in expects :payload/)
     end
   end
 

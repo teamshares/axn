@@ -1,5 +1,8 @@
 # frozen_string_literal: true
 
+require "axn/core/contract/declaration_label"
+require "axn/internal/identity"
+require "axn/internal/rendering"
 require "axn/internal/subfield_tree"
 require "axn/internal/reflection/schema"
 
@@ -78,13 +81,14 @@ module Axn
           # joining one into this message raw would raise Encoding::CompatibilityError from the reporting.
           crossed = path.wire_path[0..reader_index].map { |s| Axn::Internal::Reflection::PropertyNames.renderable_label(s) }.join(".")
           raise ArgumentError,
-                "subfield #{config.field.inspect} (on #{config.on.inspect}) reads through wire path " \
+                "#{Axn::Core::Contract::DeclarationLabel.subfield(config)} reads through wire path " \
                 "#{crossed.inspect}, which two routes declared — they answer to " \
                 "#{readers.map(&:inspect).join(' and ')}, and a dotted path names the wire NODE rather than " \
                 "either route, so only declaration order decides which route's value is read (its " \
                 "`preprocess:`, `default:` and `model:` included). Declare that wire key once, split the " \
                 "routes onto distinct wire keys, or anchor this subfield on the route you mean " \
-                "(#{readers.map { |r| "`on: #{r.inspect}`" }.join(' or ')})."
+                "(#{readers.map { |r| "`on: #{r.inspect}`" }.join(' or ')})." \
+                "#{Axn::Core::Contract::DeclarationLabel.found_while(Axn::Core::Contract::DeclarationLabel.subfield(config))}"
         end
 
         # The UNANSWERABLE-SEGMENT check: a subfield whose resolution provably cannot traverse some
@@ -123,12 +127,14 @@ module Axn
         end
 
         def raise_unanswerable!(config, blocker, segment)
-          types = Axn::Internal::Reflection::Schema.object_type_branches(blocker).map { |b| b.is_a?(Class) ? b.name : b.inspect }.join(", ")
+          types = Axn::Internal::Reflection::Schema.object_type_branches(blocker).map do |branch|
+            Axn::Internal::Identity.kind?(branch, ::Module) ? Axn::Internal::Rendering.stable_module_name(branch) : branch.inspect
+          end.join(", ")
           raise ArgumentError,
-                "subfield #{config.field.inspect} (on #{config.on.inspect}) can never resolve: segment #{segment.inspect} " \
+                "#{Axn::Core::Contract::DeclarationLabel.subfield(config)} can never resolve: segment #{segment.inspect} " \
                 "is read from #{blocker.field.inspect}, declared #{types}, which cannot answer it (no key access, no such " \
                 "method) — no contract-valid input ever reaches this subfield. Make #{blocker.field.inspect} object-shaped, " \
-                "or drop the subfield."
+                "or drop the subfield.#{Axn::Core::Contract::DeclarationLabel.found_while(Axn::Core::Contract::DeclarationLabel.subfield(config))}"
         end
 
         # Families 1+3: a statically-declared nil-tolerance (allow_nil:/optional:/allow_blank:/
@@ -224,15 +230,17 @@ module Axn
                        else
                          ""
                        end
+          declared = config.on.nil? ? "expects #{name}" : Axn::Core::Contract::DeclarationLabel.subfield(config)
           raise ArgumentError,
-                "#{name} is declared nil-tolerant (allow_nil:/optional:/allow_blank:, or an untyped " \
+                "#{declared} is declared nil-tolerant (allow_nil:/optional:/allow_blank:, or an untyped " \
                 "presence: false), but " \
                 "#{stranded || 'its subtree'} is required and nothing rescues an omitted #{name} — " \
                 "the tolerance can never be exercised (every nil/omitted #{name} fails validation). " \
                 "Drop the tolerance on #{name}, or mark #{stranded || 'the subtree'} optional: or give it a " \
                 "default: (declare rescuing defaults BEFORE the dependent subfield). If it is only required when " \
                 "#{name} is supplied, gate it conditionally: `expects ..., if: -> { " \
-                "#{Axn::Internal::Reflection::PropertyNames.renderable_label(owner)}.present? }`.#{model_hint}"
+                "#{Axn::Internal::Reflection::PropertyNames.renderable_label(owner)}.present? }`.#{model_hint}" \
+                "#{Axn::Core::Contract::DeclarationLabel.found_while(declared)}"
         end
       end
     end

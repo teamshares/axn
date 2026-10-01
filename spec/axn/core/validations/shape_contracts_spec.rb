@@ -150,7 +150,7 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
             end
           end
         end
-      end.to raise_error(ArgumentError, "a shape block can only be declared on a single field")
+      end.to raise_error(ArgumentError, "a shape block isn't allowed on several members at once in expects :payload — declare it on a single member.")
     end
 
     # Codex review, PR #272: a bare positional was REQUIRED before `field` went variadic, so
@@ -164,7 +164,7 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
             field type: String
           end
         end
-      end.to raise_error(ArgumentError, "field requires at least one name")
+      end.to raise_error(ArgumentError, "`field` requires at least one name in expects :payload")
     end
   end
 
@@ -321,7 +321,7 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
               field :secret, type: String, opt => value
             end
           end
-        end.to raise_error(ArgumentError, /does not support/)
+        end.to raise_error(ArgumentError, /isn't allowed on shape member/)
       end
     end
 
@@ -336,7 +336,7 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
               field :secret, type: String, opt => :renamed
             end
           end
-        end.to raise_error(ArgumentError, /shape member `secret` does not support.*reader/m)
+        end.to raise_error(ArgumentError, /isn't allowed on shape member `secret` in expects :items.*reader/m)
       end
     end
   end
@@ -573,19 +573,19 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
 
       it "rejects an absent members list" do
         expect { declared_with({ container: Hash }) }
-          .to raise_error(ArgumentError, /a raw `shape:` must supply `members:`.*do … end/m)
+          .to raise_error(ArgumentError, /a raw `shape:` on expects :payload must supply `members:`.*do … end/m)
       end
 
       it "rejects an explicit nil members list on the same terms" do
         expect { declared_with({ members: nil, container: Hash }) }
-          .to raise_error(ArgumentError, /a raw `shape:` must supply `members:`/)
+          .to raise_error(ArgumentError, /a raw `shape:` on expects :payload must supply `members:`/)
       end
 
       it "names the member carrying a malformed nested shape" do
         nested = Axn::Core::Contract::ShapeConfig.new(field: :a, validations: { type: { klass: Hash }, shape: { container: Hash } })
 
         expect { declared_with({ members: [nested], container: Hash }) }
-          .to raise_error(ArgumentError, /a raw `shape:` at shape member `a` must supply `members:`/)
+          .to raise_error(ArgumentError, /a raw `shape:` at shape member `a` in expects :payload must supply `members:`/)
       end
 
       # An empty list is a real declaration — pointless, since only the container type then constrains the
@@ -760,7 +760,7 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
       # declaration is. It used to declare cleanly and raise the same ArgumentError on every call.
       it "rejects a `validate:` Hash carrying no callable at declaration" do
         expect { declared_with({ validate: { inclusion: { in: [1] } } }) }
-          .to raise_error(ArgumentError, /`validate:` expects a callable/)
+          .to raise_error(ArgumentError, /`validate:` on shape member `m` in expects :payload needs a callable/)
       end
 
       # `model:` is the one shorthand a member has no meaning for — it resolves a record and exposes a
@@ -769,7 +769,7 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
       # element in place. Before, it declared cleanly and failed every call with `must supply :klass`.
       it "rejects `model:` at declaration, as the block form does" do
         expect { declared_with({ model: Struct.new(:id) }) }
-          .to raise_error(ArgumentError, /shape member `m` does not support model:.*type: Klass/m)
+          .to raise_error(ArgumentError, /`model:` isn't allowed on shape member `m` in expects :payload — use `type: Klass`/m)
       end
 
       # `confirmation:` needs a sibling to compare against and a per-member requiredness gate that can name
@@ -778,7 +778,7 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
       # form refuses it, rather than expanded into a validator that raises NoMethodError on every call.
       it "rejects `confirmation:` at declaration, as the block form does" do
         expect { declared_with({ confirmation: true }) }
-          .to raise_error(ArgumentError, /shape member `m` does not support confirmation:.*on: :<parent>/m)
+          .to raise_error(ArgumentError, /`confirmation:` isn't allowed on shape member `m` in expects :payload.*on: :<parent>/m)
       end
 
       # Expanding a shorthand is only half of what canonicalizing a bag is for: the compatibility guards that
@@ -788,14 +788,14 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
       # the constraint simply never applies. It declared cleanly and every call succeeded.
       it "rejects `of:` beside a `type:` that is neither Array nor Hash, with the field path's own message" do
         expect { declared_with({ type: String, of: String }) }
-          .to raise_error(ArgumentError, "of: requires type: Array or Hash (got [String])")
+          .to raise_error(ArgumentError, "of: requires type: Array or Hash on shape member `m` in expects :payload (got [String])")
       end
 
       # Same guard, the other spelling of the same mistake: with no `type:` at all there is no container to read
       # the constraint against, so the member accepted every value it was declared to constrain.
       it "rejects a bare `of:` with no `type:`, as the field path does" do
         expect { declared_with({ of: String }) }
-          .to raise_error(ArgumentError, "of: requires type: Array or Hash (got [])")
+          .to raise_error(ArgumentError, "of: requires type: Array or Hash on shape member `m` in expects :payload (got [])")
       end
 
       # The constrains-nothing half of the same pair, reached through the expansion (`of: nil` expands to
@@ -803,7 +803,7 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
       # every call, which is the field path's message arriving at the wrong time and at the wrong person.
       it "rejects `of: nil` at declaration, where it used to raise on every call" do
         expect { declared_with({ type: Array, of: nil }) }
-          .to raise_error(ArgumentError, /\Aof: must constrain something — name the contents' class with `klass:`/)
+          .to raise_error(ArgumentError, /\Aof: must constrain something on shape member `m` in expects :payload — name the contents' class with `klass:`/)
       end
 
       # `of: false` is not `of: nil`: it expands to `{ klass: false }`, which NAMES something, so the
@@ -812,11 +812,14 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
       # the bag grammar's own question — is this a type the runtime can hold a value to? — so it is refused
       # where every bag is judged, and both routes reach it because a member is held to what a field is.
       it "rejects `of: false` at declaration on a member exactly as on a field" do
-        message = "of: klass: must name a type — a Class, a union of them, or one of " \
-                  ":boolean, :uuid, :params (got a value of class FalseClass)"
+        message = lambda { |on|
+          "of: klass: must name a type on #{on} — a Class, a union of them, or one of " \
+            ":boolean, :uuid, :params (got a value of class FalseClass)"
+        }
 
-        expect { declared_with({ type: Array, of: false }) }.to raise_error(ArgumentError, message)
-        expect { build_axn { expects :m, type: Array, of: false } }.to raise_error(ArgumentError, message)
+        expect { declared_with({ type: Array, of: false }) }
+          .to raise_error(ArgumentError, message.call("shape member `m` in expects :payload"))
+        expect { build_axn { expects :m, type: Array, of: false } }.to raise_error(ArgumentError, message.call("expects :m"))
       end
 
       # A bare `type:` naming a LIST is expanded around a copy of that list, since the detach pass runs first —
@@ -907,14 +910,14 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
 
       it "rejects a non-class nested `container:` at declaration, with the field path's own message" do
         expect { declared_with({ type: Hash, shape: { members: [], container: :junk } }) }
-          .to raise_error(ArgumentError, /a shape's `container:` must be a class \(got :junk\)/)
+          .to raise_error(ArgumentError, /a shape's `container:` must be a class on shape member `m` in expects :payload \(got :junk\)/)
       end
 
       it "rejects one nested two levels down just the same" do
         deep = Axn::Core::Contract::ShapeConfig.new(field: :deep, validations: { type: Hash, shape: { members: [], container: :junk } })
 
         expect { declared_with({ type: Hash, shape: { members: [deep], container: Hash } }) }
-          .to raise_error(ArgumentError, /a shape's `container:` must be a class \(got :junk\)/)
+          .to raise_error(ArgumentError, /a shape's `container:` must be a class on shape member `deep` in expects :payload \(got :junk\)/)
       end
 
       # Derivation reports the field path's declaration error when there is nothing structured to derive from,
@@ -933,8 +936,8 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
 
         expect { declared_with({ type: [RaisingInspectType, Hash], shape: { members: [leaf] } }) }
           .to raise_error(ArgumentError,
-                          "a shape block requires a single structured type: (Array, Hash, or a class) — " \
-                          "got [RaisingInspectType, Hash]")
+                          "a shape block requires a single structured type: (Array, Hash, or a class) on shape member " \
+                          "`m` in expects :payload — got [RaisingInspectType, Hash]")
       end
 
       # A token that is neither a class nor a pseudo-type has no name to read, so it is described by its own
@@ -946,8 +949,8 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
       it "describes a non-class token by its class instead of inspecting it" do
         expect { declared_with({ type: ["Hash", Hash], shape: { members: [leaf] } }) }
           .to raise_error(ArgumentError,
-                          "type: must name a type — a Class, a union of them, or one of :boolean, :uuid, :params " \
-                          "(got a value of class String)")
+                          "type: must name a type on shape member `m` in expects :payload — a Class, a union of " \
+                          "them, or one of :boolean, :uuid, :params (got a value of class String)")
       end
 
       # The `container:` a raw `shape:` supplies is the CALLER's object, and `container == Array` dispatches
@@ -1075,14 +1078,15 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
       %i[default preprocess].each do |opt|
         it "gives #{opt}: the block form's own reason rather than the unknown-key message" do
           expect { declared_with({ opt => true, type: String }) }
-            .to raise_error(ArgumentError, %r{shape member `m` does not support #{opt}: \(shape blocks declare validation/schema only\)})
+            .to raise_error(ArgumentError,
+                            /`#{opt}:` isn't allowed on shape member `m` in expects :payload — drop it; a shape member declares validation and schema only\./)
         end
       end
 
       %i[as prefix].each do |opt|
         it "gives #{opt}: the reader-less reason" do
           expect { declared_with({ opt => :renamed, type: String }) }
-            .to raise_error(ArgumentError, /shape member `m` does not support #{opt}:.*reader-less/m)
+            .to raise_error(ArgumentError, /`#{opt}:` isn't allowed on shape member `m` in expects :payload.*reader-less/m)
         end
       end
 
@@ -1091,17 +1095,17 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
       # reached ActiveModel as a validator, and the bag spelling was accepted and silently did nothing.
       it "refuses a top-level `coerce:`" do
         expect { declared_with({ coerce: Integer }) }
-          .to raise_error(ArgumentError, /coerce: is not supported on a shape member/)
+          .to raise_error(ArgumentError, /`coerce:` isn't allowed on shape member `m` in expects :payload/)
       end
 
       it "refuses the `type: { coerce: true }` spelling, which used to be silently inert" do
         expect { declared_with({ type: { klass: Integer, coerce: true } }) }
-          .to raise_error(ArgumentError, /coerce: is not supported on a shape member/)
+          .to raise_error(ArgumentError, /`coerce:` isn't allowed on shape member `m` in expects :payload/)
       end
 
       it "refuses one two levels down" do
         expect { declared_two_deep({ coerce: Integer }) }
-          .to raise_error(ArgumentError, /coerce: is not supported on a shape member/)
+          .to raise_error(ArgumentError, /`coerce:` isn't allowed on shape member `deep` in expects :payload/)
       end
 
       it "leaves `coerce: false` the legal no-op it is on a field" do
@@ -1129,7 +1133,7 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
 
       it "refuses strict:, which names a raising mode axn does not have" do
         expect { declared_with({ type: String, strict: true }) }
-          .to raise_error(ArgumentError, /`strict:` inside the declaration on shape member `m`/)
+          .to raise_error(ArgumentError, /`strict:` isn't allowed on shape member `m` in expects :payload/)
       end
 
       it "leaves a member's own attributes alone — they were never bag keys" do
@@ -1145,7 +1149,7 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
       # unknown key — and it accepts the member options the raw route cannot take in a bag.
       it "leaves the block form's own verdicts unchanged" do
         expect { build_axn { expects(:payload, type: Hash) { field :m, tpye: String } } }
-          .to raise_error(ArgumentError, /Unknown key\(s\) :tpye in field declaration/)
+          .to raise_error(ArgumentError, /Unknown key\(s\) :tpye on shape member `m` in expects :payload/)
         expect(build_axn { expects(:payload, type: Hash) { field :m, type: String, optional: true, sensitive: true } }
                  .call(payload: { m: "x" })).to be_ok
       end
@@ -1265,10 +1269,10 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
       it "refuses a container: other than Array, which would leave every other element unchecked" do
         sku = member
         expect { build_axn { expects :rows, type: Array, shape: { container: Hash, members: [sku] } } }
-          .to raise_error(ArgumentError, /`shape:` on :rows names `container: Hash` beside `type: Array`/)
+          .to raise_error(ArgumentError, /`container: Hash` isn't allowed in `shape:` on expects :rows beside `type: Array`/)
         expect do
           build_axn { expects(:o, type: Hash) { field :rows, type: Array, shape: { container: Hash, members: [sku] } } }
-        end.to raise_error(ArgumentError, /`shape:` on shape member `rows` names `container: Hash` beside `type: Array`/)
+        end.to raise_error(ArgumentError, /`container: Hash` isn't allowed in `shape:` on shape member `rows` in expects :o beside `type: Array`/)
       end
 
       it "refuses it beside a block, which would replace it" do
@@ -1277,7 +1281,7 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
           build_axn do
             expects(:rows, type: Array, shape: { members: [sku] }) { field :sku, type: String }
           end
-        end.to raise_error(ArgumentError, /\A`shape:` on :rows isn't allowed beside a `do ... end` block — declare the members once, in the block\./)
+        end.to raise_error(ArgumentError, /\A`shape:` on expects :rows isn't allowed beside a `do ... end` block — declare the members once, in the block\./)
       end
     end
 
@@ -1288,14 +1292,14 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
       it "refuses it beside type: Hash" do
         sku = member
         expect { build_axn { expects :row, type: Hash, shape: { container: Array, members: [sku] } } }
-          .to raise_error(ArgumentError, /`shape:` on :row names `container: Array`/)
+          .to raise_error(ArgumentError, /`container: Array` isn't allowed in `shape:` on expects :row/)
       end
 
       it "refuses it beside a plain class" do
         sku = member
         point = Struct.new(:sku)
         expect { build_axn { expects :row, type: point, shape: { container: Array, members: [sku] } } }
-          .to raise_error(ArgumentError, /`shape:` on :row names `container: Array`/)
+          .to raise_error(ArgumentError, /`container: Array` isn't allowed in `shape:` on expects :row/)
       end
 
       it "refuses it on a raw member's own nested shape" do
@@ -1303,7 +1307,7 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
           field: :inner, validations: { type: Hash, shape: { container: Array, members: [member] } },
         )
         expect { build_axn { expects :row, type: Hash, shape: { members: [outer] } } }
-          .to raise_error(ArgumentError, /`shape:` on shape member `inner` names `container: Array`/)
+          .to raise_error(ArgumentError, /`container: Array` isn't allowed in `shape:` on shape member `inner` in expects :row/)
       end
     end
 
@@ -1335,7 +1339,7 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
     # declared class does not imply leaves the members unchecked on values the class admits. Refused at every
     # position a raw shape can be written; a union whose classes each either are the container or never are stands.
     describe "a hand-written container: the declared class does not imply" do
-      let(:head) { "isn't allowed in `shape:` on :val" }
+      let(:head) { "isn't allowed in `shape:` on expects :val" }
 
       it "refuses it with no type:, where every value that is not the container skips the members" do
         sku = member
@@ -1448,13 +1452,14 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
         sku = member
         raw = Axn::Core::Contract::ShapeConfig.new(field: :val, validations: { shape: { container: Hash, members: [sku] } })
         expect { build_axn { expects(:o, type: Hash) { field :val, shape: { container: Hash, members: [sku] } } } }
-          .to raise_error(ArgumentError, /\A`container: Hash` isn't allowed in `shape:` on shape member `val` without a `type:`/)
+          .to raise_error(ArgumentError, /\A`container: Hash` isn't allowed in `shape:` on shape member `val` in expects :o without a `type:`/)
         expect { build_axn { expects :o, type: Hash, shape: { members: [raw] } } }
-          .to raise_error(ArgumentError, /\A`container: Hash` isn't allowed in `shape:` on shape member `val` without a `type:`/)
+          .to raise_error(ArgumentError, /\A`container: Hash` isn't allowed in `shape:` on shape member `val` in expects :o without a `type:`/)
         expect { build_axn { expects :val, type: Array, of: { shape: { container: Hash, members: [sku] } } } }
-          .to raise_error(ArgumentError, /\A`container: Hash` isn't allowed in `shape:` inside the `of:` bag on :val without a `klass:` — add `klass: Hash`\./)
+          .to raise_error(ArgumentError,
+                          /\A`container: Hash` isn't allowed in `shape:` inside the `of:` bag on expects :val without a `klass:` — add `klass: Hash`\./)
         expect { build_axn { expects :val, type: Hash, of: { values: { klass: Array, shape: { container: Hash, members: [sku] } } } } }
-          .to raise_error(ArgumentError, /inside the `of: \{ values: … \}` bag on :val beside `klass: Array` — to describe what is inside each element/)
+          .to raise_error(ArgumentError, /inside the `of: \{ values: … \}` bag on expects :val beside `klass: Array` — to describe what is inside each element/)
       end
 
       # The field twin (`type: Array` beside `container: Hash`) is refused by the distributing-shape guard; the bag
