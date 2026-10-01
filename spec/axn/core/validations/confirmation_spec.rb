@@ -811,8 +811,24 @@ RSpec.describe "confirmation:" do
                 expects :x, on: :a_confirmation, as: :b_confirmation, type: Hash
               end
             end
-          end.to raise_error(ArgumentError, /circular on: chain.*:x.*:y|circular on: chain.*:y.*:x/m)
+          end.to raise_error(ArgumentError) { |error|
+            x = "expects a_confirmation.x (read as :b_confirmation)"
+            y = "expects b_confirmation.y (read as :a_confirmation)"
+            route = order == :forwards ? "#{x} -> #{y} -> expects a_confirmation.x" : "#{y} -> #{x} -> expects b_confirmation.y"
+            expect(error.message).to start_with("`on:` loops back on itself — #{route}: each is declared on the reader the next one is read as")
+          }
         end
+      end
+
+      # Each link names its path the way its declaration's label would, so a segment its Symbol would quote is quoted.
+      it "quotes a path segment in the loop exactly when its Symbol would be" do
+        expect do
+          build_axn do
+            expects :alpha, as: :a, type: Hash, confirmation: true
+            expects :"x y", on: :a_confirmation, as: :a_confirmation, type: Hash
+          end
+        end.to raise_error(ArgumentError,
+                           /\A`on:` loops back on itself — expects a_confirmation\."x y" \(read as :a_confirmation\) -> expects a_confirmation\."x y":/)
       end
 
       it "rejects a subfield declared on the very name it takes over" do
@@ -821,7 +837,7 @@ RSpec.describe "confirmation:" do
             expects :alpha, as: :a, type: Hash, confirmation: true
             expects :x, on: :a_confirmation, as: :a_confirmation, type: Hash
           end
-        end.to raise_error(ArgumentError, /circular on: chain/)
+        end.to raise_error(ArgumentError, /\A`on:` loops back on itself — expects a_confirmation\.x \(read as :a_confirmation\) -> expects a_confirmation\.x:/)
       end
     end
 

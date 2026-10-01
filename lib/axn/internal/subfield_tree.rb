@@ -47,6 +47,9 @@ module Axn
       # (Named to be unmistakable next to the public Axn::Result.)
       ResolutionResult = Data.define(:roots, :deep_paths, :index, :reader_owners)
 
+      SYMBOL_INSPECT = ::Symbol.instance_method(:inspect)
+      private_constant :SYMBOL_INSPECT
+
       module_function
 
       def build(field_configs, subfield_configs)
@@ -139,13 +142,27 @@ module Axn
       # at a top-level field. Rejected rather than left out of the tree, because a config with no resolved
       # position falls back to resolving `on:` by reader dispatch at runtime — which around a loop is each
       # member calling the next until the stack runs out.
+      #
+      # The loop spans several declarations, so no one declaration's label names it: each link is written the way
+      # its own declaration's label would write it (`expects a_confirmation.x`), plus the reader it is read as,
+      # which is the name the previous link is anchored on.
       def raise_circular_anchor!(chain, config)
         loop_start = chain.index { |c| c.equal?(config) }
-        route = chain[loop_start..].map { |c| "#{c.field.inspect} (on: #{c.on.inspect})" }.join(" -> ")
+        links = chain[loop_start..].map { |c| "#{circular_link(c)} (read as #{SYMBOL_INSPECT.bind_call(c.reader_as.to_sym)})" }
+        route = [*links, circular_link(config)].join(" -> ")
         raise ArgumentError,
-              "circular on: chain: #{route} -> #{config.field.inspect}. Each of these is declared on a reader the " \
-              "next one owns, so the chain never reaches a top-level field and none of them names a value to read " \
-              "from. Anchor one of them on a field declared outside the loop."
+              "`on:` loops back on itself — #{route}: each is declared on the reader the next one is read as, so the " \
+              "chain never reaches a top-level field and none of them names a value to read from. Anchor one of " \
+              "them on a field declared outside the loop."
+      end
+
+      # A subfield as its declaration's label names it (`Core::Contract::DeclarationLabel`), each path segment
+      # quoted exactly when its Symbol would be. Every segment here is a Symbol, for which the label's renderer
+      # (`PropertyNames.inspect_field_name`) is the bound `Symbol#inspect` alone — bound here directly because
+      # this module sits below the layer that renderer lives in.
+      def circular_link(config)
+        segments = [*config.on.to_s.split("."), config.field].map { |segment| SYMBOL_INSPECT.bind_call(segment.to_sym).delete_prefix(":") }
+        "expects #{segments.join('.')}"
       end
 
       # THE index of "which config answers to this reader NAME" — reader name (Symbol) => that config.
