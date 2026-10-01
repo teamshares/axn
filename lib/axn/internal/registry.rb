@@ -9,25 +9,22 @@ module Axn
       class DuplicateError < StandardError; end
 
       class << self
+        # A built-in entry is the constant an entry file in the registry's directory is named for:
+        # `adapters/sidekiq.rb` contributes `Adapters::Sidekiq` as `:sidekiq`. Nothing else the registry can
+        # see is an entry: not a constant it inherits from this class (`NotFound`), not one it defines itself,
+        # not a helper an entry file defines beside its entry, and not a shared helper, which lives in a
+        # `_`-prefixed file (`_base.rb`) that is loaded but contributes no entry.
         def built_in
           @built_in ||= begin
-            # Get the directory name from the class name (e.g., "Strategies" -> "strategies")
-            dir_name = name.split("::").last.underscore
+            # The directory is named for the class ("MountingStrategies" -> "mounting_strategies"), split by hand
+            # because `underscore` reads the host's inflections too.
+            dir_name = name.split("::").last.gsub(/(?<=[a-z\d])(?=[A-Z])/, "_").downcase
 
-            # Load all files from the directory
             files = ::Dir[File.join(registry_directory, dir_name, "*.rb")]
             files.each { |file| require file }
 
-            # Get all modules defined within this class
-            constants = self.constants.map { |const| const_get(const) }
-            items = select_constants_to_load(constants)
-
-            # Convert module names to keys
-            items.to_h do |item|
-              name = item.name.split("::").last
-              key = name.underscore.to_sym
-              [key, item]
-            end
+            entry_names = files.map { |file| File.basename(file, ".rb") }.reject { |base| base.start_with?("_") }
+            entry_names.to_h { |base| [base.to_sym, _entry_constant(base)] }
           end
         end
 
@@ -78,9 +75,20 @@ module Axn
           raise NotImplementedError, "Subclasses must implement registry_directory method"
         end
 
-        def select_constants_to_load(constants)
-          # Subclasses can override this to select which constants to load
-          constants.select { |const| const.is_a?(Module) }
+        # The registry's OWN module (never an inherited constant) that an entry file is named for, matched
+        # case- and underscore-blind (`active_job.rb` names `ActiveJob`) rather than through `camelize`, whose
+        # result depends on the host's process-wide inflections (`acronym("AXN")` camelizes `axn` to `AXN`).
+        # None, or more than one, is a layout mistake, refused at load rather than listing a guess.
+        def _entry_constant(base)
+          wanted = base.downcase.delete("_")
+          candidates = constants(false).select { |const| const.to_s.downcase.delete("_") == wanted }
+                                       .map { |const| const_get(const, false) }
+                                       .grep(Module)
+          return candidates.first if candidates.one?
+
+          raise NotImplementedError,
+                "#{name}: #{base}.rb must define exactly one module on #{name} named for it " \
+                "(a helper belongs in a `_`-prefixed file, which contributes no entry)"
         end
       end
     end
