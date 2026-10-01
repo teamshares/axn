@@ -184,9 +184,9 @@ In this case:
 | You need Sidekiq-specific features (batches, etc.) | You're using non-Sidekiq backend |
 | Performance is critical | You prefer Rails conventions |
 
-## Discarded Job Handling (Rails 7.1+)
+## Discarded Job Handling
 
-On Rails 7.1+, Axn automatically registers an `after_discard` callback on the proxy job class. This triggers `on_exception` when:
+Axn automatically registers an `after_discard` callback on the proxy job class. This triggers `on_exception` when:
 
 - `discard_on` catches an exception
 - `retry_on` exhausts all retries
@@ -220,10 +220,6 @@ Axn.configure do |c|
   end
 end
 ```
-
-::: warning
-Rails 7.1+ is required for `:first_and_exhausted` and `:only_exhausted` modes with the ActiveJob adapter. These modes rely on `after_discard` which was introduced in Rails 7.1. On older Rails versions, Axn will raise an error if you try to use these modes with ActiveJob.
-:::
 
 ::: warning
 With `:only_exhausted` mode, non-retryable errors should use **`discard_on`** so Rails calls `after_discard` and the exception is reported. If you use **`retry_on`** with a block that swallows the exception (using `next` without re-raising), Rails does **not** call `after_discard`, so those exceptions will not be reported in `:only_exhausted` mode.

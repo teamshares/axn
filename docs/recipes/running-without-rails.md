@@ -71,7 +71,7 @@ See [Authoring a Tool-Adapter Gem](/recipes/authoring-tool-adapters) for how an 
 
 ## `on_success` timing
 
-With ActiveRecord 7.2+ loaded, `on_success` callbacks are deferred to `ActiveRecord.after_all_transactions_commit`, so a callback never fires for work that later rolls back. Without ActiveRecord — or on an older version — there is no commit to hook, and callbacks **dispatch inline**.
+With ActiveRecord loaded, `on_success` callbacks are deferred to `ActiveRecord.after_all_transactions_commit`, so a callback never fires for work that later rolls back. Without ActiveRecord there is no commit to hook, and callbacks **dispatch inline**.
 
 If your side effects must not fire for rolled-back work, that ordering is yours to arrange.
 
