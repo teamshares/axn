@@ -1590,6 +1590,23 @@ RSpec.describe Axn::Internal::Reflection::Schema do
 
       def id_residues(klass) = klass.input_schema_residues.select { |r| r.path == %i[payload company_id] }.map(&:summary)
 
+      # An anonymous class already renders as a parenthesized placeholder, which a second pair would double.
+      it "names an anonymous id_type: once, without doubling its placeholder's parentheses" do
+        klass = build_axn do
+          expects :company, model: { klass: Struct.new(:id), finder: :new, id_type: Class.new }
+        end
+        summaries = klass.input_schema_residues.map(&:summary)
+
+        expect(summaries).to include(a_string_starting_with("its `id_type:` (anonymous class) has no JSON type"))
+        expect(summaries.join).not_to include("((")
+
+        anon = Class.new
+        anon.const_set(:Inner, Class.new)
+        nested = build_axn { expects :company, model: { klass: Struct.new(:id), finder: :new, id_type: anon::Inner } }
+        expect(nested.input_schema_residues.map(&:summary))
+          .to include(a_string_starting_with("its `id_type:` ((anonymous class)::Inner) has no JSON type"))
+      end
+
       it "names the declared id_type: an object claim replaces" do
         klass = build_axn do
           expects :payload, type: Hash

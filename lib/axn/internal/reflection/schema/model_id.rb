@@ -138,8 +138,19 @@ module Axn
             shape if SCALAR_ID_TYPES.include?(shape[:type])
           end
 
+          # A class named in parentheses, unless its rendering is a bare parenthesized placeholder
+          # (`(anonymous class)`), which a second pair would only double. A name merely starting with one
+          # (`(anonymous class)::Inner`) is still wrapped.
+          def parenthesized_name(mod)
+            name = Axn::Internal::Rendering.stable_module_name(mod)
+            name.match?(BARE_PLACEHOLDER) ? name : "(#{name})"
+          end
+
+          BARE_PLACEHOLDER = /\A\([^()]*\)\z/
+          private_constant :BARE_PLACEHOLDER
+
           def unstated_id_type_residue(id_type)
-            "its `id_type:` (#{Axn::Internal::Rendering.stable_module_name(id_type)}) has no JSON type a lookup token " \
+            "its `id_type:` #{parenthesized_name(id_type)} has no JSON type a lookup token " \
               "can take, so the id's type is not stated"
           end
 
@@ -293,7 +304,7 @@ module Axn
             shape = declared && model_id_type_schema(declared)
             return prop if shape.nil? || projected_types(prop).include?(shape[:type])
 
-            record_residue(prop, "its `id_type:` (#{Axn::Internal::Rendering.stable_module_name(declared)}) is not stated, " \
+            record_residue(prop, "its `id_type:` #{parenthesized_name(declared)} is not stated, " \
                                  "since a nested declaration reads the id as an object")
           end
 
