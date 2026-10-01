@@ -6,7 +6,7 @@ RSpec.describe Axn do
       it "raises" do
         expect { action }.to raise_error(
           ArgumentError,
-          /\A`on: #{on}` isn't allowed on expects #{on}\.\w+ — no such reader exists \(are you sure you've declared a field — or alias — named :#{on}\?\)\z/,
+          /\A`on: :#{on}` isn't allowed on expects #{on}\.\w+ — no such reader exists \(are you sure you've declared a field — or alias — named :#{on}\?\)\z/,
         )
       end
     end

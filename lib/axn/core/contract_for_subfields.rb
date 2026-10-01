@@ -631,8 +631,9 @@ module Axn
             # serve every route: `:baz`, `:a` for a dotted `on: "a.b"` (the segment that is actually missing,
             # not the whole route), `:café`, and `:"bad\xFF"`.
             raise ArgumentError,
-                  "`on: #{_schema_name_label(on)}` isn't allowed on #{_declared_fields_label(fields)} — no such reader " \
-                  "exists (are you sure you've declared a field — or alias — named #{root.inspect}?)"
+                  "`on: #{Axn::Internal::Reflection::PropertyNames.inspect_field_name(on)}` isn't allowed on " \
+                  "#{_declared_fields_label(fields)} — no such reader exists (are you sure you've declared a field — or " \
+                  "alias — named #{root.inspect}?)"
           end
 
           # An ambient subfield's value is framework-supplied (the ambient provider /

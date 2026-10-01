@@ -160,11 +160,16 @@ module Axn
             names = if on.nil?
                       fields.map { |field| PropertyNames.inspect_field_name(field) }
                     else
-                      route = PropertyNames.renderable_label(on)
-                      fields.map { |field| "#{route}.#{PropertyNames.renderable_label(field)}" }
+                      route = on.to_s.split(".").map { |segment| _segment(segment.to_sym) }.join(".")
+                      fields.map { |field| "#{route}.#{_segment(field)}" }
                     end
             "#{direction} #{names.join(', ')}"
           end
+
+          # One path segment, quoted exactly when its Symbol would be — `Symbol#inspect`'s own rule, through the
+          # same seam every declared name is rendered by — without the colon: `payload`, but `"x y"` and `"1x"`,
+          # so `expects "x y".a` cannot be read as two paths.
+          def _segment(name) = PropertyNames.inspect_field_name(name).delete_prefix(":")
         end
 
         PropertyNames = Axn::Internal::Reflection::PropertyNames

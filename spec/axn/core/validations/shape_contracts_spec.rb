@@ -936,8 +936,8 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
 
         expect { declared_with({ type: [RaisingInspectType, Hash], shape: { members: [leaf] } }) }
           .to raise_error(ArgumentError,
-                          "a shape block requires a single structured type: on shape member `m` in expects :payload " \
-                          "(Array, Hash, or a class) — got [RaisingInspectType, Hash]")
+                          "a shape block requires a single structured type: (Array, Hash, or a class) on shape member " \
+                          "`m` in expects :payload — got [RaisingInspectType, Hash]")
       end
 
       # A token that is neither a class nor a pseudo-type has no name to read, so it is described by its own

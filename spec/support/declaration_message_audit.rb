@@ -23,9 +23,10 @@ module DeclarationMessageAudit
   # `block in`/`rescue in`/`ensure in` frame of it, so one call counts once.
   DECLARATION_METHOD = /\A(?:[\w:]+[#.])?(?:expects|exposes)\z/
 
-  # A label in a message: `expects :v`, `exposes :"a.b"`, `expects payload.x`, or a field-name refusal raised
+  # A label in a message: `expects :v`, `exposes :"a.b"`, `expects payload.x`, `expects "x y".a` (a path segment
+  # quoted as its Symbol would be), or a field-name refusal raised
   # before the name could be rendered at all, which names its direction as `` `expects` ``.
-  DIRECTION = /\b(?:expects|exposes) (?::|[^\s.`]+\.)|`(?:expects|exposes)`/
+  DIRECTION = /\b(?:expects|exposes) (?::|"[^"]*"\.|[^\s.`"]+\.)|`(?:expects|exposes)`/
   ADDRESS = /0x\h{4,}/
 
   # How far down a `cause` chain an observed error is searched for the refusal it wraps.

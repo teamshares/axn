@@ -710,7 +710,7 @@ RSpec.describe "declaration-time property name collisions" do
         end.new([String])
 
         expect { build_axn { expects :choice, type: values } }
-          .to raise_error(ArgumentError, /the `type:` on expects :choice container.*defines methods of its own \(`:any\?`, `:initialize`\)/m)
+          .to raise_error(ArgumentError, /the `type:` container on expects :choice.*defines methods of its own \(`:any\?`, `:initialize`\)/m)
       end
 
       it "rejects an of: element-type container on the same terms" do
@@ -724,7 +724,7 @@ RSpec.describe "declaration-time property name collisions" do
         end.new([String])
 
         expect { build_axn { expects :choice, type: Array, of: { klass: values } } }
-          .to raise_error(ArgumentError, /the `of: \{ klass: … \}` on expects :choice container.*defines methods of its own/m)
+          .to raise_error(ArgumentError, /the `of: \{ klass: … \}` container on expects :choice.*defines methods of its own/m)
       end
 
       # `exclusion:` reaches the same detach and the same ActiveModel `include?` — with the verdict inverted, so
@@ -740,7 +740,7 @@ RSpec.describe "declaration-time property name collisions" do
         end
 
         expect { build_axn { expects :choice, exclusion: { in: klass.new(%w[bad]) } } }
-          .to raise_error(ArgumentError, /the `exclusion: \{ in: … \}` on expects :choice container.*defines methods of its own/m)
+          .to raise_error(ArgumentError, /the `exclusion: \{ in: … \}` container on expects :choice.*defines methods of its own/m)
 
         frozen = build_axn { expects :choice, exclusion: { in: klass.new(%w[bad]).freeze } }
         expect(frozen.call(choice: "bad")).not_to be_ok
@@ -1212,7 +1212,8 @@ RSpec.describe "declaration-time property name collisions" do
               expects :par, type: Hash
               expects :a, on: not_a_name, optional: true
             end
-          end.to raise_error(ArgumentError, /\Aon: on expects :a must be a String or Symbol naming a parent reader \(got a value of class #{klass}\)/)
+          end.to raise_error(ArgumentError,
+                             /\A`on:` isn't allowed on expects :a — it must be a String or Symbol naming a parent reader \(got a value of class #{klass}\)/)
         end
       end
 
@@ -1234,7 +1235,7 @@ RSpec.describe "declaration-time property name collisions" do
             expects :par, type: Hash
             expects :a, on: hostile, optional: true
           end
-        end.to raise_error(ArgumentError, /\Aon: on expects :a must be a String or Symbol naming a parent reader/)
+        end.to raise_error(ArgumentError, /\A`on:` isn't allowed on expects :a — it must be a String or Symbol naming a parent reader/)
       end
     end
   end

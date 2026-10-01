@@ -88,7 +88,7 @@ RSpec.shared_examples "can build Axns from callables" do
       { [] => "Array", {} => "Hash", 123 => "Integer", true => "TrueClass", Object.new => "Object" }.each do |not_a_name, klass|
         expect { Axn::Factory.build(-> { 42 }, expose_return_as: not_a_name) }.to raise_error(
           ArgumentError,
-          /\Aexpose_return_as: must be a String or Symbol naming an exposure \(got a value of class #{klass}\)/,
+          /\Aexpose_return_as: isn't allowed — it must be a String or Symbol naming an exposure \(got a value of class #{klass}\)/,
         )
       end
     end
@@ -107,7 +107,7 @@ RSpec.shared_examples "can build Axns from callables" do
       end.new
 
       expect { Axn::Factory.build(-> { 42 }, expose_return_as: hostile) }.to raise_error(
-        ArgumentError, /\Aexpose_return_as: must be a String or Symbol naming an exposure/
+        ArgumentError, /\Aexpose_return_as: isn't allowed — it must be a String or Symbol naming an exposure/
       )
     end
   end

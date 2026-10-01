@@ -67,6 +67,12 @@ RSpec.describe "the declaration message audit" do
       expect(defects('`x:` isn\'t allowed on exposes :"aXb".', label:)).to include(%(names a declaration other than the one it refuses (#{label})))
     end
 
+    it "matches a label with a quoted path segment whole" do
+      label = 'expects "x y".a'
+      expect(defects('inclusion: on expects "x y".a can never match.', label:)).to be_empty
+      expect(defects('inclusion: on expects "x y".ab can never match.', label:)).to include(%(names a declaration other than the one it refuses (#{label})))
+    end
+
     it "refuses to judge against a blank label rather than passing every message" do
       expect { defects("anything", label: " ") }.to raise_error(ArgumentError, /blank declaration label/)
     end

@@ -171,7 +171,7 @@ module Axn
 
           case value
           when ::Hash then validations[key] = detached_option_bag(key, value, locator)
-          when ::Array then validations[key] = detached_option_array(value, "`#{key}:`#{locator}")
+          when ::Array then validations[key] = detached_option_array(value, "`#{key}:`", locator)
           end
         end
       end
@@ -181,7 +181,7 @@ module Axn
         copy = copy_entries(bag)
         copy.each do |option_key, option|
           case option
-          when ::Array then copy[option_key] = detached_option_array(option, "`#{key}: { #{option_key}: … }`#{locator}")
+          when ::Array then copy[option_key] = detached_option_array(option, "`#{key}: { #{option_key}: … }`", locator)
           end
         end
         copy
@@ -253,14 +253,14 @@ module Axn
       # must not run while the declaration error it caused is being built, and both the class name and each
       # method name are rendered like any other name reaching prose (bytes with no UTF-8 rendering, from a
       # constant or from a method name, would otherwise raise while the error is built).
-      def self.detached_option_array(value, label)
+      def self.detached_option_array(value, label, locator = "")
         return value if NativeMethods.frozen?(value)
 
         own = NativeMethods.own_array_methods(value)
         return detached_dup(value) if own.empty?
 
         raise ArgumentError,
-              "the #{label} container (of class #{Axn::Internal::Reflection::PropertyNames.renderable_class_name(value)}) " \
+              "the #{label} container#{locator} (of class #{Axn::Internal::Reflection::PropertyNames.renderable_class_name(value)}) " \
               "defines methods of its " \
               "own (#{describe_own_methods(own)}), so axn cannot copy it. A declared contract is copied at " \
               "declaration so that mutating what you still hold cannot change it — and `dup` copies the " \

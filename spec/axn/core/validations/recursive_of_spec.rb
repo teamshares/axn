@@ -784,15 +784,15 @@ RSpec.describe "recursive of:" do
     it "refuses a shape under a scalar klass:" do
       shape = sku_shape
       expect { build_axn { expects :rows, type: Array, of: { klass: String, shape: } } }
-        .to raise_error(ArgumentError, "a shape inside an `of:` bag requires a single structured klass: on expects :rows " \
-                                       "(Array, Hash, or a class) — got [String]")
+        .to raise_error(ArgumentError, "a shape inside an `of:` bag requires a single structured klass: (Array, Hash, or a class) " \
+                                       "on expects :rows — got [String]")
     end
 
     it "refuses a shape under a union klass:" do
       shape = sku_shape
       expect { build_axn { expects :rows, type: Array, of: { klass: [Hash, Array], shape: } } }
-        .to raise_error(ArgumentError, "a shape inside an `of:` bag requires a single structured klass: on expects :rows " \
-                                       "(Array, Hash, or a class) — got [Hash, Array]")
+        .to raise_error(ArgumentError, "a shape inside an `of:` bag requires a single structured klass: (Array, Hash, or a class) " \
+                                       "on expects :rows — got [Hash, Array]")
     end
 
     # `container: Array` on a bag's shape is not a gate: `ShapeValidator` reads it as "distribute over the
@@ -1198,7 +1198,7 @@ RSpec.describe "recursive of:" do
 
     it "refuses an unknown key inside an axis bag, against the element bag's own whitelist" do
       expect { build_axn { expects :m, type: Hash, of: { values: { klass: Integer, values: Integer } } } }
-        .to raise_error(ArgumentError, /of: does not support values:/)
+        .to raise_error(ArgumentError, /of: on .* does not support values:/)
     end
 
     # A bag INSIDE a union is not the nested-contract spelling — a union names types — so it keeps the
@@ -1483,12 +1483,12 @@ RSpec.describe "recursive of:" do
     # an option nothing reads — the silent no-op the whole `of:` whitelist exists to refuse.
     it "are refused on the values axis, where nothing would read them" do
       expect { build_axn { expects :m, type: Hash, of: { values: { klass: Integer, if: :flag } } } }
-        .to raise_error(ArgumentError, /\Aof: values: does not support if: on expects :m — an axis is the one position/)
+        .to raise_error(ArgumentError, /\A`if:` isn't allowed in `of: \{ values: … \}` on expects :m — drop it/)
     end
 
     it "are refused on the keys axis, naming every offender at once" do
       expect { build_axn { expects :m, type: Hash, of: { keys: { klass: Symbol, if: :flag, unless: :other_flag } } } }
-        .to raise_error(ArgumentError, /\Aof: keys: does not support if:, unless: on expects :m/)
+        .to raise_error(ArgumentError, %r{\A`if:` / `unless:` aren't allowed in `of: \{ keys: … \}` on expects :m})
     end
 
     it "leaves on: to the context-scope guard, which names a different problem" do
@@ -1540,7 +1540,7 @@ RSpec.describe "recursive of:" do
 
     it "still refuses a gate on an axis, since nothing there reads one" do
       expect { build_axn { expects :f, type: Hash, of: { values: { klass: String, if: :flag } } } }
-        .to raise_error(ArgumentError, /of: values: does not support if:/)
+        .to raise_error(ArgumentError, /`if:` isn't allowed in `of: \{ values: … \}`/)
     end
   end
 

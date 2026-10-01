@@ -450,13 +450,13 @@ RSpec.describe Axn::Validators::OfValidator do
     it "rejects a misspelled message: rather than dropping the custom message" do
       expect do
         build_axn { expects :rows, type: Array, of: { klass: String, mesage: "nope" } }
-      end.to raise_error(ArgumentError, /of: does not support mesage:/)
+      end.to raise_error(ArgumentError, /of: on .* does not support mesage:/)
     end
 
     it "names every unsupported key at once" do
       expect do
         build_axn { expects :rows, type: Array, of: { klass: String, wat: 1, huh: 2 } }
-      end.to raise_error(ArgumentError, /of: does not support wat:, huh:/)
+      end.to raise_error(ArgumentError, /of: on .* does not support wat:, huh:/)
     end
 
     it "still accepts the supported keys" do
@@ -510,7 +510,7 @@ RSpec.describe Axn::Validators::OfValidator do
       end.new
 
       expect { build_axn { expects :rows, type: Array, of: { klass: String, hostile => 1 } } }
-        .to raise_error(ArgumentError, /of: does not support a name of class /)
+        .to raise_error(ArgumentError, /of: on .* does not support a name of class /)
     end
 
     it "names a non-class declared type by its class" do
@@ -546,7 +546,7 @@ RSpec.describe Axn::Validators::OfValidator do
 
     it "rejects klass:, pointing at values:" do
       expect { build_axn { expects :counts, type: Hash, of: { klass: Integer } } }
-        .to raise_error(ArgumentError, /of: does not support klass:/)
+        .to raise_error(ArgumentError, /of: on .* does not support klass:/)
     end
 
     it "rejects a bag that constrains nothing" do
@@ -610,7 +610,7 @@ RSpec.describe Axn::Validators::OfValidator do
 
     it "rejects message:, which cannot say which axis failed" do
       expect { build_axn { expects :counts, type: Hash, of: { values: Integer, message: "nope" } } }
-        .to raise_error(ArgumentError, /of: does not support message:/)
+        .to raise_error(ArgumentError, /of: on .* does not support message:/)
     end
 
     # A pseudo-type is a supported spelling on either axis, exactly as it is for `type:` — pinned as the
@@ -834,7 +834,7 @@ RSpec.describe Axn::Validators::OfValidator do
 
     it "rejects values: on an Array, pointing at klass:" do
       expect { build_axn { expects :ids, type: Array, of: { values: Integer } } }
-        .to raise_error(ArgumentError, /of: does not support values:/)
+        .to raise_error(ArgumentError, /of: on .* does not support values:/)
     end
 
     it "rejects a union type:, from which no container can be derived" do
@@ -854,7 +854,7 @@ RSpec.describe Axn::Validators::OfValidator do
             field :counts, type: Hash, of: { klass: Integer }
           end
         end
-      end.to raise_error(ArgumentError, /of: does not support klass:/)
+      end.to raise_error(ArgumentError, /of: on .* does not support klass:/)
     end
   end
 
@@ -906,14 +906,14 @@ RSpec.describe Axn::Validators::OfValidator do
 
     it "refuses a container: naming something other than the declared type:" do
       expect { build_axn { expects :ids, type: Array, of: { klass: Integer, container: Hash } } }
-        .to raise_error(ArgumentError, /of: does not support container:/)
+        .to raise_error(ArgumentError, /of: on .* does not support container:/)
     end
 
     # The map grammar answers it the same way, from its own whitelist: a `container:` disagreeing with the
     # declared `type:` did not come from the derivation, so it is refused as a key the grammar does not carry.
     it "refuses a container: naming something other than the declared type: on a map too" do
       expect { build_axn { expects :counts, type: Hash, of: { values: Integer, container: Array } } }
-        .to raise_error(ArgumentError, /of: does not support container:/)
+        .to raise_error(ArgumentError, /of: on .* does not support container:/)
     end
 
     # The other half of the same rule: the container is DERIVED, so one written out by hand is dropped and

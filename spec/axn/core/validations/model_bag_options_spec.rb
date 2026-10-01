@@ -148,7 +148,7 @@ RSpec.describe "a gate or tolerance key inside a model: bag" do
 
   it "advertises only the keys a model: bag accepts on an unknown key" do
     expect { build_axn { exposes :company, model: { klass: Company, bogus: 1 } } }
-      .to raise_error(ArgumentError, "model: does not support bogus: on exposes :company (supported: klass:, finder:, not_found_on:, id_type:, message:)")
+      .to raise_error(ArgumentError, "model: on exposes :company does not support bogus: (supported: klass:, finder:, not_found_on:, id_type:, message:)")
   end
 
   # This refusal comes first; the bag's `on:`/`except_on:`/`strict:` refusals still own a bag without these keys.

@@ -39,7 +39,20 @@ RSpec.describe "a declaration label's span" do
   it "lets the nested refusal escape with the nested declaration's own label" do
     nested_class = inner
     expect { Class.new { include Axn }.expects(:outer, type: Hash) { nested_class.expects :x, on: 1 } }
-      .to raise_error(ArgumentError, /\Aon: on expects :x must be a String or Symbol/)
+      .to raise_error(ArgumentError, /\A`on:` isn't allowed on expects :x — it must be a String or Symbol/)
+  end
+
+  # A path segment that is not a plain identifier is quoted as its Symbol would be, in the label and in the `on:`
+  # echo alike, so `expects "x y".a` reads as one path; the audit matches the quoted label whole.
+  it "quotes a route segment that is not a plain identifier" do
+    expect do
+      build_axn do
+        expects :"x y", type: Hash
+        expects :a, on: :"x y", type: String, inclusion: { in: [1] }
+      end
+    end.to raise_error(ArgumentError, /\Ainclusion: on expects "x y"\.a can never match/)
+    expect { build_axn { expects :a, on: "x y" } }
+      .to raise_error(ArgumentError, /\A`on: :"x y"` isn't allowed on expects "x y"\.a — no such reader exists/)
   end
 
   it "names the nested declaration once its names are known, even before its route is" do

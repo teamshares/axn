@@ -229,9 +229,21 @@ module Axn
         end
 
         raise ArgumentError,
-              "#{option}#{DeclarationLabel.locator} must be a String or Symbol naming #{names} (got a value of class " \
-              "#{Axn::Internal::Reflection::PropertyNames.renderable_class_name(value)}) — any other object has no single " \
+              "#{_name_rule_gist(option)} be a String or Symbol naming #{names} (got a value of class " \
+              "#{Axn::Internal::Reflection::PropertyNames.renderable_class_name(value)}). Any other object has no single " \
               "name to canonicalize to. #{fix}"
+      end
+
+      # How a name rule opens. An OPTION (`` `on:` ``, `` `as:` ``) leads with the house gist — "`on:` isn't allowed on
+      # expects :a — it must …" — so the key and the declaration it sits on are not run together into `on: on expects
+      # :a`; a declared name itself (an `expects` field name, a name handed to `prefer_inherited`) is the subject of
+      # its sentence and keeps "must".
+      def self._name_rule_gist(option)
+        if option.end_with?(":", ":`")
+          "#{option} isn't allowed#{DeclarationLabel.locator} — it must"
+        else
+          "#{option}#{DeclarationLabel.locator} must"
+        end
       end
 
       # A name of the right TYPE can still be written in bytes no declaration can work with. Runs immediately
@@ -256,8 +268,8 @@ module Axn
         return if Axn::Internal::NativeMethods.ascii_compatible_name?(value)
 
         raise ArgumentError,
-              "#{kind}#{DeclarationLabel.locator} must be written in an ASCII-compatible encoding (got one encoded as " \
-              "#{Axn::Internal::NativeMethods.name_encoding(value).name}) — a name in a wide encoding interns to a " \
+              "#{_name_rule_gist(kind)} be written in an ASCII-compatible encoding (got one encoded as " \
+              "#{Axn::Internal::NativeMethods.name_encoding(value).name}). A name in a wide encoding interns to a " \
               "different Symbol than the UTF-8 property it renders as, so nothing a caller sends can match it, and " \
               "every check the declaration makes against it raises rather than answering. #{fix}"
       end
@@ -506,7 +518,7 @@ module Axn
                else
                  # Canonicalized through the shared rule, which also holds the encoding of what `to_sym` ANSWERS —
                  # this is the value every consumer then splits on `.`, and a wide one raised from the split.
-                 Contract.canonical_name!(on, option: "on:", names: "a parent reader",
+                 Contract.canonical_name!(on, option: "`on:`", names: "a parent reader",
                                               fix: "Pass the parent's name (dotted for a nested path), or omit `on:` " \
                                                    "to declare a top-level field.",
                                               encoding_fix: "Name the parent in UTF-8 (or any other ASCII-compatible " \
@@ -1762,7 +1774,7 @@ module Axn
           return klasses.first if _shape_compatible_klass?(klass)
 
           raise ArgumentError,
-                "#{requirement}#{DeclarationLabel.locator} (Array, Hash, or a class) — got " \
+                "#{requirement} (Array, Hash, or a class)#{DeclarationLabel.locator} — got " \
                 "[#{klasses.map { |k| _declared_type_label(k) }.join(', ')}]"
         end
 
@@ -3270,11 +3282,11 @@ module Axn
           return if offenders.empty?
 
           raise ArgumentError,
-                "of: #{axis}: does not support #{offenders.map { |key| "#{key}:" }.join(', ')} on " \
-                "#{_declared_fields_label(fields)} — an axis is the one position an `of:` bag is never handed " \
-                "to ActiveModel as a validator entry, so those options are read by nothing and the axis would " \
-                "constrain less than it says. Drop them. A gate deciding whether the `of:` runs at all belongs " \
-                "on the field's own declaration, where ActiveModel does read it."
+                "#{offenders.map { |key| "`#{key}:`" }.join(' / ')} #{offenders.one? ? "isn't" : "aren't"} allowed in " \
+                "`of: { #{axis}: … }` on #{_declared_fields_label(fields)} — drop #{offenders.one? ? 'it' : 'them'}; a gate " \
+                "deciding whether the `of:` runs at all belongs on the field's own declaration, where ActiveModel does " \
+                "read it. An axis is the one position an `of:` bag is never handed to ActiveModel as a validator entry, " \
+                "so those options are read by nothing and the axis would constrain less than it says."
         end
 
         # The declaration a refusal names: the direction and field(s) `DeclarationLabel` holds for the declaration
@@ -3959,8 +3971,8 @@ module Axn
           # this line calls supported and a sibling guard refuses is not one to point an author at.
           supported = allowed.reject { |key| unadvertised.include?(key) }
           raise ArgumentError,
-                "#{option} does not support #{offenders.map { |key| _bag_key_label(key) }.join(', ')}" \
-                "#{DeclarationLabel.locator} (supported: #{supported.map { |key| "#{key}:" }.join(', ')})"
+                "#{option}#{DeclarationLabel.locator} does not support " \
+                "#{offenders.map { |key| _bag_key_label(key) }.join(', ')} (supported: #{supported.map { |key| "#{key}:" }.join(', ')})"
         end
 
         # An offending key written into the message. A Symbol is named through a BOUND `Symbol#name` and keeps

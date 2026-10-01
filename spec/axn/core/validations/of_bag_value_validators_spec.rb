@@ -314,13 +314,13 @@ RSpec.describe "value validators in an of: bag" do
     }.each do |label, extra|
       it "refuses #{label}" do
         expect { build_axn { expects :f, type: Array, of: { klass: String, **extra } } }
-          .to raise_error(ArgumentError, /of: does not support/)
+          .to raise_error(ArgumentError, /of: on expects :f does not support/)
       end
     end
 
     it "refuses a misspelled option, naming the supported set" do
       expect { build_axn { expects :f, type: Array, of: { klass: String, mesage: "x" } } }
-        .to raise_error(ArgumentError, /of: does not support mesage:/)
+        .to raise_error(ArgumentError, /of: on .* does not support mesage:/)
     end
   end
 

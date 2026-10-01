@@ -170,7 +170,7 @@ RSpec.describe "a validator key ActiveModel cannot resolve" do
   # `uniqueness:`.
   it "leaves the of: bag's own refusal of uniqueness: alone" do
     expect { build_axn { expects :v, type: Array, of: { klass: String, uniqueness: true } } }
-      .to raise_error(ArgumentError, /of: does not support uniqueness:/)
+      .to raise_error(ArgumentError, /of: on .* does not support uniqueness:/)
   end
 
   # The refusal reads the VALIDATIONS bag's keys, never a declared name — so a field or member the author

@@ -197,21 +197,21 @@ RSpec.describe "option bag keys" do
         inner = string_keyed(klass: Integer, bogus: 1)
 
         expect { build_axn { expects :m, type: Array, of: { klass: Array, of: inner } } }
-          .to raise_error(ArgumentError, /of: does not support bogus:/)
+          .to raise_error(ArgumentError, /of: on .* does not support bogus:/)
       end
 
       it "still refuses an unrecognized key on an axis" do
         axis = string_keyed(klass: Integer, bogus: 1)
 
         expect { build_axn { expects :m, type: Hash, of: { values: axis } } }
-          .to raise_error(ArgumentError, /of: does not support bogus:/)
+          .to raise_error(ArgumentError, /of: on .* does not support bogus:/)
       end
 
       # `_symbol_keyed_bag` converts Strings and leaves anything else exactly as it came, so the offender is
       # still named through the seam that reads it without dispatching to it.
       it "still names a key it cannot symbolize by class rather than running its own to_s" do
         expect { build_axn { expects :m, type: Array, of: { klass: Array, of: { 7 => 1, "klass" => Integer } } } }
-          .to raise_error(ArgumentError, /of: does not support a name of class Integer/)
+          .to raise_error(ArgumentError, /of: on .* does not support a name of class Integer/)
       end
 
       it "still refuses a nested bag's `on:`" do
@@ -225,7 +225,7 @@ RSpec.describe "option bag keys" do
         axis = string_keyed(klass: Integer, if: :flag)
 
         expect { build_axn { expects :m, type: Hash, of: { values: axis } } }
-          .to raise_error(ArgumentError, /of: values: does not support if:/)
+          .to raise_error(ArgumentError, /`if:` isn't allowed in `of: \{ values: … \}`/)
       end
 
       it "still refuses a nested bag that constrains nothing" do
