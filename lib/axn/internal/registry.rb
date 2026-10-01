@@ -16,8 +16,9 @@ module Axn
         # `_`-prefixed file (`_base.rb`) that is loaded but contributes no entry.
         def built_in
           @built_in ||= begin
-            # Get the directory name from the class name (e.g., "Strategies" -> "strategies")
-            dir_name = name.split("::").last.underscore
+            # The directory is named for the class ("MountingStrategies" -> "mounting_strategies"), split by hand
+            # because `underscore` reads the host's inflections too.
+            dir_name = name.split("::").last.gsub(/(?<=[a-z\d])(?=[A-Z])/, "_").downcase
 
             files = ::Dir[File.join(registry_directory, dir_name, "*.rb")]
             files.each { |file| require file }
@@ -74,15 +75,19 @@ module Axn
           raise NotImplementedError, "Subclasses must implement registry_directory method"
         end
 
-        # The registry's OWN constant (never an inherited one) that an entry file is named for. A file that
-        # defines no such module is a layout mistake, refused at load rather than silently listing nothing.
+        # The registry's OWN module (never an inherited constant) that an entry file is named for, matched
+        # case- and underscore-blind (`active_job.rb` names `ActiveJob`) rather than through `camelize`, whose
+        # result depends on the host's process-wide inflections (`acronym("AXN")` camelizes `axn` to `AXN`).
+        # None, or more than one, is a layout mistake, refused at load rather than listing a guess.
         def _entry_constant(base)
-          const_name = base.camelize
-          entry = const_get(const_name, false) if const_defined?(const_name, false)
-          return entry if entry.is_a?(Module)
+          wanted = base.downcase.delete("_")
+          candidates = constants(false).select { |const| const.to_s.downcase.delete("_") == wanted }
+                                       .map { |const| const_get(const, false) }
+                                       .grep(Module)
+          return candidates.first if candidates.one?
 
           raise NotImplementedError,
-                "#{name}: #{base}.rb must define the module #{name}::#{const_name} " \
+                "#{name}: #{base}.rb must define exactly one module on #{name} named for it " \
                 "(a helper belongs in a `_`-prefixed file, which contributes no entry)"
         end
       end

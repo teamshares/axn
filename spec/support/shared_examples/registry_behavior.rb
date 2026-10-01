@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative "../with_acronyms"
+
 RSpec.shared_examples "a registry" do
   # Several examples below register a `:custom` item without deregistering it, which would leak
   # into whichever example runs next under random ordering (`.clear!` only restores built-ins, so
@@ -33,6 +35,20 @@ RSpec.shared_examples "a registry" do
       described_class.instance_variable_set(:@built_in, nil)
 
       expect(described_class.built_in.keys).to match_array(expected_built_in_keys)
+    ensure
+      described_class.instance_variable_set(:@built_in, memoized)
+    end
+
+    # Inflections are the host's: an acronym declared before axn loads must not change which module an entry
+    # file names (`inflections.acronym("AXN")` camelizes `axn` to `AXN`, not the `Axn` the file defines).
+    it "lists the same entries whatever acronyms the host declares" do
+      expected = described_class.built_in.dup
+      memoized = described_class.instance_variable_get(:@built_in)
+      described_class.instance_variable_set(:@built_in, nil)
+
+      with_acronyms(*%w[AXN JOB FORM METHOD STEP SIDEKIQ DISABLED TRANSACTION MountingStrategies]) do
+        expect(described_class.built_in).to eq(expected)
+      end
     ensure
       described_class.instance_variable_set(:@built_in, memoized)
     end

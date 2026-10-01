@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "tmpdir"
+require_relative "../../support/with_acronyms"
 
 # Discovery against a registry whose directory this spec writes, so every route a non-entry constant can
 # take into the registry is present at once: inherited from Internal::Registry, defined by the registry
@@ -46,6 +47,29 @@ RSpec.describe Axn::Internal::Registry do
     expect(registry.built_in).to eq(alpha: RegistrySpecWidgets::Alpha, beta_gamma: RegistrySpecWidgets::BetaGamma)
   end
 
+  it "resolves entries the same whatever acronyms the host declares" do
+    write_entry("alpha", "class RegistrySpecWidgets; module Alpha; end; end")
+    write_entry("beta_gamma", "class RegistrySpecWidgets; class BetaGamma; end; end")
+
+    with_acronyms("ALPHA", "GAMMA") do
+      expect(registry.built_in).to eq(alpha: RegistrySpecWidgets::Alpha, beta_gamma: RegistrySpecWidgets::BetaGamma)
+    end
+  end
+
+  it "resolves entries whose files were required before" do
+    write_entry("alpha", "class RegistrySpecWidgets; module Alpha; end; end")
+    registry.built_in
+    registry.instance_variable_set(:@built_in, nil)
+
+    expect(registry.built_in).to eq(alpha: RegistrySpecWidgets::Alpha)
+  end
+
+  it "refuses an entry file two modules could be named for" do
+    write_entry("beta_gamma", "class RegistrySpecWidgets; module BetaGamma; end; module BETAGAMMA; end; end")
+
+    expect { registry.built_in }.to raise_error(NotImplementedError, /beta_gamma\.rb must define exactly one module/)
+  end
+
   it "keeps the base error classes reachable under their names" do
     expect(described_class::NotFound).to be < StandardError
     expect(described_class::DuplicateError).to be < StandardError
@@ -54,12 +78,12 @@ RSpec.describe Axn::Internal::Registry do
   it "refuses an entry file that defines no module named for it" do
     write_entry("delta", "class RegistrySpecWidgets; module NotDelta; end; end")
 
-    expect { registry.built_in }.to raise_error(NotImplementedError, /delta\.rb must define the module RegistrySpecWidgets::Delta/)
+    expect { registry.built_in }.to raise_error(NotImplementedError, /delta\.rb must define exactly one module/)
   end
 
   it "does not take an inherited constant for an entry file's module" do
     write_entry("not_found", "class RegistrySpecWidgets; end")
 
-    expect { registry.built_in }.to raise_error(NotImplementedError, /not_found\.rb must define the module RegistrySpecWidgets::NotFound/)
+    expect { registry.built_in }.to raise_error(NotImplementedError, /not_found\.rb must define exactly one module/)
   end
 end
