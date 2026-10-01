@@ -49,6 +49,12 @@ module SchemaWireAudit
   # The gate positions the defaulted walk varies: a default meeting a gated check is reached by the ungated
   # reading, one entry gate and one declaration gate; the other spellings are the plain walk's to vary.
   DEFAULTED_GATES = ["ungated", "entry if: false", "declaration if: false"].freeze
+
+  # Literal kinds a declaration can name, for the literal-position walk.
+  NamedLiteral = Class.new
+  LiteralPoint = Struct.new(:x)
+  LiteralData = Data.define(:x)
+  LiteralString = Class.new(String)
 end
 
 RSpec.describe "the emitted schema against runtime truth", :slow do
@@ -412,6 +418,98 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
     expect(rendered).to be_empty, "these documents render a token's address:\n  #{rendered.join("\n  ")}"
   end
 
+  # A declaration's own literals are written into the document as data: an `inclusion:` set as `enum`, a `default:`
+  # as `default`. So every kind of value a caller can put in a literal position is declared at each one, in both
+  # directions, and the document must hold only values JSON carries as they stand (no live object for an encoder to
+  # render as an address, nothing it refuses), and inbound every `enum` member it advertises must be a value the
+  # runtime accepts — through a tool invoker's coercion, the stated spelling of a type whose wire form is a String —
+  # unless the class names a residue. The positions that name a literal in prose instead (`exclusion:`, `equal_to:`,
+  # `acceptance:`) are the controls.
+  def literal_kinds
+    {
+      "class" => SchemaWireAudit::NamedLiteral, "anonymous class" => Class.new, "module" => Comparable, "object" => Object.new,
+      "Struct" => SchemaWireAudit::LiteralPoint.new(1), "Data" => SchemaWireAudit::LiteralData.new(x: 1), "Range" => (1..2),
+      "Regexp" => /a/, "Set" => Set[1], "Symbol" => :a, "Time" => Time.utc(2026, 1, 1), "Date" => Date.new(2026, 1, 1),
+      "Complex" => Complex(1, 2), "BigDecimal" => BigDecimal("1.5"), "Rational" => Rational(3, 2), "Infinity" => Float::INFINITY,
+      "binary" => "\xFF".b, "Latin-1" => (+"caf\xE9").force_encoding(Encoding::ISO_8859_1), "String subclass" => SchemaWireAudit::LiteralString.new("a"),
+      "Symbol-keyed Hash" => { a: 1 }, "String-keyed Hash" => { "a" => 1 }, "Array of Symbol" => [:a], "String" => "a", "Integer" => 1,
+      "Float" => 1.5, "true" => true
+    }
+  end
+
+  # [direction, declaration, where the advertised `enum` sits, the payload sending one of its members].
+  def literal_positions
+    member = ->(v) { Axn::Core::Contract::ShapeConfig.new(field: :m, validations: { inclusion: { in: [v] } }) }
+    {
+      "inclusion" => [:in, ->(v) { { inclusion: { in: [v] } } }, [], ->(m) { m }],
+      "inclusion beside a String" => [:in, ->(v) { { inclusion: { in: [v, "a"] } } }, [], ->(m) { m }],
+      "inclusion under its own class" => [:in, ->(v) { { type: v.class, inclusion: { in: [v] } } }, [], ->(m) { m }],
+      "element inclusion" => [:in, ->(v) { { type: Array, of: { inclusion: { in: [v] } } } }, [:items], ->(m) { [m] }],
+      "map value inclusion" => [:in, ->(v) { { type: Hash, of: { values: { inclusion: { in: [v] } } } } }, [:additionalProperties], ->(m) { { "k" => m } }],
+      "map key inclusion" => [:in, ->(v) { { type: Hash, of: { keys: { inclusion: { in: [v, "a"] } } } } }, [:propertyNames], ->(m) { { m => 1 } }],
+      "member inclusion" => [:in, ->(v) { { type: Hash, shape: { members: [member.call(v)] } } }, %i[properties m], ->(m) { { "m" => m } }],
+      "default" => [:in, ->(v) { { default: v } }, nil, nil],
+      "exclusion" => [:in, ->(v) { { exclusion: { in: [v] } } }, nil, nil],
+      "equal_to" => [:in, ->(v) { { comparison: { equal_to: v } } }, nil, nil],
+      "acceptance" => [:in, ->(v) { { acceptance: { accept: [v] } } }, nil, nil],
+      "output inclusion" => [:out, ->(v) { { inclusion: { in: [v, "a"] } } }, nil, nil],
+      "output element inclusion" => [:out, ->(v) { { type: Array, of: { inclusion: { in: [v, "a"] } } } }, nil, nil],
+      "output default" => [:out, ->(v) { { default: v } }, nil, nil],
+    }
+  end
+
+  # Every leaf a value JSON carries as it stands: no live object, no number or String an encoder refuses.
+  def json_native?(node)
+    case node
+    when Hash then node.all? { |key, value| (key.instance_of?(Symbol) || json_native?(key)) && json_native?(value) }
+    when Array then node.all? { |value| json_native?(value) }
+    when nil, true, false, Integer then true
+    when Float then node.finite?
+    when String then node.instance_of?(String) && !Axn::Internal::Text.utf8_rendering(node).nil?
+    else false
+    end
+  end
+
+  it "writes only JSON literals into a document, and advertises only members the runtime accepts" do
+    live = []
+    rejected = []
+    advertised = 0
+    declared = 0
+
+    literal_kinds.each do |kname, value|
+      literal_positions.each do |pname, (direction, decl, enum_path, payload)|
+        klass = declare(direction, decl.call(value))
+        next if klass.nil?
+
+        declared += 1
+        schema = direction == :in ? klass.input_schema : klass.output_schema
+        encoded = begin
+          JSON.generate(schema)
+        rescue StandardError => e
+          e
+        end
+        live << "#{kname} / #{pname}: #{schema[:properties][:n].inspect}" unless json_native?(schema) && encoded.is_a?(String) && !encoded.match?(/0x\h{4,}/)
+        next if enum_path.nil? || !encoded.is_a?(String)
+
+        enum = JSON.parse(encoded).dig("properties", "n", *enum_path.map(&:to_s), "enum")
+        next if enum.nil? || klass.input_schema_residues.any?
+
+        coerced = Class.new(klass) { coerce_input_types true }
+        enum.compact.each do |wire|
+          advertised += 1
+          next if coerced.call(n: payload.call(wire)).ok?
+
+          rejected << "#{kname} / #{pname}: advertises #{wire.inspect}, which the runtime rejects"
+        end
+      end
+    end
+
+    expect(declared).to be > 250
+    expect(advertised).to be > 40
+    expect(live).to be_empty, "these documents carry a value with no JSON literal:\n  #{live.join("\n  ")}"
+    expect(rejected).to be_empty, "these documents advertise a literal the runtime rejects:\n  #{rejected.join("\n  ")}"
+  end
+
   # `default:` is not a validator, so the walk above never declares one — and a default changes what reaches
   # every check: an omitted value becomes the default, which a gated check may then reject only on some calls.
   # Two defaults per cell: the type's blank (the value a presence check turns on), and one the plain cell
@@ -702,7 +800,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
       # ever takes the trivial "one side is empty" path. These four rows put a real value constraint on the
       # member side of an otherwise object-shaped position, paired below with the mirror on the node side,
       # so the reconciliation is exercised rather than merely present.
-      "literal object member" => proc { field :inner, type: Hash, inclusion: { in: [{ b: 2 }] } },
+      "literal object member" => proc { field :inner, type: Hash, inclusion: { in: [{ "b" => 2 }] } },
       "floor object member" => proc { field :inner, type: Hash, length: { minimum: 2 } },
       "ceiling object member" => proc { field :inner, type: Hash, length: { maximum: 4 } },
       "map values member" => proc { field :inner, type: Hash, of: { values: { klass: Integer } } },
@@ -757,7 +855,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
       # arises: two `inclusion:` sets (the exact PRO-3405 shape), two SAME-keyword size bounds (so
       # `minProperties`/`maxProperties` COLLIDE rather than merely appear on one side), and two `of:` axes
       # naming DIFFERENT value/key types.
-      "literal node" => proc { expects :inner, on: :payload, type: Hash, inclusion: { in: [{ c: 3 }] } },
+      "literal node" => proc { expects :inner, on: :payload, type: Hash, inclusion: { in: [{ "c" => 3 }] } },
       "floor node" => proc { expects :inner, on: :payload, type: Hash, length: { minimum: 3 } },
       "ceiling node" => proc { expects :inner, on: :payload, type: Hash, length: { maximum: 2 } },
       "map values node" => proc { expects :inner, on: :payload, type: Hash, of: { values: { klass: String } } },
@@ -782,6 +880,8 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
     }
   end
 
+  # Read back through JSON, so the runtime is handed the String-keyed Hashes a wire call carries — the literal
+  # object sets above compare against exactly those.
   def nested_payloads
     [
       {}, { inner: nil }, { inner: {} }, { inner: { a: "x" } }, { inner: { a: 1 } },
@@ -791,7 +891,7 @@ RSpec.describe "the emitted schema against runtime truth", :slow do
       # set admits and the other's refuses, and a 5-key/2-key pair that only a wrong `minProperties`/
       # `maxProperties` reconciliation (`.max`/`.min` swapped) would tell apart.
       { inner: { b: 2 } }, { inner: { c: 3 } }, { inner: { a: "x", b: "y", c: "z", d: "w", e: "v" } }
-    ]
+    ].map { |payload| JSON.parse(JSON.generate(payload)) }
   end
 
   # `member`/`node` are each optional (PRO-3441): the collision walk below also needs the SIDE-ALONE

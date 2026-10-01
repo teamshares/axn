@@ -96,9 +96,9 @@ module Axn
 
           # The cost of duplicating a schema, estimated WITHOUT serializing it. PRO-3441 round 6 (PR #285):
           # `JSON.generate` is not safe here — it can RAISE on a legal Ruby literal JSON cannot encode
-          # (`Float::INFINITY` in an `inclusion:` set, which `normalize_schema_literal` in `schema.rb`
-          # deliberately PRESERVES rather than rejects, precisely so reflection doesn't fail on caller
-          # data), and on an opaque literal with its own `#to_json` it EXECUTES caller code — the one thing
+          # (a non-finite Float, which `normalize_schema_literal` in `schema.rb` preserves rather than
+          # rejects, so reflection doesn't fail on caller data), and on an opaque literal with its own
+          # `#to_json` it EXECUTES caller code — the one thing
           # reflection may never do. `Integer`/`Float`/`Symbol`/`true`/`false`/`nil` cannot be subclassed at
           # all (Ruby raises TypeError attempting it) — so `#to_s` there always resolves to the CLASS's own,
           # never a caller override. `Hash`/`Array` are walked structurally rather than serialized, gated

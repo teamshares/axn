@@ -558,10 +558,11 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     end
 
     it "emits an enum for a static Symbol-array inclusion and treats a defaulted field as optional" do
-      # The static enum is normalized to Strings, and the usable :a default makes the field optional.
+      # The static enum is normalized to Strings, which `type: Symbol` parses back, and the usable :a default
+      # makes the field optional.
       klass = Class.new do
         include Axn
-        expects :mode, inclusion: { in: %i[a b] }, default: :a
+        expects :mode, type: Symbol, inclusion: { in: %i[a b] }, default: :a
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
       expect(schema[:properties][:mode][:enum]).to eq(%w[a b])
@@ -3755,11 +3756,26 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     it "normalizes Symbol inclusion enum members to Strings, not raw symbols" do
       klass = Class.new do
         include Axn
-        expects :x, inclusion: { in: %i[draft open] }
+        expects :x, type: Symbol, inclusion: { in: %i[draft open] }
       end
       schema = klass.input_schema
 
       expect(schema[:properties][:x][:enum]).to eq(%w[draft open])
+    end
+
+    # A String a client sends is never `==` to a Symbol, and with no `type: Symbol` nothing parses it into one,
+    # so the String forms are values the runtime rejects: the set is left out and named instead.
+    it "states no enum for Symbol members where no declared type parses a String back into one" do
+      klass = Class.new do
+        include Axn
+        expects :x, inclusion: { in: %i[draft open] }
+      end
+      prop = klass.input_schema[:properties][:x]
+
+      expect(prop).not_to have_key(:enum)
+      expect(klass.input_schema_residues.map(&:summary)).to include(a_string_including('"inclusion":{"in":["draft","open"]}'))
+      expect(klass.call(x: "draft")).not_to be_ok
+      expect(klass.call(x: :draft)).to be_ok
     end
 
     it "normalizes a Time default to its iso8601 String form, matching format: date-time" do
@@ -5866,7 +5882,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             klass = Class.new do
               include Axn
               expects :payload, type: Hash do
-                field :inner, type: Object, inclusion: { in: [{ allowed: true }] }
+                field :inner, type: Object, inclusion: { in: [{ "allowed" => true }] }
               end
               expects :inner, on: :payload, type: Hash
               def call = nil
@@ -5878,8 +5894,8 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             validator = JSONSchemer.schema(JSON.parse(JSON.generate(inner)))
             expect(validator.valid?({ "allowed" => true })).to be(true)
             expect(validator.valid?({ "other" => true })).to be(false)
-            expect(klass.call(payload: { inner: { allowed: true } })).to be_ok
-            expect(klass.call(payload: { inner: { other: true } })).not_to be_ok # not in the ancestor's inclusion list
+            expect(klass.call(payload: { inner: { "allowed" => true } })).to be_ok
+            expect(klass.call(payload: { inner: { "other" => true } })).not_to be_ok # not in the ancestor's inclusion list
           end
 
           # Two sides that are BOTH unknown-class hints never contradict each other (they both fall back to
@@ -6364,17 +6380,17 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             it "keeps both inclusion sets of two colliding object positions rather than taking the later one" do
               klass = Class.new do
                 include Axn
-                expects(:payload, type: Hash) { field :inner, type: Hash, inclusion: [{ a: 1 }, { b: 2 }] }
-                expects :inner, on: :payload, type: Hash, inclusion: [{ b: 2 }, { c: 3 }]
+                expects(:payload, type: Hash) { field :inner, type: Hash, inclusion: [{ "a" => 1 }, { "b" => 2 }] }
+                expects :inner, on: :payload, type: Hash, inclusion: [{ "b" => 2 }, { "c" => 3 }]
                 def call = nil
               end
               inner = klass.input_schema[:properties][:payload][:properties][:inner]
 
               expect(inner[:enum]).to be_nil
-              expect(inner[:allOf]).to include({ enum: [{ a: 1 }, { b: 2 }] }, { enum: [{ b: 2 }, { c: 3 }] })
+              expect(inner[:allOf]).to include({ enum: [{ "a" => 1 }, { "b" => 2 }] }, { enum: [{ "b" => 2 }, { "c" => 3 }] })
               # The runtime is the reference: each side's own set is enforced, so only the shared member runs.
-              expect(klass.call(payload: { inner: { b: 2 } })).to be_ok
-              [{ a: 1 }, { c: 3 }].each { |v| expect(klass.call(payload: { inner: v })).not_to be_ok }
+              expect(klass.call(payload: { inner: { "b" => 2 } })).to be_ok
+              [{ "a" => 1 }, { "c" => 3 }].each { |v| expect(klass.call(payload: { inner: v })).not_to be_ok }
             end
 
             # Why the two sets are BRANCHED and not intersected. Intersecting means deciding which members
@@ -6386,19 +6402,19 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             it "does not narrow to nothing when the two sets spell a shared member differently" do
               klass = Class.new do
                 include Axn
-                expects(:payload, type: Hash) { field :inner, type: Hash, inclusion: [{ a: 1 }] }
-                expects :inner, on: :payload, type: Hash, inclusion: [{ a: 1.0 }]
+                expects(:payload, type: Hash) { field :inner, type: Hash, inclusion: [{ "a" => 1 }] }
+                expects :inner, on: :payload, type: Hash, inclusion: [{ "a" => 1.0 }]
                 def call = nil
               end
               inner = klass.input_schema[:properties][:payload][:properties][:inner]
 
               expect(inner[:enum]).to be_nil
-              expect(inner[:allOf]).to include({ enum: [{ a: 1 }] }, { enum: [{ a: 1.0 }] })
+              expect(inner[:allOf]).to include({ enum: [{ "a" => 1 }] }, { enum: [{ "a" => 1.0 }] })
               # No branch may be the empty set: `enum: []` is satisfied by nothing, and a consumer reading it
               # is told the position is unusable.
               expect(Array(inner[:allOf]).map { |b| b[:enum] }).to all(be_present)
               # The runtime accepts both spellings, so the document must not refuse them.
-              [{ a: 1 }, { a: 1.0 }].each { |v| expect(klass.call(payload: { inner: v })).to be_ok }
+              [{ "a" => 1 }, { "a" => 1.0 }].each { |v| expect(klass.call(payload: { inner: v })).to be_ok }
             end
 
             it "honors a gate nested on the validator that carries the contradicting keyword" do
@@ -6471,8 +6487,8 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             end
 
             # A residue only MENTIONS the fragment it declined to conjoin, so it must not impose a
-            # requirement ordinary reflection does not: `normalize_scalar_literal` deliberately keeps a
-            # `Float::INFINITY` default, and JSON cannot encode one.
+            # requirement ordinary reflection does not: a `Float::INFINITY` default, which JSON cannot
+            # encode, is left out of the document rather than failing it.
             it "mentions a literal JSON cannot encode without failing" do
               klass = Class.new do
                 include Axn
@@ -8096,16 +8112,18 @@ RSpec.describe Axn::Internal::Reflection::Schema do
   end
 
   # Scalar leaves DO route to Values.serialize_value, which refuses a non-finite Float outright because
-  # JSON has no literal for one. Reflection reports the declaration anyway: a reflected literal promises
-  # nothing about encodability, while serialize_exposed's output does, which is where that refusal belongs.
-  it "reflects a non-finite Float default as declared rather than raising" do
+  # JSON has no literal for one. Reflection must not raise on it, and must not write a `default` an encoder
+  # then refuses; `default` is an annotation, so leaving it out changes nothing the document accepts.
+  it "leaves a non-finite Float default out rather than raising or writing one JSON cannot encode" do
     klass = Class.new do
       include Axn
       expects :limit, type: Numeric, default: Float::INFINITY
     end
 
     expect { klass.input_schema }.not_to raise_error
-    expect(klass.input_schema[:properties][:limit][:default]).to eq(Float::INFINITY)
+    expect(klass.input_schema[:properties][:limit]).not_to have_key(:default)
+    expect(klass.input_schema[:required].to_a).not_to include("limit")
+    expect { JSON.generate(klass.input_schema) }.not_to raise_error
   end
 
   # `build_input` is public, so a config a downstream caller built itself reaches the emitter without passing

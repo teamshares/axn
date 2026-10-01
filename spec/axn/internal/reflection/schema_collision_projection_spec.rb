@@ -72,16 +72,16 @@ RSpec.describe "collision projection ownership" do
   it "retains an earlier conjunction when three object routes contribute enums" do
     action = build_axn do
       expects(:payload, type: Hash) do
-        field(:deep, type: Hash) { field :inner, type: Hash, inclusion: { in: [{ a: 1 }, { b: 2 }] } }
+        field(:deep, type: Hash) { field :inner, type: Hash, inclusion: { in: [{ "a" => 1 }, { "b" => 2 }] } }
       end
       expects(:deep, on: :payload, type: Hash) do
-        field :inner, type: Hash, inclusion: { in: [{ b: 2 }, { c: 3 }] }
+        field :inner, type: Hash, inclusion: { in: [{ "b" => 2 }, { "c" => 3 }] }
       end
-      expects :inner, on: "payload.deep", type: Hash, inclusion: { in: [{ b: 2 }, { c: 3 }] }
+      expects :inner, on: "payload.deep", type: Hash, inclusion: { in: [{ "b" => 2 }, { "c" => 3 }] }
       def call = nil
     end
     schema = checker(action)
-    [{ b: 2 }, { c: 3 }].each do |inner|
+    [{ "b" => 2 }, { "c" => 3 }].each do |inner|
       value = { payload: { deep: { inner: } } }
       expect(schema.valid?(JSON.parse(JSON.generate(value)))).to eq(action.call(**value).ok?)
     end
