@@ -18,6 +18,11 @@ module Axn
         module Nesting
           include Vocabulary
 
+          # What one `apply_children!` loop hands each `model:` child it visits: the parent's property, its subfield
+          # tree, routes and annotation map, the shape members carried from a shallower hop, and the two lists the
+          # loop settles only after every key has run (`required_model_ids`, `model_id_siblings`).
+          ChildLoop = Data.define(:prop, :children, :parent_configs, :ann, :carried, :required_model_ids, :model_id_siblings)
+
           # Whether a declaration beneath `node` resolves its path with `method_call:`, and so reads a method off
           # this node's value where that value is not a Hash rather than settling absent.
           def subtree_reads_methods?(node)
@@ -151,6 +156,7 @@ module Axn
             # of which routes a property is built from, so the member a child is conjoined with is judged by the
             # configs that produced it.
             emitted_ancestor_configs = property_routes(parent_configs) + carried
+            child_loop = nil
             model_routes_first(children).each do |key, node|
               if node.implicit?
                 apply_implicit_node!(prop, key, node, ancestor_configs, ann)
@@ -163,8 +169,8 @@ module Axn
               # (`conjoined_route_property`); `property_routes` names them for every layer that must.
 
               unless model_configs.empty?
-                apply_model_id_child!(prop, key, node, model_configs, children, parent_configs, ann, required_model_ids,
-                                      model_id_siblings, carried)
+                child_loop ||= ChildLoop.new(prop:, children:, parent_configs:, ann:, carried:, required_model_ids:, model_id_siblings:)
+                apply_model_id_child!(child_loop, key, node, model_configs)
               end
 
               representative = property_representative(node.configs)
@@ -303,8 +309,7 @@ module Axn
           # folded into `apply_children!`'s single already-large loop body, which the conflict/reconciliation
           # logic here had pushed past this file's complexity budget. Mutates `prop`/`required_model_ids` in
           # place, exactly as the inlined code it replaces did.
-          def apply_model_id_child!(prop, key, node, model_configs, children, parent_configs, ann, required_model_ids,
-                                    model_id_siblings, carried)
+          def apply_model_id_child!(child_loop, key, node, model_configs)
             # The id key derives from the LEAF wire segment (a dotted model name digs `<leaf>_id` off
             # the same nested parent at runtime). A user may declare an explicit NON-model nested
             # `<field>_id` subfield — its own entry in `children`, keyed by that same id, visited
@@ -319,7 +324,7 @@ module Axn
             # (`company_id_id`) — so treating its mere existence as "something will write here" skipped
             # the only thing that would have.
             id_field = Internal::FieldConfig.model_id_key(key)
-            sibling_node = children[id_field]
+            sibling_node = child_loop.children[id_field]
             explicit_id = sibling_node&.configs&.find { |c| !c.validations[:model] }
             # A `shape:` member on the PARENT (`parent_configs`) can ALSO claim `id_field` by name — a
             # wire-property source `apply_structured_schema!` merges into `prop[:properties]` BEFORE this
@@ -333,30 +338,30 @@ module Axn
             # carried from a shallower hop — the ancestor's shape reaches this node's property too (PRO-3399), so a
             # carried `field :company_id, type: String` claims the key exactly as one on the node's own route does,
             # and leaving the carry out would discard the declared `id_type:` one level up.
-            explicit_id ||= emitted_shape_member_at(prop, property_routes(parent_configs), carried, id_field)
+            explicit_id ||= emitted_shape_member_at(child_loop.prop, property_routes(child_loop.parent_configs), child_loop.carried, id_field)
             if explicit_id
               # Deferred rather than merged here directly (see the post-loop pass in `apply_children!`):
               # this sibling's OWN entry in `children` hasn't necessarily been visited yet, so
               # `prop[:properties][id_field]` isn't guaranteed to hold its FINAL emission until every key
               # in this loop has run.
-              model_id_siblings << [id_field, model_configs, explicit_id]
-            elsif !prop[:properties].key?(id_field)
+              child_loop.model_id_siblings << [id_field, model_configs, explicit_id]
+            elsif !child_loop.prop[:properties].key?(id_field)
               id_type = reconciled_model_id_type_token(model_configs)
               _, subprop = model_id_property(model_configs.first, id_type)
-              prop[:properties][id_field] ||= subprop
+              child_loop.prop[:properties][id_field] ||= subprop
             end
-            return if node_optional?(node, ann, model_configs)
+            return if node_optional?(node, child_loop.ann, model_configs)
             # A sibling id whose default supplies the lookup token on the omitted call rescues it, by the one
             # predicate the annotation credit and the declaration guard share.
-            return if sibling_id_rescued?(children, key, node)
+            return if sibling_id_rescued?(child_loop.children, key, node)
 
-            if node_optional?(node, ann, model_configs.reject { |c| requiredness_conditionally_relaxable?(c) })
-              prop[:properties][id_field] = with_gated_requirement(prop[:properties][id_field], model_configs)
+            if node_optional?(node, child_loop.ann, model_configs.reject { |c| requiredness_conditionally_relaxable?(c) })
+              child_loop.prop[:properties][id_field] = with_gated_requirement(child_loop.prop[:properties][id_field], model_configs)
               return
             end
 
-            prop[:required] << id_field.to_s
-            required_model_ids << id_field
+            child_loop.prop[:required] << id_field.to_s
+            child_loop.required_model_ids << id_field
           end
 
           # The `shape:` member claiming `id_field`, but ONLY where that member's property was actually EMITTED
