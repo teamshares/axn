@@ -46,15 +46,25 @@ require "axn/internal/reflection/schema/type_tokens"
 # Contents is the recursive descent into a container's elements/values/keys and a shape's named members.
 require "axn/internal/reflection/schema/contents"
 
-# ModelId owns the generated `<field>_id` property and the reconciliation deciding its type.
+# ModelId owns the generated `<field>_id` property, the reconciliation deciding its type, and the residues a
+# `model:` route writes about the two keys it reads.
 require "axn/internal/reflection/schema/model_id"
 
 # Sizing owns the size and blank axes — including the derivations Contract's declaration guard reads back.
 require "axn/internal/reflection/schema/sizing"
 
+# Numericality owns what a `numericality:` entry does to the node its position emits.
+require "axn/internal/reflection/schema/numericality"
+
+# Mentions renders what a residue names — a declined fragment, a caller's literal, an author's description.
+require "axn/internal/reflection/schema/mentions"
+
 # Nestability answers whether a position can hold JSON object properties — the drop pass and the emitter
 # both read it, so neither can decide for itself.
 require "axn/internal/reflection/schema/nestability"
+
+# DroppedSubfields is the drop pass: the deep subfield configs with no JSON-object representation.
+require "axn/internal/reflection/schema/dropped_subfields"
 
 # Merge conjoins two emitted properties that meet at one wire position — every collision the builder finds.
 require "axn/internal/reflection/schema/merge"
@@ -119,16 +129,10 @@ module Axn
 
         RESIDUE_PREFACE = "Additional constraints apply that JSON Schema cannot express: "
 
-        # The container reads the residue reduction makes, held UNBOUND. Exact class is not enough on its
-        # own: an exact Array or Hash can still carry a singleton `map`/`each_pair`, so the reduction reaches
-        # for Array's and Hash's own.
-        MENTIONABLE_MAP = ::Array.instance_method(:map)
-        MENTIONABLE_EACH_PAIR = ::Hash.instance_method(:each_pair)
         SAME_STRING = ::String.instance_method(:==)
         ARRAY_SIZE = ::Array.instance_method(:size)
         ARRAY_AT = ::Array.instance_method(:[])
         HASH_TO_A = ::Hash.instance_method(:to_a)
-        private_constant :MENTIONABLE_MAP, :MENTIONABLE_EACH_PAIR
 
         # PRO-3441. A map's `of: { values: }` axis governs every key `properties` does NOT itself name
         # (`additionalProperties`'s own JSON Schema meaning) — except the keys the axis's OWN `shape:`
@@ -184,7 +188,10 @@ module Axn
         extend Contents
         extend ModelId
         extend Sizing
+        extend Numericality
+        extend Mentions
         extend Nestability
+        extend DroppedSubfields
         extend Merge
         extend Requiredness
         extend Nesting
@@ -415,125 +422,6 @@ module Axn
           finalize_residues!(schema, collected: residues || [])
           schema
         end
-
-        # The subfield configs build_input omits from the input schema: deep configs (a dotted `on:`
-        # path, a subfield of a subfield, or a dotted field name) whose chain passes through a `model:`
-        # or non-object parent, so they have no JSON-object representation. They validate at runtime but
-        # are absent from the schema; a caller can surface this otherwise-silent gap. A representable deep
-        # chain (every explicit ancestor object-shaped) is NOT dropped — it nests in the schema.
-        # Subfields rooted at a deliberately-excluded parent (EXCLUDED_FROM_INPUT_SCHEMA, e.g.
-        # ambient_context) are skipped: their absence is intentional. Side-effect-free (SubfieldTree
-        # inspects declared configs only).
-        #
-        # `resolved:` accepts the per-class ResolvedSubfields cache, whose `dropped` was already computed
-        # from the same tree at build time (see ResolvedSubfields.build) — reading it here is a cheap
-        # reader, not a recomputation. Without it, both the tree and the verdict are built fresh.
-        def dropped_deep_subfields(field_configs, subfield_configs, resolved: nil)
-          return resolved.dropped if resolved
-
-          dropped_from_deep_paths(Axn::Internal::SubfieldTree.build(field_configs, Array(subfield_configs)).deep_paths)
-        end
-
-        # The judgment over a tree's deep candidates: which of the `[config, hops]` pairs SubfieldTree.build
-        # collected (a config reached through more than one hop) have no JSON-object representation. Tree
-        # construction only COLLECTS these — whether a chain can hold JSON object properties is a question
-        # about what this layer can EMIT, so the two public entry points (this one, and dropped_deep_subfields
-        # for a caller that has only configs, not a built tree) both funnel through the same private judgment.
-        def dropped_from_deep_paths(deep_paths)
-          compute_dropped(deep_paths)
-        end
-
-        # A deep config is dropped when a node it passes THROUGH (each hop's parent; never the leaf itself)
-        # can't hold JSON object properties. Judged on the finished tree so declaration order doesn't matter.
-        def compute_dropped(deep_paths)
-          deep_paths.filter_map { |config, hops| config if path_blocked?(hops) }
-        end
-
-        # Walk a deep config's ancestor chain hop by hop, carrying the shape members an implicit hop merged
-        # into so a deeper implicit hop can test their OWN nested shape members (a member-of-a-member).
-        # `carried` is the object-shaped member configs the current node stands in for (empty for a real
-        # node or a fresh implicit intermediate that claimed no shape member).
-        #
-        # Public: PropertyNames.emitted_configs asks this at EVERY depth (not just the deep configs
-        # compute_dropped reports), because the emitter blocks a property at whichever ancestor blocks it —
-        # so property attribution needs the same per-hop answer, not a second predicate that could drift.
-        def path_blocked?(hops)
-          carried = []
-          hops.each do |node, key|
-            return true if blocking_ancestor?(node, key, carried)
-
-            carried = merged_shape_members(node, key, carried)
-          end
-          false
-        end
-
-        # An explicit ancestor blocks nesting when its configs forbid it (a `model:` route, or a non-object /
-        # mixed-union type on any route) — node_configs_block_nesting? is the single source of truth emission's
-        # apply_nested_subfields! gates on too, so the drop pass and the schema agree (they are the same method,
-        # not two copies of one rule). An implicit ancestor never blocks on its own type — but descending into
-        # an IMPLICIT child whose key collides with a non-object `shape:` member does: the member property
-        # already claims that key with a non-object type, so the deep structure has nowhere to live. Those
-        # members come from the node's own explicit configs AND every member this implicit node merged into
-        # (`carried`), so a member of a member is tested at depth.
-        def blocking_ancestor?(node, key, carried = [])
-          return true if node_configs_block_nesting?(node.configs)
-          return false unless node.children[key]&.implicit?
-
-          colliding_shape_members(node, key, carried).any? { |m| !nestable_as_object?(m) }
-        end
-
-        # The shape members a node (via its explicit configs or the `carried` members it merged into) declares
-        # at `key` AND the descent merges there — carried into the next hop. Empty when nothing merges.
-        #
-        # Both kinds of child merge, because emission merges at both: an IMPLICIT child carries every nestable
-        # colliding member (a non-nestable one would already have blocked in blocking_ancestor?, so the select
-        # is the same all-or-nothing answer stated defensively), and an EXPLICIT child carries whatever
-        # merged_explicit_members says it merges — the one predicate apply_children! asks too, so the drop pass
-        # and the schema cannot disagree about which members a descent represents.
-        # Every route contributes, because every route is ENFORCED and a non-nestable member on any of them must
-        # block whether or not it is emitted.
-        def merged_shape_members(node, key, carried)
-          child = node.children[key]
-          return NO_SHAPE_MEMBERS unless child
-
-          members = shape_members_at(carried.empty? ? node.configs : node.configs + carried, key)
-          return members.select { |m| nestable_as_object?(m) } if child.implicit?
-
-          merged_explicit_members(child, members)
-        end
-
-        # The colliding `shape:` members an EXPLICIT child merges into its own property, or none.
-        #
-        # THE owner of that question, for emission (apply_children!) and the drop pass (merged_shape_members)
-        # alike. Two gates, each the one its own layer already applies elsewhere: the child must nest at all
-        # (node_configs_block_nesting?, the same predicate apply_nested_subfields! gates on), and EVERY
-        # colliding member must be object-shaped (nestable_as_object?, the same predicate apply_implicit_node!
-        # gates on). All-or-nothing on the second, so a member whose contents have no object representation
-        # never contributes half of itself.
-        #
-        # A non-nestable member does NOT block the child the way it blocks an implicit one: the child's own
-        # declared type governs what it emits, and a `type: Hash` node under a `type: [Hash, Array]` member
-        # still nests its subfields as properties — runtime narrows to the Hash branch there, and a contract
-        # written that way resolves for real (measured). It only means the member's own contents are not
-        # merged in, because they describe branches this node does not admit.
-        def merged_explicit_members(child, members)
-          return NO_SHAPE_MEMBERS if members.empty?
-          return NO_SHAPE_MEMBERS if node_configs_block_nesting?(child.configs)
-
-          members.all? { |m| nestable_as_object?(m) } ? members : NO_SHAPE_MEMBERS
-        end
-
-        # Every `shape:` member declared at `key` across the node's own configs AND the members carried from
-        # a shallower hop — via shape_members_at, the same locator emission uses, so the two sides can't
-        # disagree on which members collide with the implicit child at `key`.
-        def colliding_shape_members(node, key, carried)
-          return shape_members_at(node.configs, key) if carried.empty?
-
-          shape_members_at(node.configs + carried, key)
-        end
-
-        private_class_method :compute_dropped, :blocking_ancestor?, :merged_shape_members, :colliding_shape_members,
-                             :merged_explicit_members
 
         # Whether an active `presence:` check here rejects every blank value: one is declared and it is not
         # blank-tolerant. THE single definition, read by the blank-default judgment and by the size-floor
@@ -789,147 +677,6 @@ module Axn
           constraint = dropped.except(:description, RESIDUE_KEY).compact
           summary = constraint.empty? ? reason : "#{reason} (#{render_constraint(constraint)})"
           record_residue(result, summary)
-        end
-
-        # The fragment a residue MENTIONS, rendered without requiring the caller's literals to be
-        # JSON-encodable. They need not be: `normalize_scalar_literal` deliberately keeps a
-        # `Float::INFINITY` default and its kind, so ordinary reflection does not fail on one — and a path
-        # that merely NAMES such a value must not be the one that fails instead.
-        def render_constraint(prop)
-          # A mentioned subtree no longer participates in the final schema walk. Finalize its
-          # reports now, on a copy, while schema nodes can still be distinguished from literals.
-          finalized, = finalize_residues!(prop, copy: true)
-          JSON.generate(json_mentionable(finalized))
-        end
-
-        # `value` reduced to something JSON can carry WITHOUT asking it anything. Reducing first rather than
-        # encoding and rescuing is the point: `JSON.generate` dispatches `to_json`, so encoding a caller's
-        # own object runs its code — which this layer may never do, and which a `StandardError` rescue does
-        # not contain anyway (a `to_json` raising `NotImplementedError` escaped one and took `input_schema`
-        # down while it was merely composing a report).
-        #
-        # Everything that reaches the encoder is a plain primitive: a String through `Text.renderable`, so
-        # neither a subclass's `to_json` nor bytes with no UTF-8 rendering reach it, and anything else
-        # through `Rendering`, whose reads are bound.
-        #
-        # EVERY test and read here is undispatched, because a reduction is only a defence if the reduction
-        # itself runs nothing. `nil?`, `==`, `instance_of?` and `map` are all overridable by the literal, so
-        # identity comes from `Identity.same?`, the class from `Identity.class_of`, and the two container
-        # walks from Array's and Hash's own unbound methods. Only an EXACT built-in is traversed, the rule
-        # `normalize_schema_literal` already follows: a subclass is opaque and renders as one.
-        #
-        # Integer/Float/Symbol need no bound read beyond the class test — none of the three can carry a
-        # singleton method, so an exact one answers with its own implementation or not at all.
-        def json_mentionable(value)
-          return value if Axn::Internal::Identity.nil_value?(value) || Axn::Internal::Identity.same?(value, true) || Axn::Internal::Identity.same?(value, false)
-          return value if exactly?(value, ::Integer)
-          return value.finite? ? value : mentionable_rendering(value) if exactly?(value, ::Float)
-          # `Text.renderable` reads the bytes through bound methods, so the String itself goes in — asking it
-          # for `to_s` first would dispatch, which is the thing this method exists not to do.
-          return Axn::Internal::Text.renderable(value) if exactly?(value, ::String)
-          return Axn::Internal::Text.renderable(value.name) if exactly?(value, ::Symbol)
-          return MENTIONABLE_MAP.bind_call(value) { |element| json_mentionable(element) } if exactly?(value, ::Array)
-          return mentionable_pairs(value) if exactly?(value, ::Hash)
-          # A declared class, named through `Module#to_s` bound rather than its own `to_s`.
-          return Axn::Internal::Rendering.stable_module_name(value) if Axn::Internal::Identity.kind?(value, ::Module)
-
-          mentionable_rendering(value)
-        end
-
-        # `value` is an instance of `klass` ITSELF, asking neither the value nor its class. A subclass
-        # answers false: it may override the reads a traversal would make.
-        def exactly?(value, klass) = Axn::Internal::Identity.same?(Axn::Internal::Identity.class_of(value), klass)
-
-        # An exact Hash walked through Hash's own `each_pair`. Every reduced key is a plain primitive, so the
-        # `[]=` that collects them hashes something axn built rather than something it was handed.
-        def mentionable_pairs(value)
-          MENTIONABLE_EACH_PAIR.bind_call(value).each_with_object({}) do |(key, nested), reduced|
-            reduced[json_mentionable(key)] = json_mentionable(nested)
-          end
-        end
-
-        # A callable is named by what it is, never rendered: its only rendering is an object address, which would
-        # change the document on every boot.
-        PER_CALL_RENDERING = "(resolved per call)"
-
-        # The literal classes whose rendering says what the value is, each read through its OWN class's `to_s`
-        # bound to the value — the exact class only, so the text is the built-in one and no override can run.
-        # Anything else, a callable object included, is named by its class: its own `to_s` is caller code, which
-        # reflection may never run, and Ruby's default one is an address that would change on every boot.
-        LITERAL_RENDERINGS = {
-          ::Float => ::Float.instance_method(:to_s), ::Regexp => ::Regexp.instance_method(:to_s),
-          ::Rational => ::Rational.instance_method(:to_s), ::Complex => ::Complex.instance_method(:to_s),
-          ::BigDecimal => ::BigDecimal.instance_method(:to_s), ::Date => ::Date.instance_method(:to_s),
-          ::DateTime => ::DateTime.instance_method(:to_s), ::Time => ::Time.instance_method(:to_s)
-        }.freeze
-        RANGE_EXCLUDE_END = ::Range.instance_method(:exclude_end?)
-        RANGE_BEGIN = ::Range.instance_method(:begin)
-        RANGE_END = ::Range.instance_method(:end)
-        private_constant :LITERAL_RENDERINGS, :RANGE_EXCLUDE_END, :RANGE_BEGIN, :RANGE_END
-
-        def mentionable_rendering(value)
-          # A String (a subclass included) is read through `Text.renderable`, whose reads are bound.
-          return Axn::Internal::Text.renderable(value) if Axn::Internal::Identity.kind?(value, ::String)
-          return PER_CALL_RENDERING if Axn::Internal::Identity.kind?(value, ::Proc) || Axn::Internal::Identity.kind?(value, ::Method)
-          return range_rendering(value) if exactly?(value, ::Range)
-
-          to_s = LITERAL_RENDERINGS[Axn::Internal::Identity.class_of(value)]
-          return Axn::Internal::Text.renderable(to_s.bind_call(value)) if to_s
-
-          Axn::Internal::Rendering.stable_class_name(value)
-        end
-
-        # A Range's endpoints are reduced like any other value, so an endpoint of a caller's class runs nothing.
-        def range_rendering(range)
-          ends = [RANGE_BEGIN.bind_call(range), RANGE_END.bind_call(range)].map do |endpoint|
-            Axn::Internal::Identity.nil_value?(endpoint) ? "" : JSON.generate(json_mentionable(endpoint))
-          end
-          ends.join(RANGE_EXCLUDE_END.bind_call(range) ? "..." : "..")
-        end
-
-        # An authored `description:` survives a stand-down even though the declaration's constraints do not:
-        # it describes the POSITION for a reader, not the value for a validator, so nothing about it is
-        # untrustworthy across a transform or a closed gate. Dropping it silently lost the explicit node's
-        # own prose in the ordinary case — a shape member cannot transform, so the node is nearly always the
-        # side that stands down, and its description was published before this. Both are kept when both
-        # exist, and an identical pair collapses.
-        # Both descriptions are the AUTHOR'S OWN prose, so neither is asked anything: each is reduced through
-        # the rendering seam first, and the equal-pair collapse then compares two plain Strings axn owns
-        # rather than dispatching a `==` the description's class may define.
-        #
-        # `nil?` is overridable too, so every nil test this reporting path makes of a caller's own object —
-        # here, in `carry_metadata`, and in `stand_down_from` — goes through `Identity.nil_value?`. The rule
-        # is the region's, not this method's: a value reaches the guarded rendering seam WITHOUT having been
-        # asked anything on the way.
-        def carried_description(kept, dropped)
-          return kept if Axn::Internal::Identity.nil_value?(dropped)
-          return dropped if Axn::Internal::Identity.nil_value?(kept)
-
-          kept_prose = mentionable_rendering(kept)
-          dropped_prose = mentionable_rendering(dropped)
-          kept_prose == dropped_prose ? kept_prose : join_prose(kept_prose, dropped_prose)
-        end
-
-        # Two pieces of prose joined through the text seam, either of which may be caller-supplied and in
-        # an encoding the other cannot be concatenated with.
-        #
-        # Reduced through `mentionable_rendering`, never `to_s`: a String SUBCLASS description can override
-        # `to_s`, and one that raises took `input_schema` down from inside the append. The seam reads a
-        # String's bytes through bound methods and guards everything else.
-        # An author's description, rendered, and closed as a sentence where it is not already, so the residue
-        # sentence appended after it reads as its own ("ID of the User record. Additional constraints…").
-        SENTENCE_END = /[.!?:;]["')\]]*\s*\z/
-
-        def as_sentence(prose)
-          return prose if Axn::Internal::Identity.nil_value?(prose)
-
-          rendered = mentionable_rendering(prose)
-          rendered.empty? || rendered.match?(SENTENCE_END) ? rendered : "#{rendered}."
-        end
-
-        def join_prose(*parts)
-          rendered = parts.reject { |part| Axn::Internal::Identity.nil_value?(part) }.map { |part| mentionable_rendering(part) }
-          rendered.empty? ? nil : rendered.join(" ")
         end
 
         # Whether ANY config in this route list transforms the wire value it judges — a Proc
@@ -1254,56 +1001,6 @@ module Axn
                                "Float (1.5)")
         end
 
-        # Everything a `model:` route leaves unsaid about the two keys it reads, written once the properties at
-        # this level are final, whichever declaration wrote them — the one writer of a model id's residues at
-        # either depth. `explicit_id` is the declaration that owns the id's key when one does (a `<field>_id`
-        # sibling or a shape member), whose own `type:` then speaks for the id.
-        def name_model_routes!(properties, key, model_configs, descendants:, explicit_id: nil)
-          id_field = Internal::FieldConfig.model_id_key(key)
-          id_prop = properties[id_field]
-          if id_prop
-            id_prop = with_model_lookup_residue(id_prop, model_configs, descendants:)
-            id_prop = with_unstated_id_type_residue(id_prop, model_configs, explicit_id)
-          end
-          # The route reads its own key as the record, and a JSON value never is one, so only a blank passes there.
-          # Where another declaration emits a property at that key — a non-model route merged onto the node, an
-          # ancestor's shape member, another `model:` route's generated id — that property says what the other
-          # declaration accepts, which is more. Where nothing does, the document admits any value at the key, so
-          # the id says not to send it. Conditional exactly when the lookup is.
-          if properties.key?(key)
-            properties[key] = with_model_route_residue(properties[key], model_configs, MODEL_RAW_KEY_RESIDUE)
-          elsif id_prop
-            id_prop = with_model_route_residue(id_prop, model_configs, model_raw_key_note(key))
-          end
-          properties[id_field] = id_prop if id_prop
-        end
-
-        def with_model_route_residue(prop, model_configs, summary)
-          return record_residue(prop, summary) unless model_configs.all? { |config| model_lookup_gated?(config) }
-
-          record_residue(prop, "#{GATED_RESIDUE}; #{summary}", kind: :conditional)
-        end
-
-        def model_raw_key_note(key)
-          "don't send `#{Axn::Internal::Text.renderable(key.name)}` itself, which is read as the record and rejected " \
-            "unless it is blank; send this id"
-        end
-
-        # A declared `id_type:` describes the lookup token, and a nested declaration reading the id as an object
-        # replaces the type it would state. The runtime checks neither, so the document stays exact; the author's
-        # stated token type is still named rather than vanishing. An explicit `<field>_id` declaration with a
-        # `type:` of its own is what the author wrote at that key, so it speaks for the id without a note.
-        def with_unstated_id_type_residue(prop, model_configs, explicit_id)
-          return prop if explicit_id && explicit_id.validations[:type]
-
-          declared = reconciled_declared_id_type(model_configs)
-          shape = declared && model_id_type_schema(declared)
-          return prop if shape.nil? || projected_types(prop).include?(shape[:type])
-
-          record_residue(prop, "its `id_type:` (#{Axn::Internal::Rendering.stable_module_name(declared)}) is not stated, " \
-                               "since a nested declaration reads the id as an object")
-        end
-
         # How the runtime treats a `default:` (`FieldConfig.resolve_default`): anything answering `call` is
         # `instance_exec`ed through its `to_proc`, so it is COMPUTED when it answers both (a Proc, a Method, a
         # service class with `.to_proc`), BROKEN when it answers `call` alone (the omitted call raises converting
@@ -1335,43 +1032,6 @@ module Axn
           return prop unless relaxed.all? { |config| requiredness_conditionally_relaxable?(config, unknowable_relaxes: false) }
 
           record_residue(prop, GATED_REQUIRED_RESIDUE, kind: :conditional)
-        end
-
-        # A null-only id never reaches the lookup, so it has nothing to name. The lookup is conditional when every
-        # model route's lookup is gated; one ungated route looks up on every call.
-        #
-        # A route that accepts nil states no lookup constraint: a miss reads as nil, so `optional:`/`allow_nil:`
-        # resolve an id that names no record exactly as they resolve no id at all. Asked through `nil_accepted?`,
-        # the judgment the runtime's own nil verdict turns on, so the two cannot disagree. The call is rejected
-        # when ANY route rejects a miss, so the residue stays as long as one does.
-        #
-        # A nil record is also rejected by what hangs beneath it: a required descendant reads absent under a nil
-        # parent (PRO-2857). `descendants:` is what `descendants_reject_nil_ancestor` answered for the model's
-        # subtree. `:always` keeps the residue whatever the model's own validators say; `:conditional` (a descendant
-        # only a gate makes required) states it as conditional, since the gate's state is not knowable here. The
-        # explicit `<field>_id` sibling's default rescues an OMITTED id only, never one the caller supplied.
-        def with_model_lookup_residue(prop, model_configs, descendants:)
-          return prop if prop.nil?
-
-          # An id admitting only null names no record, so where the lookup's miss is rejected, so is every call
-          # that sends one — a Ruby caller passing the record itself is the only one that passes.
-          summary = projected_types(prop) == ["null"] ? MODEL_NULL_ID_RESIDUE : MODEL_LOOKUP_RESIDUE
-          rejecting = descendants == :always ? model_configs : model_configs.reject { |config| nil_accepted?(config) }
-          if rejecting.empty?
-            return prop unless descendants == :conditional
-
-            return record_residue(prop, "#{GATED_RESIDUE}; #{summary}", kind: :conditional)
-          end
-
-          return record_residue(prop, summary) unless rejecting.all? { |config| model_lookup_gated?(config) }
-
-          record_residue(prop, "#{GATED_RESIDUE}; #{summary}", kind: :conditional)
-        end
-
-        # Only the declaration's own gate skips the lookup: an inbound `model:` bag never carries one
-        # (`Contract#_reject_model_bag_gates_and_tolerances!` refuses it).
-        def model_lookup_gated?(config)
-          Internal::FieldConfig::CONDITIONAL_GATE_KEYS.any? { |key| config.validations.key?(key) }
         end
 
         # A callable is named rather than rendered: its only rendering is an object address, and asking it for
@@ -2332,273 +1992,6 @@ module Axn
           end
 
           {}
-        end
-
-        # Inbound, `numericality:` alone admits a Number or a numeric String (a Number only under `only_numeric:`),
-        # so it types the node as that union and lets the union's own narrowing say which Strings and which
-        # Numbers pass. Typing it `"number"` rejected the `"5"` the validator parses.
-        def numericality_input_node(validations, numericality)
-          only_numeric = Axn::Validation::Base.validator_entry_options(numericality)[:only_numeric]
-          tokens = only_numeric ? [::Numeric] : [::Numeric, ::String]
-          type_hashes = tokens.map { |k| single_type_for(k, for_output: false) }.uniq
-          node = type_hashes.size == 1 ? type_hashes.first : { anyOf: type_hashes }
-          narrow_node_under_numericality(node, validations, tokens)
-        end
-
-        # A `numericality:` entry reaches a node's branches four different ways, and each is decided from the
-        # DECLARED token rather than from the emitted type alone — reading the type alone retagged branches no
-        # value of the declared class can occupy.
-        #
-        #   a non-numeric type  drops, under EVERY spelling of the validator. `is_number?` runs before any
-        #                       option is read, so no Array, Hash or boolean can satisfy it.
-        #   a "number" branch   narrows to "integer" under `only_integer:`, and only where some declared token
-        #                       ADMITS an Integer (`Numeric` does; `Float` does not). Retagging a Float branch
-        #                       advertised the JSON integer `2`, which `is_a?(Float)` rejects — and no Float
-        #                       satisfies `only_integer:` anyway (`2.0.to_s` is "2.0"), so the branch is
-        #                       unreachable and drops out.
-        #   a "string" branch   drops under `only_numeric:`, which demands a Numeric OBJECT. Otherwise it stays
-        #                       — the validator parses a numeric STRING — and carries ActiveModel's own integer
-        #                       test translated where `only_integer:` gives it one, so `"2"` passes where `"abc"`
-        #                       does not and leaving the branch unconstrained advertised both.
-        #   anything else       is left exactly as built.
-        #
-        # Narrowing both branches of `[Integer, Float]` converges them, so the node collapses; deduping is a
-        # CONSEQUENCE of that convergence and never a tidy-up of its own, so a union that narrows nothing comes
-        # back untouched, duplicate branches included.
-        def narrow_node_under_numericality(node, validations, tokens)
-          entry = Axn::Validation::Base.validator_entries(validations)[:numericality]
-          return node unless entry
-
-          # The ENTRY's presence is the whole gate, and the two options below decide only what they alone can.
-          # ActiveModel asks `is_number?` before it reads any option, and `only_numeric:` is one more restriction
-          # INSIDE that check rather than the thing that establishes it — so no spelling of the validator can be
-          # satisfied by a value that does not parse as a number, and a branch naming such values is unreachable
-          # under all of them. Gating the pass on the options instead left the branch standing wherever neither
-          # was given: `type: [TrueClass, Integer], numericality: true` accepts neither boolean and advertised
-          # both. What the options still decide is the string branch (`only_numeric:` alone can drop it) and the
-          # retag of a numeric branch to "integer" (`only_integer:`).
-          # Resolved across BOTH tiers, the way `validates` builds a validator's options
-          # (`defaults.merge(_parse_validates_options(options))`): a declaration-level `optional:`/`allow_blank:`
-          # is recorded once on the declaration rather than copied into each entry, so an entry-only read answers
-          # a field's tolerance wrongly. Every other tolerance judgment here goes through this same seam
-          # (`presence_rejects_blank?`, `declared_size_minimum`), which is what keeps the branch and the size
-          # floor from disagreeing about one declaration.
-          options = Axn::Validation::Base.effective_entry_options(entry, Axn::Validation::Base.shared_validation_options(validations))
-          only_integer = Axn::Validation::Base.declared_only_integer?(entry)
-          numeric_only = options[:only_numeric] ? true : false
-          # A tolerated BLANK never reaches the validator at all — ActiveModel skips a blank value before
-          # `is_number?` runs — so a branch the numeric check excludes may still be occupied by its own blank,
-          # and dropping it outright refused output the action produced (`type: :boolean, numericality:
-          # { allow_blank: true }` exposes `false` successfully). Read off the options resolved above, so the
-          # declaration-level `optional:` and an entry's own `allow_blank:` are covered by one read. Truthiness is
-          # the whole test, exactly as it is for `only_numeric:` — ActiveModel reads `options[:allow_blank]` truthily
-          # rather than resolving it per call, so a Proc tolerates a blank on every call.
-          blank_tolerated = options[:allow_blank] ? true : false
-          # Skipping the validator is only half of it: the value still has to get PAST the position. A required
-          # position rejects an empty container on its own, so `type: [Array, Integer], numericality:
-          # { allow_blank: true }` admits no `[]` however blank-tolerant the entry is, and treating the entry's
-          # tolerance as the whole answer emitted a branch nothing satisfies (`enum: [[]]` beside the `minItems: 1`
-          # the same declaration writes). This is the very predicate the size FLOOR is derived from, so the branch
-          # and the floor cannot disagree about one declaration. It governs the EMPTY witnesses only — `false` is
-          # blank without being empty, which is why a required `:boolean` really does expose it.
-          empty_rejected = empty_value_rejected?(validations)
-
-          union = node[:anyOf].is_a?(Array)
-          admits = integer_admitted_by?(tokens)
-          branches = union ? node[:anyOf] : [node]
-          # A branch may only be DROPPED where the declared tokens prove no Numeric can occupy the position.
-          # See `numeric_reachable_through_broad_token?` — the emitted type is not evidence on its own.
-          drop = !numeric_reachable_through_broad_token?(tokens)
-          mapped = branches.filter_map do |branch|
-            numericality_branch(branch, admits, numeric_only:, only_integer:, drop:, blank_tolerated:,
-                                                empty_rejected:)
-          end
-          # Every branch dropping is the CONTRACT, not a case to fall back from: `type: Float, numericality:
-          # { only_integer: true }` admits nothing at all — no Float's `to_s` is an integer literal, and a JSON
-          # integer is not a Float — so restoring the node advertised `1.5` at a position that rejects it. A node
-          # nothing satisfies is the faithful projection here, on the same terms two disagreeing `equal_to:`
-          # bounds already emit `enum: []`. Refusing the declaration outright stays PRO-3220's.
-          return { enum: EMPTY_ENUM } if mapped.empty?
-          return node if mapped == branches
-
-          deduped = mapped.uniq
-          return deduped.first if deduped.size == 1
-
-          union ? node.merge(anyOf: deduped) : node
-        end
-
-        # What each narrowing does to ONE branch. `only_numeric:` is the blunter of the two: it makes ActiveModel
-        # demand a Numeric OBJECT rather than parse anything, so every branch naming values that are not Numerics
-        # is unreachable — a string branch (the one that existed to carry `"2"`), and equally an array, object or
-        # boolean branch, each measured as rejected. `only_integer:` is the finer one, retagging a numeric branch
-        # and translating ActiveModel's integer test onto a string branch that survived.
-        #
-        # The `"null"` branch is exempt from both, and not by omission: NULLABILITY owns it. ActiveModel skips a
-        # nil before any validator sees it wherever the field tolerates one, so neither option says anything
-        # about nil — measured, `type: [String, Integer, NilClass], numericality: { only_numeric: true },
-        # optional: true` accepts nil while rejecting every String.
-        # Whether some declared token is a SUPERTYPE of Numeric — `Object`, `Comparable`, `Kernel`. Such a token
-        # admits a Numeric value while `single_type_for` renders it APPROXIMATELY (`type: Object` emits a
-        # `"string"` branch), so that branch's emitted type says nothing about what the position holds, and
-        # dropping it as "names non-Numerics" emptied a contract `1` satisfies: `type: Object, numericality:
-        # { only_numeric: true }` went to `enum: []` while accepting the Integer.
-        #
-        # The same lesson as the untyped branch above, one step further: an ABSENT type is not evidence, and
-        # neither is an APPROXIMATE one. A token that is itself numeric is excluded — it emits a numeric branch,
-        # which this pass narrows rather than drops.
-        def numeric_reachable_through_broad_token?(tokens)
-          tokens.any? do |token|
-            next false unless Internal::Identity.kind?(token, ::Module)
-
-            Internal::NativeMethods.includes_module?(::Numeric, token) &&
-              !Internal::NativeMethods.includes_module?(token, ::Numeric)
-          end
-        end
-
-        def numericality_branch(branch, admits_integer, numeric_only:, only_integer:, drop: true, blank_tolerated: false,
-                                empty_rejected: false)
-          # A branch `only_numeric:` may drop is one whose emitted type NAMES values that are not Numerics.
-          # Everything else is left exactly as built — including the `"null"` branch nullability owns, a branch
-          # already tagged `"integer"`, and any branch whose type is ABSENT. That last is load-bearing: a missing
-          # type is not evidence of anything. `type: Numeric` deliberately emits `{}` on output, its values
-          # having more than one wire form, and reading that absence as proof emptied a position the action
-          # satisfies with `1` — the schema rejecting output it had produced.
-          # EVERY spelling of the validator drops it, which is why no option is consulted here: `is_number?` runs
-          # before any of them, and no Array, Hash or boolean survives it — `[1].to_s` is `"[1]"` and `true.to_s`
-          # is `"true"`, neither a numeric literal. Reading the options here left `of: { klass: :boolean,
-          # numericality: true }` advertising an element the validator rejects on every call. The test stays on
-          # types that NAME non-Numerics; an absent or unrecognized type still falls through to "keep".
-          #
-          # Exact for a boolean: `Class.new(TrueClass)` is legal and can never be instantiated (`new` AND
-          # `allocate` both raise), so no value of a `"boolean"` branch is anything but `true`/`false`. For the
-          # containers it rests on the same footing every spelling has always stood on — a subclass
-          # reimplementing BOTH `to_s` and `to_i` to impersonate a number does satisfy the validator, and one
-          # overriding `to_s` alone raises inside ActiveModel rather than passing.
-          if NON_NUMERIC_BRANCH_TYPES.include?(branch[:type])
-            return drop ? blank_witness_branch(branch, blank_tolerated, empty_rejected) : branch
-          end
-
-          case branch[:type]
-          when "number" then only_integer ? number_branch_as_integer(branch, admits_integer) : branch
-          when "string" then string_branch_under_numericality(branch, numeric_only:, only_integer:, drop:)
-          else branch
-          end
-        end
-
-        # The emitted types that name values no Numeric can be, and so the only branches `only_numeric:` may
-        # drop. Listed rather than derived by exclusion for exactly the reason above — an absent or unrecognized
-        # type has to fall through to "keep", not to "drop".
-        NON_NUMERIC_BRANCH_TYPES = %w[array object boolean].freeze
-        private_constant :NON_NUMERIC_BRANCH_TYPES
-
-        # The one blank each of those types can hold. Every branch the numeric check excludes has exactly one, so
-        # a blank-tolerant position narrows the branch TO it rather than losing the branch: the result names the
-        # only value that can occupy the position there, which is right in both directions at once — outbound it
-        # accepts the blank the action can expose, inbound it accepts nothing else, and the runtime agrees on
-        # both counts. `enum` is the spelling because a singleton boolean branch already uses it (`TrueClass`
-        # emits `enum: [true]`) and because `merge_enum!` composes it by intersection.
-        #
-        # Each witness is FROZEN, on the same terms `EMPTY_ENUM` and `NULL_BRANCH` already are: this value is
-        # handed to a consumer inside a schema, schemas are rebuilt per call and caller-mutable, and a shared
-        # mutable `[]`/`{}` let one consumer's mutation reach every schema the process emitted afterwards —
-        # measured, appending to one action's witness changed a DIFFERENT action class's `enum` to `[[99]]`.
-        # Freezing rather than copying is what the neighbours do and buys the same property (AGENTS.md: an
-        # already-frozen container needs no copy), with the difference that a mutating consumer now gets a
-        # FrozenError instead of silently corrupting every later schema.
-        BLANK_BRANCH_WITNESS = { "array" => [].freeze, "object" => {}.freeze, "boolean" => false }.freeze
-        private_constant :BLANK_BRANCH_WITNESS
-
-        # `nil` — drop the branch — wherever no tolerated blank can occupy it. Two ways that happens: the
-        # position tolerates no blank at all, or the branch already names values that exclude this type's blank.
-        # The second is the `TrueClass` case and it matters: its branch is `enum: [true]`, and `true` is not
-        # blank, so nothing skips the validator there and the branch really is unreachable — while `FalseClass`
-        # names `false`, which is, and survives.
-        def blank_witness_branch(branch, blank_tolerated, empty_rejected)
-          return nil unless blank_tolerated
-          return nil unless BLANK_BRANCH_WITNESS.key?(branch[:type])
-
-          witness = BLANK_BRANCH_WITNESS.fetch(branch[:type])
-          # An EMPTY witness has to clear the position's own emptiness check, and so does an explicitly-named
-          # `false`. The one exemption is the `:boolean` pseudo-type, whose blank a REQUIRED position really does
-          # admit — measured, `expects :n, type: :boolean` accepts `false`, while `type: FalseClass` accepts
-          # nothing at all — and its branch is the one carrying no `enum`, a `FalseClass` branch naming `[false]`
-          # explicitly.
-          return nil if empty_rejected && !(false.equal?(witness) && branch[:enum].nil?)
-
-          existing = branch[:enum]
-          return nil if existing && !existing.include?(witness)
-
-          branch.merge(enum: [witness])
-        end
-
-        # A numeric branch under `only_integer:`: retagged where some declared token admits an Integer, and
-        # dropped where none does — no Float satisfies the option (`2.0.to_s` is "2.0"), so the branch is
-        # unreachable rather than merely narrower.
-        def number_branch_as_integer(branch, admits_integer) = admits_integer ? branch.merge(type: "integer") : nil
-
-        def string_branch_under_numericality(branch, numeric_only:, only_integer:, drop: true)
-          return nil if numeric_only && drop
-          return branch unless only_integer
-
-          merge_integer_literal_pattern(branch)
-        end
-
-        def merge_integer_literal_pattern(branch)
-          source = Pattern.ecma_source(Axn::Validation::Base.integer_literal_regexp)
-          return branch unless source
-
-          composed = branch.dup
-          write_pattern!(composed, source)
-          composed
-        end
-
-        # Whether the position's numbers reach the wire unchanged. A Ruby Integer and Float serialize exactly;
-        # every other Numeric is rendered through `Float()`, which ROUNDS — `BigDecimal("0.099999999999999999")`
-        # satisfies `less_than: 0.1` and then serializes AS `0.1`, which the emitted `exclusiveMaximum` rejects.
-        # A bound is outbound-honest only where that rounding cannot happen.
-        def numeric_serialization_exact?(tokens)
-          return false if tokens.empty?
-
-          tokens.all? do |token|
-            Internal::Identity.same?(token, ::Integer) || Internal::Identity.same?(token, ::Float)
-          end
-        end
-
-        # Whether a JSON integer could satisfy any of the declared tokens. Asked of Integer's OWN ancestry, the
-        # undispatched form, for the reason the key-axis gates give. No declared token at all means the caller is
-        # not describing a class union, and the narrowing behaves as it did before this distinction existed.
-        def integer_admitted_by?(tokens)
-          return true if tokens.empty?
-
-          tokens.any? do |token|
-            Internal::Identity.kind?(token, ::Module) && Internal::NativeMethods.includes_module?(::Integer, token)
-          end
-        end
-
-        # Whether a `numericality:` entry proves the value will SERIALIZE as a JSON number. Two different
-        # things can stop it, and it takes both options to exclude them.
-        #
-        # ActiveModel accepts a numeric STRING unless `only_numeric: true` is given — `"1"` passes
-        # `greater_than: 0`, and passes `only_integer:` too, since that reads the string form — so an exposed
-        # value may well be a String. And `only_numeric:` alone proves only that the value is a NUMERIC, which
-        # is not the same as a JSON number: `Complex(1, 2)` is a Numeric and serializes as `"1+2i"`, so the
-        # inferred `"number"` rejected output the action had produced successfully.
-        #
-        # `only_integer:` is what excludes it, and excludes it exactly: among Numerics only an Integer's `#to_s`
-        # is an integer literal (a Float's carries `.`, a Rational's `/`, a BigDecimal's `e`, a Complex's `i`),
-        # so the two options together pin the value to an Integer and the emitted type is "integer" rather than
-        # "number". It has to be a STATIC `only_integer:`, which is exactly what `declared_only_integer?` asks;
-        # `only_numeric:` needs no such test, being the one option here ActiveModel reads truthily instead of
-        # resolving per call.
-        #
-        # On INPUT none of this applies: `numericality_input_node` types the node as the Number-or-numeric-String
-        # union the validator accepts. A declared `type:` is unaffected in both directions, being read before this
-        # and proving the class itself.
-        def numericality_type_provable?(numericality, for_output:)
-          return true unless for_output
-          return false unless Axn::Validation::Base.validator_entry_options(numericality)[:only_numeric]
-
-          Axn::Validation::Base.declared_only_integer?(numericality)
         end
 
         def enum_scalar_type(value)

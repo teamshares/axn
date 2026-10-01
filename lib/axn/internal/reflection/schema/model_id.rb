@@ -16,7 +16,9 @@ module Axn
         # A model field takes a RECORD at runtime but a lookup TOKEN on the wire, so this is the one place the
         # document describes something the declaration never names directly — inferred from the model class's
         # own primary key where it can be, reconciled against an explicitly-declared `id_type:` or an explicit
-        # sibling field where those exist.
+        # sibling field where those exist. It also writes what a route leaves unsaid about the two keys it reads
+        # (`name_model_routes!`): that a lookup miss is rejected, that the raw key is read as the record, and an
+        # `id_type:` the id cannot state.
         module ModelId
           include Vocabulary
 
@@ -243,6 +245,93 @@ module Axn
             # and, left in place, a confusing double-marker beside the type that just replaced its reason
             # for existing.
             target_property.delete(:not) if target_property[:not] == { type: "null" }
+          end
+
+          # Everything a `model:` route leaves unsaid about the two keys it reads, written once the properties at
+          # this level are final, whichever declaration wrote them — the one writer of a model id's residues at
+          # either depth. `explicit_id` is the declaration that owns the id's key when one does (a `<field>_id`
+          # sibling or a shape member), whose own `type:` then speaks for the id.
+          def name_model_routes!(properties, key, model_configs, descendants:, explicit_id: nil)
+            id_field = Internal::FieldConfig.model_id_key(key)
+            id_prop = properties[id_field]
+            if id_prop
+              id_prop = with_model_lookup_residue(id_prop, model_configs, descendants:)
+              id_prop = with_unstated_id_type_residue(id_prop, model_configs, explicit_id)
+            end
+            # The route reads its own key as the record, and a JSON value never is one, so only a blank passes there.
+            # Where another declaration emits a property at that key — a non-model route merged onto the node, an
+            # ancestor's shape member, another `model:` route's generated id — that property says what the other
+            # declaration accepts, which is more. Where nothing does, the document admits any value at the key, so
+            # the id says not to send it. Conditional exactly when the lookup is.
+            if properties.key?(key)
+              properties[key] = with_model_route_residue(properties[key], model_configs, MODEL_RAW_KEY_RESIDUE)
+            elsif id_prop
+              id_prop = with_model_route_residue(id_prop, model_configs, model_raw_key_note(key))
+            end
+            properties[id_field] = id_prop if id_prop
+          end
+
+          def with_model_route_residue(prop, model_configs, summary)
+            return record_residue(prop, summary) unless model_configs.all? { |config| model_lookup_gated?(config) }
+
+            record_residue(prop, "#{GATED_RESIDUE}; #{summary}", kind: :conditional)
+          end
+
+          def model_raw_key_note(key)
+            "don't send `#{Axn::Internal::Text.renderable(key.name)}` itself, which is read as the record and rejected " \
+              "unless it is blank; send this id"
+          end
+
+          # A declared `id_type:` describes the lookup token, and a nested declaration reading the id as an object
+          # replaces the type it would state. The runtime checks neither, so the document stays exact; the author's
+          # stated token type is still named rather than vanishing. An explicit `<field>_id` declaration with a
+          # `type:` of its own is what the author wrote at that key, so it speaks for the id without a note.
+          def with_unstated_id_type_residue(prop, model_configs, explicit_id)
+            return prop if explicit_id && explicit_id.validations[:type]
+
+            declared = reconciled_declared_id_type(model_configs)
+            shape = declared && model_id_type_schema(declared)
+            return prop if shape.nil? || projected_types(prop).include?(shape[:type])
+
+            record_residue(prop, "its `id_type:` (#{Axn::Internal::Rendering.stable_module_name(declared)}) is not stated, " \
+                                 "since a nested declaration reads the id as an object")
+          end
+
+          # A null-only id never reaches the lookup, so it has nothing to name. The lookup is conditional when every
+          # model route's lookup is gated; one ungated route looks up on every call.
+          #
+          # A route that accepts nil states no lookup constraint: a miss reads as nil, so `optional:`/`allow_nil:`
+          # resolve an id that names no record exactly as they resolve no id at all. Asked through `nil_accepted?`,
+          # the judgment the runtime's own nil verdict turns on, so the two cannot disagree. The call is rejected
+          # when ANY route rejects a miss, so the residue stays as long as one does.
+          #
+          # A nil record is also rejected by what hangs beneath it: a required descendant reads absent under a nil
+          # parent (PRO-2857). `descendants:` is what `descendants_reject_nil_ancestor` answered for the model's
+          # subtree. `:always` keeps the residue whatever the model's own validators say; `:conditional` (a descendant
+          # only a gate makes required) states it as conditional, since the gate's state is not knowable here. The
+          # explicit `<field>_id` sibling's default rescues an OMITTED id only, never one the caller supplied.
+          def with_model_lookup_residue(prop, model_configs, descendants:)
+            return prop if prop.nil?
+
+            # An id admitting only null names no record, so where the lookup's miss is rejected, so is every call
+            # that sends one — a Ruby caller passing the record itself is the only one that passes.
+            summary = projected_types(prop) == ["null"] ? MODEL_NULL_ID_RESIDUE : MODEL_LOOKUP_RESIDUE
+            rejecting = descendants == :always ? model_configs : model_configs.reject { |config| nil_accepted?(config) }
+            if rejecting.empty?
+              return prop unless descendants == :conditional
+
+              return record_residue(prop, "#{GATED_RESIDUE}; #{summary}", kind: :conditional)
+            end
+
+            return record_residue(prop, summary) unless rejecting.all? { |config| model_lookup_gated?(config) }
+
+            record_residue(prop, "#{GATED_RESIDUE}; #{summary}", kind: :conditional)
+          end
+
+          # Only the declaration's own gate skips the lookup: an inbound `model:` bag never carries one
+          # (`Contract#_reject_model_bag_gates_and_tolerances!` refuses it).
+          def model_lookup_gated?(config)
+            Internal::FieldConfig::CONDITIONAL_GATE_KEYS.any? { |key| config.validations.key?(key) }
           end
         end
       end
