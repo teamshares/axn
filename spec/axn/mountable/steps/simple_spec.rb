@@ -73,6 +73,30 @@ RSpec.describe "Step functionality" do
       end.to raise_error(ArgumentError, /steps must be Axn classes/)
     end
 
+    # A class that is not an axn gets the same refusal as a value that is not a class, naming the class by its
+    # name, or by its placeholder when it has none.
+    it "rejects a class that does not include Axn, naming it" do
+      stub_const("StepsGrammarSpec::Plain", Class.new)
+      expect { build_axn { steps(StepsGrammarSpec::Plain) } }
+        .to raise_error(ArgumentError, "steps must be Axn classes (e.g. `steps A, B`); StepsGrammarSpec::Plain does not include Axn")
+    end
+
+    it "rejects an anonymous class that does not include Axn by its placeholder" do
+      plain = Class.new
+      expect { build_axn { steps(plain) } }
+        .to raise_error(ArgumentError, "steps must be Axn classes (e.g. `steps A, B`); (anonymous class) does not include Axn")
+    end
+
+    it "accepts a subclass of an axn" do
+      parent = step2
+      expect { build_axn { steps(Class.new(parent)) } }.not_to raise_error
+    end
+
+    it "rejects a value that is not a class the same way" do
+      expect { build_axn { steps("x") } }
+        .to raise_error(ArgumentError, "steps must be Axn classes (e.g. `steps A, B`); got a value of class String")
+    end
+
     it "tolerates a nil entry (e.g. a conditional step)" do
       s1 = step1
       expect { build_axn { steps(s1, nil) } }.not_to raise_error

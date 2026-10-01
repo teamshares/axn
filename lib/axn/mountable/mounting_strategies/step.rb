@@ -24,7 +24,12 @@ module Axn
                 rendered = ::Axn::Internal::Reflection::PropertyNames.renderable_class_name(step_class)
                 raise ArgumentError, "steps must be Axn classes (e.g. `steps A, B`); got a value of class #{rendered}"
               end
-              raise ArgumentError, "Step #{step_class} must include Axn module" if !step_class.included_modules.include?(::Axn) && !step_class < ::Axn
+              # Asked of the ancestry rather than the class's own `<`, and named by its bound name, so neither
+              # the check nor the refusal runs the offender's code.
+              unless ::Axn::Internal::NativeMethods.includes_module?(step_class, ::Axn)
+                rendered = ::Axn::Internal::Rendering.stable_module_name(step_class)
+                raise ArgumentError, "steps must be Axn classes (e.g. `steps A, B`); #{rendered} does not include Axn"
+              end
 
               num_steps = _mounted_axn_descriptors.count { |descriptor| descriptor.mount_strategy.key == :step }
               step("Step #{num_steps + 1}", step_class)
