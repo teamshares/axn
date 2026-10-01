@@ -223,7 +223,7 @@ module Axn
 
         raise Axn::ReraiseFailed.new(desc: _describe(desc),
                                      reason: Internal::Rendering.exception_message(exception),
-                                     original_class: Internal::Rendering.class_name(exception)),
+                                     original_class: Internal::Rendering.stable_class_name(exception)),
               cause: exception
       end
 
@@ -301,7 +301,7 @@ module Axn
       # Everything the warning names comes from `Internal::Rendering` rather than from raw interpolation.
       def _warning_message(exception, desc)
         described = _describe(desc)
-        klass = Internal::Rendering.class_name(exception)
+        klass = Internal::Rendering.stable_class_name(exception)
         message = Internal::Rendering.exception_message(exception)
         src = Internal::Rendering.exception_source_location(exception)
 

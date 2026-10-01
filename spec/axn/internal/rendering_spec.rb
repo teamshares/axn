@@ -42,22 +42,22 @@ RSpec.describe Axn::Internal::Rendering do
     end
 
     # The policy that separates this reader from `action_name`, which degrades to the generic "Action": a type
-    # label is what the message says the input is NOT, so an unnameable class degrades to the bound rendering,
-    # which still identifies WHICH declared class was meant.
-    it "falls back to the bound rendering for an anonymous class, whose name is nil" do
-      expect(described_class.type_label(Class.new)).to match(/\A#<Class:0x[0-9a-f]+>\z/)
+    # label is what the message says the input is NOT, so an unnameable class degrades to its placeholder, which
+    # still says the declared type was a class rather than naming something else.
+    it "falls back to the placeholder for an anonymous class, whose name is nil" do
+      expect(described_class.type_label(Class.new)).to eq("(anonymous class)")
     end
 
-    it "falls back to the bound rendering when the class's own reader raises, on the same terms" do
+    it "falls back to the placeholder when the class's own reader raises, on the same terms" do
       klass = Class.new { def self.name = raise(Exception, "answered") } # rubocop:disable Lint/RaiseException
 
-      expect(described_class.type_label(klass)).to match(/\A#<Class:0x[0-9a-f]+>\z/)
+      expect(described_class.type_label(klass)).to eq("(anonymous class)")
     end
 
-    it "falls back to the bound rendering for a class answering with something other than a String" do
+    it "falls back to the placeholder for a class answering with something other than a String" do
       klass = Class.new { def self.name = :sym }
 
-      expect(described_class.type_label(klass)).to match(/\A#<Class:0x[0-9a-f]+>\z/)
+      expect(described_class.type_label(klass)).to eq("(anonymous class)")
     end
 
     # The positive control: an ordinary class and a pseudo-type read as a validation message has always said

@@ -128,7 +128,7 @@ module Axn
         yield
       rescue StandardError, *Axn::Extensions::SWALLOWABLE_BEYOND_STANDARD_ERROR => e
         adapter_name = Axn::Internal::Rendering.module_name(self)
-        desc = "#{adapter_name} tool response mapping"
+        desc = "#{Axn::Internal::Rendering.stable_module_name(self)} tool response mapping"
 
         Axn::Extensions.reraise_for_dev(e, desc) if Axn::Extensions.raises_in_dev?
 

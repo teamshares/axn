@@ -272,7 +272,7 @@ module Axn
 
       def _apply_one_fails_on(axn, spec)
         return axn.fails_on(spec) if spec.is_a?(Class)
-        raise ArgumentError, "[Axn::Factory] Invalid fails_on spec: #{spec.inspect}" unless spec.is_a?(Array)
+        raise ArgumentError, "[Axn::Factory] Invalid fails_on spec: #{Axn::Internal::Rendering.stable_inspect(spec)}" unless spec.is_a?(Array)
 
         parts = spec.dup
         kwargs = parts.last.is_a?(Hash) ? parts.pop : {}
@@ -283,7 +283,10 @@ module Axn
           # malformed spec (e.g. `[TimeoutError, "retry", :extra]`): destructuring would silently drop
           # the extras, whereas the equivalent direct `fails_on(TimeoutError, "retry", :extra)` raises.
           # Fail at declaration rather than mask the typo.
-          raise ArgumentError, "[Axn::Factory] Invalid fails_on spec (expected [exceptions, message?]): #{spec.inspect}" if parts.size > 2
+          if parts.size > 2
+            raise ArgumentError,
+                  "[Axn::Factory] Invalid fails_on spec (expected [exceptions, message?]): #{Axn::Internal::Rendering.stable_inspect(spec)}"
+          end
 
           exceptions, message = parts
           axn.fails_on(exceptions, message, **kwargs)
@@ -313,7 +316,7 @@ module Axn
 
         specs = value.is_a?(Array) && value.first.is_a?(Array) ? value : [value]
         specs.each do |spec|
-          raise ArgumentError, "[Axn::Factory] Invalid #{method_name} spec: #{spec.inspect}" unless spec.is_a?(Array)
+          raise ArgumentError, "[Axn::Factory] Invalid #{method_name} spec: #{Axn::Internal::Rendering.stable_inspect(spec)}" unless spec.is_a?(Array)
 
           parts = spec.dup
           # A trailing Hash is `from:` kwargs ONLY when the spec also carries a resolver — i.e. there are

@@ -37,9 +37,9 @@ module Axn
             unless ::Axn::Internal::Identity.kind?(resolved_type, ::Module) &&
                    ::Axn::Internal::NativeMethods.public_instance_method?(resolved_type, :valid?)
               named = if ::Axn::Internal::Identity.kind?(resolved_type, ::Module)
-                        ::Axn::Internal::Rendering.module_name(resolved_type)
+                        ::Axn::Internal::Rendering.stable_module_name(resolved_type)
                       else
-                        ::Axn::Internal::Rendering.class_name(resolved_type)
+                        ::Axn::Internal::Rendering.stable_class_name(resolved_type)
                       end
               raise ArgumentError, "form strategy: #{named} must implement `valid?`"
             end

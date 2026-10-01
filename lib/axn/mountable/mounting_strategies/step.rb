@@ -59,7 +59,7 @@ module Axn
             condition = kwargs[key]
             next if condition.is_a?(Symbol) || ::Axn::Core::Flow::Handlers::Invoker.callable?(condition)
 
-            raise ArgumentError, "step #{key}: must be a Symbol or callable (got #{condition.inspect})"
+            raise ArgumentError, "step #{key}: must be a Symbol or callable (got #{::Axn::Internal::Rendering.stable_inspect(condition)})"
           end
         end
 

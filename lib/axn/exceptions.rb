@@ -3,6 +3,7 @@
 require "axn/error"
 require "axn/internal/identity"
 require "axn/internal/native_methods"
+require "axn/internal/stable_addresses"
 require "axn/internal/text"
 
 module Axn
@@ -63,22 +64,6 @@ module Axn
       # The same name with any object address replaced by a placeholder (`StableAddresses`), for a message whose
       # text should not change from one boot to the next.
       def self.stable_of(value) = StableAddresses.of(of(value))
-    end
-
-    # An anonymous class or module renders as its object address (`#<Class:0x…>`, and `#<Class:0x…>::Inner` for a
-    # constant set under one), which changes on every boot and tells the reader nothing the placeholder does not:
-    # `(anonymous class)`, `(anonymous module)`, and a bare `#<Name>` for any other address a rendering carries (a
-    # singleton class's object). Here, below `Internal::Rendering`, so the messages built on this file can reach
-    # it, and so `Rendering.stable_class_name`/`stable_module_name` compose through one owner rather than two.
-    module StableAddresses
-      ANONYMOUS_MODULE_ADDRESS = /#<(?:Class|Module):0x\h+>/
-      OBJECT_ADDRESS = /:0x\h+>/
-      private_constant :ANONYMOUS_MODULE_ADDRESS, :OBJECT_ADDRESS
-
-      def self.of(rendered)
-        stable = rendered.gsub(ANONYMOUS_MODULE_ADDRESS) { |address| address.start_with?("#<Class") ? "(anonymous class)" : "(anonymous module)" }
-        stable.gsub(OBJECT_ADDRESS, ">").freeze
-      end
     end
 
     # A caller-supplied value written into one of this file's messages, whatever it turns out to be.
@@ -348,9 +333,9 @@ module Axn
     # hold bytes with no UTF-8 rendering, and joining those would replace this failure with an
     # Encoding::CompatibilityError out of the message path. The two classes are named in their own right but by
     # different readers: `klass` is the ACTION, whose name axn itself may have installed, so it goes through
-    # `RenderedActionName`; `owner` is a class axn never renames, so `RenderedModuleName` reads it bound. `name`
-    # goes through `RenderedText`. All three take whatever a caller of this public class actually passes rather
-    # than only what it ought to.
+    # `RenderedActionName`; `owner` is a class axn never renames, so `RenderedModuleName` reads it bound, with an
+    # anonymous one's address given way to its placeholder. `name` goes through `RenderedText`. All three take
+    # whatever a caller of this public class actually passes rather than only what it ought to.
     #
     # The two remedies are spelled out separately because they do NOT amount to the same thing, and a reader who
     # merges them lands back on the failure being reported: defining the name on the action moves the behaviour
@@ -359,7 +344,7 @@ module Axn
     class UnsurrenderableInheritedMethod < ContractViolation
       def initialize(klass:, name:, owner:)
         klass = Axn::Internal::RenderedActionName.of(klass)
-        owner = Axn::Internal::RenderedModuleName.of(owner)
+        owner = Axn::Internal::RenderedModuleName.stable_of(owner)
         name = Axn::Internal::RenderedText.of(name)
 
         super("#{owner} defines ##{name}, which #{klass} cannot inherit: axn must own that name to run the " \

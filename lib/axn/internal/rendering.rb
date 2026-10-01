@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "axn/exceptions"
+require "axn/internal/cycle_guard"
 require "axn/internal/identity"
 require "axn/internal/text"
 
@@ -77,9 +78,27 @@ module Axn
         # DELEGATED like the rest of this module's naming, and for the same reason.
         #
         # Falls back to the BOUND rendering rather than to a generic word: this token is the type a validation
-        # message says the input is not, and `#<Class:0x…>` at least tells the reader which declared class was
-        # meant, where a stand-in noun would leave the message saying nothing about it at all.
-        def module_type_label(mod) = RenderedInstalledName.of(mod) { module_name(mod) }
+        # message says the input is not, and `(anonymous class)` at least tells the reader the declared type was a
+        # class, where a stand-in noun would leave the message saying nothing about it at all.
+        def module_type_label(mod) = installed_name(mod)
+
+        # A class or module named in prose by the name axn may have INSTALLED on it (`RenderedInstalledName`), or by
+        # its stable placeholder when it has none — for a class that is not necessarily an action (a form type, a
+        # config consumer), where `action_name`'s generic "Action" would name the wrong thing.
+        def installed_name(mod) = RenderedInstalledName.of(mod) { stable_module_name(mod) }
+
+        # A value a caller handed axn, quoted back in a message. A class or module is NAMED, by its stable
+        # placeholder when anonymous, since naming a class is axn's rendering rather than the value's; an Array is
+        # quoted element by element on the same terms; anything else by its own `inspect`, which is the caller's
+        # rendering of their own object, address and all, and dispatched exactly as it was before this existed.
+        def stable_inspect(value, seen = nil)
+          return stable_module_name(value) if Identity.kind?(value, ::Module)
+          return value.inspect unless Identity.kind?(value, ::Array)
+
+          CycleGuard.guard(value, seen, on_cycle: CycleGuard::ARRAY_PLACEHOLDER) do |nested|
+            "[#{value.map { |element| stable_inspect(element, nested) }.join(', ')}]"
+          end
+        end
 
         # An ACTION class named in prose, where `module_name` would name it wrongly: axn installs a `name` of
         # its own on the classes it builds, so the bound reader answers with an object address in place of the
