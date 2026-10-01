@@ -833,7 +833,8 @@ module Axn
         # Integer/Float/Symbol need no bound read beyond the class test — none of the three can carry a
         # singleton method, so an exact one answers with its own implementation or not at all.
         def json_mentionable(value)
-          return value if Axn::Internal::Identity.nil_value?(value) || Axn::Internal::Identity.same?(value, true) || Axn::Internal::Identity.same?(value, false)
+          return value if Axn::Internal::Identity.nil_value?(value) || Axn::Internal::Identity.same?(value, true) ||
+                          Axn::Internal::Identity.same?(value, false)
           return value if exactly?(value, ::Integer)
           return value.finite? ? value : mentionable_rendering(value) if exactly?(value, ::Float)
           # `Text.renderable` reads the bytes through bound methods, so the String itself goes in — asking it
