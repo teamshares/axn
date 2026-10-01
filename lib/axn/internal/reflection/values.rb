@@ -14,11 +14,12 @@ require "axn/exceptions"
 
 # NOTE: we don't require "active_support/core_ext/object/json" here, but a Rails app loads it globally
 # — which adds a generic Object#as_json (`to_hash.as_json` when the value has a `to_hash`, an
-# instance-variable dump otherwise). To avoid that bypassing a value object's declared `to_h` shape,
-# `serialize_value` prefers `to_h` whenever the only `as_json` in reach is that generic one (see
-# projection_for), so a plain object with a meaningful `to_h` serializes via `to_h` in Rails and non-Rails
-# alike. A value with none of the three declares no shape at all, so `reject_opaque` rejects it there just
-# as it rejects the object address it renders as outside Rails.
+# instance-variable dump otherwise) and a `Data#as_json`/`Struct#as_json` that renders a whole subtree in one
+# call. To avoid either bypassing a value object's declared `to_h` shape, `serialize_value` prefers `to_h`
+# whenever the only `as_json` in reach is the generic one or a Data/Struct's own (see projection_for), so a
+# value with a meaningful `to_h` serializes via `to_h`, member by member, in Rails and non-Rails alike. A
+# value with no `as_json`, `to_h` or `to_hash` declares no shape at all, so `reject_opaque` rejects it there
+# just as it rejects the object address it renders as outside Rails.
 
 module Axn
   module Internal
@@ -55,7 +56,7 @@ module Axn
         # The projections `projection_for` names that serialize_value renders through `as_json`. Named as
         # a set rather than spelled into the `case` arm, so the route taken and the opaqueness verdict
         # below read from one list and cannot disagree.
-        AS_JSON_PROJECTIONS = %i[own_as_json delegated_as_json generic_as_json].freeze
+        AS_JSON_PROJECTIONS = %i[own_as_json delegated_as_json generic_as_json enumerable_as_json].freeze
         private_constant :AS_JSON_PROJECTIONS
 
         OPAQUE_VALUE_REASON = "it serializes only via the default Object#to_s (it would render as garbage " \
@@ -241,11 +242,17 @@ module Axn
               end
 
               # `guard:` rides along into the recursion: the rendered Hash's entries are the SAME position's
-              # members (a Data/Struct's own as_json/to_h projects onto the declared members' names whenever
-              # it hasn't been refused above), so the Hash arm above resumes the identical guard tree.
-              within_container(value, path, seen) { |nested| serialize_value(value.as_json, path:, seen: nested, reject_opaque:, guard:) }
+              # members (a Data/Struct's to_h projects onto the declared members' names whenever it hasn't
+              # been refused above), so the Hash arm above resumes the identical guard tree.
+              within_container(value, path, seen) do |nested|
+                serialize_value(as_json_projection(value, projection), path:, seen: nested, reject_opaque:, guard:)
+              end
             when :to_h
-              within_container(value, path, seen) { |nested| serialize_value(value.to_h, path:, seen: nested, reject_opaque:, guard:) }
+              # An implicit-receiver call, not `value.to_h`: a Data/Struct routed here (see projection_for) is
+              # rendered by ActiveSupport as `to_h.as_json`, which reaches a `to_h` at any visibility. Rendering
+              # the `to_h` here instead hands every nested member back to this method, so the guard, the leaf
+              # rules and `reject_opaque` apply at every depth.
+              within_container(value, path, seen) { |nested| serialize_value(value.__send__(:to_h), path:, seen: nested, reject_opaque:, guard:) }
             else
               raise Axn::Extensions::Serialization::UnserializableValue.new(path:, value:, reason: OPAQUE_VALUE_REASON) if reject_opaque && default_to_s?(value)
 
@@ -1102,16 +1109,96 @@ module Axn
         # The generic route splits in two because ActiveSupport's Object#as_json does: it delegates to
         # `to_hash` when the value has one and dumps `instance_values` only when it doesn't. A `to_hash` is
         # therefore the author's own projection rendered faithfully (:delegated_as_json), while its absence
-        # means what renders is a peek at internals (:generic_as_json). Both go through `as_json` — only the
-        # opaqueness verdict differs.
+        # means what renders is a peek at internals (:generic_as_json). They differ in the opaqueness verdict,
+        # and in what is walked (see `as_json_projection`).
+        #
+        # ActiveSupport's own Data#as_json/Struct#as_json is `to_h.as_json`, which renders the whole subtree in
+        # one call and so never lets the walker see a nested member. It is routed through `to_h` instead
+        # (:to_h), so a Data/Struct renders by the same rules at every depth, with or without the core_ext
+        # loaded. `Enumerable#as_json` (`to_a.as_json`: a Set, or any non-Array Enumerable) and the generic
+        # `Object#as_json` delegating to `to_hash` are the other two one-shot renderers, and are unrolled the
+        # same way (:enumerable_as_json, :delegated_as_json). Neither route depends on ActiveSupport being
+        # loaded: a `to_hash`-only value is a Hash-shaped value there too, rather than an object address.
         def projection_for(value)
+          as_json_owner = owner_of(value, :as_json) if value.respond_to?(:as_json)
+          return :to_h if data_or_struct_owner?(as_json_owner)
+
+          enumerable = enumerable_projection(value, as_json_owner)
+          return enumerable unless enumerable.nil?
+          return :to_h if as_json_owner.nil? && data_or_struct_with_nonpublic_to_h?(value)
+
           if value.respond_to?(:as_json)
-            generic = ::Object.equal?(owner_of(value, :as_json))
+            generic = ::Object.equal?(as_json_owner)
             return :own_as_json unless generic
             return value.respond_to?(:to_hash) ? :delegated_as_json : :generic_as_json unless value.respond_to?(:to_h)
           end
 
-          value.respond_to?(:to_h) ? :to_h : :to_s
+          return :to_s if Axn::Internal::Identity.kind?(value, ::Range)
+          return :to_h if value.respond_to?(:to_h)
+
+          value.respond_to?(:to_hash) ? :delegated_as_json : :to_s
+        end
+
+        # A Data/Struct whose `to_h` is protected or private. ActiveSupport's `Data#as_json`/`Struct#as_json` calls
+        # `to_h` with an implicit receiver, so under the core_ext such a value renders through it; without the
+        # core_ext nothing else would reach it (`respond_to?(:to_h)` is false), and it would render as its `to_s`.
+        # Reached for by the method table rather than by `respond_to?`, so a `respond_to?` override that denies a
+        # PUBLIC `to_h` is not mistaken for a non-public one.
+        def data_or_struct_with_nonpublic_to_h?(value)
+          return false unless Axn::Internal::Identity.kind?(value, ::Data) || Axn::Internal::Identity.kind?(value, ::Struct)
+
+          # The class answers for a frozen Data, which provably carries no singleton-level table (see
+          # `displacing_projection_anywhere?`); anything else asks its own table, materializing the singleton.
+          mod = if Axn::Internal::Identity.kind?(value, ::Data) && Axn::Internal::NativeMethods.frozen?(value)
+                  Axn::Internal::Identity.class_of(value)
+                else
+                  Axn::Internal::NativeMethods.method_table(value)
+                end
+          Axn::Internal::NativeMethods.instance_method_reachable?(mod, :to_h) &&
+            !Axn::Internal::NativeMethods.public_instance_method?(mod, :to_h)
+        end
+
+        # An Enumerable that is not a Hash or an Array (a Set, an Enumerator): its `to_h` is, unless it defines
+        # one, `Enumerable#to_h`, which reads the elements as key/value PAIRS — it raises on a `Set[3.14]` and
+        # silently turns `Set[[1, 2]]` into `{1 => 2}`. The elements are what it holds, so `to_a` is its
+        # projection, with or without ActiveSupport's `Enumerable#as_json` (`to_a.as_json`). A class that
+        # defines its OWN PUBLIC `to_h` declared a shape, which wins in both environments, as it does for any
+        # other value; a protected or private one is a helper, which ActiveSupport's `to_a` never reaches, so
+        # it does not count. One with its own `as_json` (an ActiveRecord::Relation, say) follows it.
+        # Answers nil when the value is none of those, leaving `projection_for` to route it. A Struct is an
+        # Enumerable whose own projection is its members by name, and a Range is a value rather than a
+        # collection: ActiveSupport renders it through its own `as_json` (`to_s`), and expanding an endless or
+        # very large one would never finish.
+        def enumerable_projection(value, as_json_owner)
+          return unless Axn::Internal::Identity.kind?(value, ::Enumerable)
+          return unless as_json_owner.nil? || Axn::Internal::Identity.same?(as_json_owner, ::Enumerable)
+          return if Axn::Internal::Identity.kind?(value, ::Range) || Axn::Internal::Identity.kind?(value, ::Struct)
+          return :enumerable_as_json unless own_public_to_h?(value)
+
+          :to_h unless as_json_owner.nil?
+        end
+
+        # Whether `value` defines a `to_h` of its own (not `Enumerable#to_h`) that a caller can dispatch.
+        def own_public_to_h?(value)
+          owner = owner_of(value, :to_h)
+          return false if owner.nil? || Axn::Internal::Identity.same?(owner, ::Enumerable)
+
+          Axn::Internal::NativeMethods.public_instance_method?(Axn::Internal::NativeMethods.method_table(value), :to_h)
+        end
+
+        # The plain Hash/Array `serialize_value` walks for an `as_json` route. ActiveSupport's `Enumerable#as_json`
+        # is `to_a.as_json` and its generic `Object#as_json` is `to_hash.as_json`: both render the whole subtree
+        # in one call, so a walk of THEIR result would never see a nested member. Taking the `to_a`/`to_hash`
+        # they call gives the walker the members themselves, so the leaf rules, `reject_opaque` and the render
+        # guard apply at every depth. Every other route is the value's own `as_json`, rendered as it answers.
+        # `to_a` is called with an implicit receiver, as ActiveSupport's own `Enumerable#as_json` calls it, so a
+        # collection that keeps a custom `to_a` non-public still renders.
+        def as_json_projection(value, projection)
+          case projection
+          when :enumerable_as_json then value.__send__(:to_a)
+          when :delegated_as_json then value.to_hash
+          else value.as_json
+          end
         end
 
         # Whether `value.to_s` would render an object address rather than anything meaningful — i.e. the
@@ -1145,7 +1232,8 @@ module Axn
                              :data_or_struct_descendant?, :undefined_projection_reason,
                              :method_missing_backed_projection?, :effective_displaced_method, :method_missing_projection_reason,
                              :dynamic_respond_to?, :overridden_beyond_kernel?, :effective_projection_displaces?,
-                             :denied_projection_reason, :data_or_struct_owner?, :generic_as_json_projection_reason
+                             :denied_projection_reason, :data_or_struct_owner?, :generic_as_json_projection_reason,
+                             :as_json_projection, :enumerable_projection, :own_public_to_h?, :data_or_struct_with_nonpublic_to_h?
       end
     end
   end
