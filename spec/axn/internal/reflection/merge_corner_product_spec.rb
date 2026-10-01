@@ -56,7 +56,7 @@ module MergeCornerProduct
                 # A transform that REPLACES the value, so a check on the transformed value parts from one on the wire
                 # value: a value-preserving Proc cannot show a child judged after the transform being stated as if
                 # it judged the wire. Varied only on the transforming route of a triple (`transform_triples`).
-                "replaced" => 'preprocess: ->(_v) { { "leaf" => "a" } }' }.freeze
+                "replaced" => 'preprocess: ->(_v) { { "leaf" => "a", "owner_id" => 1 } }' }.freeze
 
   # A route is one declaration landing on the node: `lines` are whole declarations of their own, `member` a block
   # member of the anchor, `raw` a raw member of the anchor's `shape:`, `anchor` options of the anchor itself.
@@ -204,8 +204,14 @@ module MergeCornerProduct
     replacing = explicit_routes("A", variations: value_variations(%w[Hash untyped], %w[replaced]))
     few = %w[required optional]
     %w[:r_a :r_e].flat_map do |on|
-      plain.product(replacing, dotted_routes(presences: few, on:)).map { |rs| build("ExA(replaced)xD#{on}", rs) }
+      children = dotted_routes(presences: few, on:) + model_child_routes(on:)
+      plain.product(replacing, children).map { |rs| build("ExA(replaced)xD#{on}", rs) }
     end
+  end
+
+  # A `model:` child under the node, which writes no property of its own key — only its generated `owner_id`.
+  def model_child_routes(on:)
+    %w[required optional].map { |pres| route("Dm", pres, lines: [opts("expects :owner", "on: #{on}", MODEL, presence(pres, "String"))]) }
   end
 
   # A top-level `model:` beside a top-level explicit field at its generated id, or beside a second `model:` route

@@ -157,11 +157,12 @@ module Axn
             # configs that produced it.
             emitted_ancestor_configs = property_routes(parent_configs) + carried
             transforming_routes = transforming_routes_beside_wire_routes(parent_configs)
+            transformed_keys = []
             child_loop = nil
             model_routes_first(children).each do |key, node|
+              transformed_keys.concat(transformed_child_keys(key, node, children)) if reads_transformed_route?(node, transforming_routes)
               if node.implicit?
                 apply_implicit_node!(prop, key, node, ancestor_configs, ann)
-                stand_down_transformed_child!(prop, key) if reads_transformed_route?(node, transforming_routes)
                 next
               end
 
@@ -181,8 +182,6 @@ module Axn
               members = ancestor_shapes ? shape_members_at(ancestor_configs, key) : NO_SHAPE_MEMBERS
               emitted_members = ancestor_shapes ? shape_members_at(emitted_ancestor_configs, key) : NO_SHAPE_MEMBERS
               apply_explicit_child!(prop, key, node, representative, non_model_configs, members, emitted_members, ann)
-              next stand_down_transformed_child!(prop, key) if reads_transformed_route?(node, transforming_routes)
-
               apply_child_requiredness!(prop, key, node, non_model_configs, ann)
             end
             # The sibling's OWN entry (a plain child of this same loop) always wins the property outright
@@ -208,6 +207,21 @@ module Axn
             # A required nested model id can't be null (a null token resolves the model to nil at runtime).
             # Done after the loop so it survives an explicit id subfield declared after the model: subfield.
             required_model_ids.each { |id_field| reject_null!(prop[:properties][id_field]) if prop[:properties][id_field] }
+            # Last, once every key's property and `required` entry is final — whichever path wrote it: an explicit
+            # or implicit child, a `model:` route's generated id (written before the loop reaches the route's own
+            # property, and absent a representative at all for a `model:`-only child), or the drains above.
+            transformed_keys.uniq.each { |key| stand_down_transformed_child!(prop, key) }
+          end
+
+          # The keys a child anchored on a transforming route writes: its own, and a `model:` route's generated id —
+          # unless a declaration of its own owns the id's key, which the lookup then reads, and whose own anchor
+          # decides it on its own visit.
+          def transformed_child_keys(key, node, children)
+            return [key] if node.implicit? || node.configs.none? { |c| c.validations[:model] }
+
+            id_field = Internal::FieldConfig.model_id_key(key)
+            id_node = children[id_field]
+            id_node.nil? || id_node.implicit? ? [key, id_field] : [key]
           end
 
           # At a node two routes declare, the routes that transform the value (`preprocess:`) while another reads it
@@ -240,6 +254,8 @@ module Axn
           # default kept and the rest named. Nor is it required: the transform may supply it.
           def stand_down_transformed_child!(prop, key)
             child = prop[:properties][key]
+            return if child.nil?
+
             prop[:properties][key] = stand_down_from(child.slice(:description, :default), child.except(:description, :default), TRANSFORM_RESIDUE)
             prop[:required].delete(required_key(key))
           end

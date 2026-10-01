@@ -7067,6 +7067,54 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       end
     end
 
+    # A `model:` child writes no property of its own key, only its generated id — before the loop would reach its
+    # own property, and with no representative to build one from — so the id is what stands down.
+    it "states no generated id for a model: child anchored on the transforming route" do
+      stub_const("MergedRouteCompany", Struct.new(:id) { def self.find(id) = new(id) })
+      model_child = lambda do |route|
+        Class.new do
+          include Axn
+          expects :payload, type: Hash
+          expects :inner, on: :payload, as: :pin, type: Hash
+          expects :account, on: "payload.inner", as: :raw, type: Hash
+          expects :account, on: :pin, as: :cooked, type: Hash, preprocess: ->(_v) { { "company_id" => 1 } }
+          expects :company, on: route, model: { klass: MergedRouteCompany, finder: :find }
+          def call = nil
+        end
+      end
+      account = ->(klass) { klass.input_schema.dig(:properties, :payload, :properties, :inner, :properties, :account) }
+
+      cooked = model_child.call(:cooked)
+      expect(cooked.call(payload: { "inner" => { "account" => { "x" => 1 } } })).to be_ok
+      without_id = { "payload" => { "inner" => { "account" => { "x" => 1 } } } }
+      expect(JSONSchemer.schema(JSON.parse(JSON.generate(cooked.input_schema))).valid?(without_id)).to be(true)
+      expect(account.call(cooked)[:required].to_a).not_to include("company_id")
+
+      raw = model_child.call(:raw)
+      expect(raw.call(payload: { "inner" => { "account" => { "x" => 1 } } })).not_to be_ok
+      expect(account.call(raw)[:required]).to include("company_id")
+    end
+
+    # The lookup reads an explicitly declared id, so where that declaration sits on the wire-reading route the id is
+    # checked as sent, and keeps its own exact property.
+    it "keeps an explicit id the wire-reading route declares beside a model: child of the transforming one" do
+      stub_const("MergedRouteCompany", Struct.new(:id) { def self.find(id) = new(id) })
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash
+        expects :inner, on: :payload, as: :pin, type: Hash
+        expects :account, on: "payload.inner", as: :raw, type: Hash
+        expects :account, on: :pin, as: :cooked, type: Hash, preprocess: ->(_v) { { "company_id" => 1 } }
+        expects :company, on: :cooked, model: { klass: MergedRouteCompany, finder: :find }
+        expects :company_id, on: :raw, type: Integer, optional: true
+        def call = nil
+      end
+      id = klass.input_schema.dig(:properties, :payload, :properties, :inner, :properties, :account, :properties, :company_id)
+
+      expect(klass.call(payload: { "inner" => { "account" => { "x" => 1 } } })).not_to be_ok
+      expect(id).to include(type: "integer")
+    end
+
     it "keeps the exact schema of a child anchored on the untransformed route" do
       klass = merged(:r_e)
 
