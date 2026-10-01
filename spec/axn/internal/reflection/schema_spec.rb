@@ -4252,11 +4252,13 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           include Axn
           expects(:payload, type: Hash) { field :inner, type: String }
           expects :inner, on: :payload, type: String, optional: true,
-                          default: hostile.new, preprocess: ->(v) { v }
+                          default: hostile.new, exclusion: { in: [hostile.new] }, preprocess: ->(v) { v }
           def call; end
         end
 
         expect { klass.input_schema }.not_to raise_error
+        # The default has no JSON literal and is left out; the exclusion set is what the residue quotes.
+        expect(klass.input_schema_residues.map(&:summary)).to include(a_string_including('"exclusion"'))
       end
     end
 
