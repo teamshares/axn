@@ -24,13 +24,6 @@ module Axn
         def item_type = "Mounting Type"
         def not_found_error_class = MountingTypeNotFound
         def duplicate_error_class = DuplicateMountingTypeError
-
-        def select_constants_to_load(constants)
-          # Select modules that are not the Base module
-          constants.select do |const|
-            const.is_a?(Module) && const != Base
-          end
-        end
       end
     end
 

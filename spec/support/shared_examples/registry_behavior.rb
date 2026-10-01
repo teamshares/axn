@@ -20,6 +20,23 @@ RSpec.shared_examples "a registry" do
       expect(registry.values).to all(be_a(Module))
     end
 
+    it "lists exactly the entries its directory's entry files are named for" do
+      expect(described_class.built_in.keys).to match_array(expected_built_in_keys)
+    end
+
+    # A constant that reaches the registry by any other route (an error class or a helper module beside
+    # the entries, or one inherited from Internal::Registry) is not an entry, whatever its name.
+    it "lists none of the other constants the registry can see" do
+      stub_const("#{described_class.name}::SpecLeakedError", Class.new(StandardError))
+      stub_const("#{described_class.name}::SpecLeakedHelper", Module.new)
+      memoized = described_class.instance_variable_get(:@built_in)
+      described_class.instance_variable_set(:@built_in, nil)
+
+      expect(described_class.built_in.keys).to match_array(expected_built_in_keys)
+    ensure
+      described_class.instance_variable_set(:@built_in, memoized)
+    end
+
     it "memoizes the result" do
       first_call = described_class.built_in
       second_call = described_class.built_in
@@ -34,6 +51,7 @@ RSpec.shared_examples "a registry" do
       described_class.clear!
       described_class.register(:custom, custom_item)
       expect(described_class.all[:custom]).to be(custom_item)
+      expect(described_class.all.keys).to match_array(expected_built_in_keys + [:custom])
     end
 
     it "allows custom items to be used" do
@@ -116,8 +134,7 @@ RSpec.shared_examples "a registry" do
       described_class.clear!
       described_class.register(:custom, Module.new)
       described_class.clear!
-      expect(described_class.all.keys).to include(*expected_built_in_keys)
-      expect(described_class.all.keys).not_to include(:custom)
+      expect(described_class.all.keys).to match_array(expected_built_in_keys)
     end
   end
 end

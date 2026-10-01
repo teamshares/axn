@@ -9,25 +9,21 @@ module Axn
       class DuplicateError < StandardError; end
 
       class << self
+        # A built-in entry is the constant an entry file in the registry's directory is named for:
+        # `adapters/sidekiq.rb` contributes `Adapters::Sidekiq` as `:sidekiq`. Nothing else the registry can
+        # see is an entry: not a constant it inherits from this class (`NotFound`), not one it defines itself,
+        # not a helper an entry file defines beside its entry, and not a shared helper, which lives in a
+        # `_`-prefixed file (`_base.rb`) that is loaded but contributes no entry.
         def built_in
           @built_in ||= begin
             # Get the directory name from the class name (e.g., "Strategies" -> "strategies")
             dir_name = name.split("::").last.underscore
 
-            # Load all files from the directory
             files = ::Dir[File.join(registry_directory, dir_name, "*.rb")]
             files.each { |file| require file }
 
-            # Get all modules defined within this class
-            constants = self.constants.map { |const| const_get(const) }
-            items = select_constants_to_load(constants)
-
-            # Convert module names to keys
-            items.to_h do |item|
-              name = item.name.split("::").last
-              key = name.underscore.to_sym
-              [key, item]
-            end
+            entry_names = files.map { |file| File.basename(file, ".rb") }.reject { |base| base.start_with?("_") }
+            entry_names.to_h { |base| [base.to_sym, _entry_constant(base)] }
           end
         end
 
@@ -78,9 +74,16 @@ module Axn
           raise NotImplementedError, "Subclasses must implement registry_directory method"
         end
 
-        def select_constants_to_load(constants)
-          # Subclasses can override this to select which constants to load
-          constants.select { |const| const.is_a?(Module) }
+        # The registry's OWN constant (never an inherited one) that an entry file is named for. A file that
+        # defines no such module is a layout mistake, refused at load rather than silently listing nothing.
+        def _entry_constant(base)
+          const_name = base.camelize
+          entry = const_get(const_name, false) if const_defined?(const_name, false)
+          return entry if entry.is_a?(Module)
+
+          raise NotImplementedError,
+                "#{name}: #{base}.rb must define the module #{name}::#{const_name} " \
+                "(a helper belongs in a `_`-prefixed file, which contributes no entry)"
         end
       end
     end
