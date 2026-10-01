@@ -103,11 +103,21 @@ module Axn
           # the floor says nothing more, and is left out. A floor above 1 still rejects values the set admits, and
           # stays. Mutates and returns `node`.
           def drop_floors_blank_refusal_implies!(node)
-            refusal = node[:not]
-            return node unless refusal.is_a?(::Hash) && refusal.size == 1 && BLANK_REFUSAL_SETS.include?(refusal[:enum])
+            return node unless blank_refusal_node?(node)
 
             SIZE_CONSTRAINT_KEYS.each_value { |key| node.delete(key) if 1.equal?(node[key]) }
             node
+          end
+
+          # Whether `node` states `name: value` through its blank refusal: a floor of 1 left out beside one is still
+          # enforced, so a gated fragment carrying it is not a check the node leaves out.
+          def floor_implied_by_blank_refusal?(node, name, value)
+            1.equal?(value) && SIZE_CONSTRAINT_KEYS.value?(name) && blank_refusal_node?(node)
+          end
+
+          def blank_refusal_node?(node)
+            refusal = node[:not]
+            refusal.is_a?(::Hash) && refusal.size == 1 && BLANK_REFUSAL_SETS.include?(refusal[:enum])
           end
 
           # The JSON Schema floor key for an emitted type, or nil for a type with no empty state. Reads the

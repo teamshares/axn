@@ -609,6 +609,7 @@ module Axn
           return false unless node.is_a?(::Hash)
           return false if SIBLING_DEPENDENT_KEYWORDS.include?(name)
           return true if node.key?(name) && same_schema_value?(node[name], value)
+          return true if floor_implied_by_blank_refusal?(node, name, value)
 
           Array(node[:allOf]).any? { |conjunct| unconditionally_enforced?(conjunct, name, value) }
         end
