@@ -52,7 +52,11 @@ module MergeCornerProduct
   LITERALS = { "Hash" => '{ "a" => 1 }', "String" => '"x"', "untyped" => '"x"', "union" => '"x"' }.freeze
   PRESENCES = { "required" => "", "optional" => "optional: true", "allow_nil" => "allow_nil: true",
                 "default" => :literal, "procdefault" => :proc, "closed" => "if: -> { false }", "open" => "if: -> { true }",
-                "transformed" => "preprocess: ->(v) { v }" }.freeze
+                "transformed" => "preprocess: ->(v) { v }",
+                # A transform that REPLACES the value, so a check on the transformed value parts from one on the wire
+                # value: a value-preserving Proc cannot show a child judged after the transform being stated as if
+                # it judged the wire. Varied only on the transforming route of a triple (`transform_triples`).
+                "replaced" => 'preprocess: ->(_v) { { "leaf" => "a" } }' }.freeze
 
   # A route is one declaration landing on the node: `lines` are whole declarations of their own, `member` a block
   # member of the anchor, `raw` a raw member of the anchor's `shape:`, `anchor` options of the anchor itself.
@@ -76,7 +80,7 @@ module MergeCornerProduct
     Route.new(kind:, label: "#{kind}(#{label})", lines:, member:, raw:, anchor:, node:, base:)
   end
 
-  def value_variations(types = TYPES.keys - ["union"], presences = PRESENCES.keys)
+  def value_variations(types = TYPES.keys - ["union"], presences = PRESENCES.keys - ["replaced"])
     types.product(presences) + [%w[union required], %w[union optional]]
   end
 
@@ -149,7 +153,7 @@ module MergeCornerProduct
   def ordered?(first, second) = [first, second].all? { |r| !r.lines.empty? && r.kind != "D" }
 
   def cells
-    @cells ||= pair_cells + triple_cells + top_level_cells
+    @cells ||= pair_cells + triple_cells + transform_triples + top_level_cells
   end
 
   def pair_cells
@@ -191,6 +195,17 @@ module MergeCornerProduct
       e.product(b, d).map { |rs| build("ExBxD", rs) } +
       mraw.product(b, d).map { |rs| build("MrawxBxD", rs) } +
       mraw.product(e, dotted_routes(presences: few, on: ":r_e")).map { |rs| build("MrawxExD", rs) }
+  end
+
+  # One route replacing the node's value beside one reading it as sent, with a dotted child anchored on each: the child
+  # of the replacing route judges the Proc's output, the other the wire value.
+  def transform_triples
+    plain = explicit_routes("E", variations: value_variations(%w[Hash untyped], %w[required optional]))
+    replacing = explicit_routes("A", variations: value_variations(%w[Hash untyped], %w[replaced]))
+    few = %w[required optional]
+    %w[:r_a :r_e].flat_map do |on|
+      plain.product(replacing, dotted_routes(presences: few, on:)).map { |rs| build("ExA(replaced)xD#{on}", rs) }
+    end
   end
 
   # A top-level `model:` beside a top-level explicit field at its generated id, or beside a second `model:` route
@@ -269,6 +284,8 @@ module MergeCornerProduct
   # The doctrine's stated exceptions (AGENTS.md, "exact at its core"), asked as narrowly as the payload allows.
   def stated_exception?(cell, value, satisfiable)
     return true if (value.nil? || (value.is_a?(Hash) && value.value?(nil))) && cell.id.include?("default") # a `nil` a `default:` fills (PRO-3589)
+    # An absent or `nil` value a `preprocess:` Proc rescues: the replacing Proc returns an object for either.
+    return true if (value.nil? || OMITTED.equal?(value)) && cell.id.include?("replaced")
 
     # A blank-tolerant position's skipped blank (PRO-3244), only where the node admits some non-blank value.
     satisfiable && cell.id.match?(/optional|allow_blank/) && non_nil_blank?(value)

@@ -7032,6 +7032,52 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     end
   end
 
+  # Two routes declare one wire node and one of them transforms it. A child anchored on the transforming route reads
+  # the Proc's output, exactly as the child of a transformed parent declared alone does, so its checks are not
+  # stated on the wire form and the transform is named; a child anchored on the other route reads the wire value and
+  # keeps its exact schema.
+  describe "a child anchored on one route of a node two routes declare" do
+    def merged(child_route, transform_first: false)
+      untransformed = 'expects :company, on: "payload.inner", as: :r_e, type: Hash'
+      transforming = 'expects :company, on: :pin, as: :r_a, type: Hash, preprocess: ->(_v) { { "leaf" => "zzz" } }'
+      routes = transform_first ? [transforming, untransformed] : [untransformed, transforming]
+      decl = ["expects :payload, type: Hash", "expects :inner, on: :payload, as: :pin, type: Hash", *routes,
+              "expects :leaf, on: :#{child_route}, type: String"].join("\n")
+      Class.new do
+        include Axn
+        class_eval(decl)
+        def call = nil
+      end
+    end
+
+    def node(klass) = klass.input_schema.dig(:properties, :payload, :properties, :inner, :properties, :company)
+    def checker(klass) = JSONSchemer.schema(JSON.parse(JSON.generate(klass.input_schema)))
+    def wire(company) = { "payload" => { "inner" => { "company" => company } } }
+
+    it "states nothing of a child anchored on the transforming route, in either declaration order" do
+      [false, true].each do |transform_first|
+        klass = merged(:r_a, transform_first:)
+        [{ "leaf" => 5 }, { "x" => 1 }].each do |company|
+          expect(klass.call(payload: { "inner" => { "company" => company } })).to be_ok
+          expect(checker(klass).valid?(wire(company))).to be(true)
+        end
+        expect(node(klass)[:required].to_a).not_to include("leaf")
+        leaf_residues = klass.input_schema_residues.select { |r| r.path == %i[payload inner company leaf] }.map(&:summary)
+        expect(leaf_residues).to include(a_string_starting_with(described_class::Vocabulary::TRANSFORM_RESIDUE))
+      end
+    end
+
+    it "keeps the exact schema of a child anchored on the untransformed route" do
+      klass = merged(:r_e)
+
+      expect(node(klass)).to include(properties: { leaf: { type: "string", minLength: 1 } }, required: ["leaf"])
+      [{ "leaf" => 5 }, { "x" => 1 }].each do |company|
+        expect(klass.call(payload: { "inner" => { "company" => company } })).not_to be_ok
+        expect(checker(klass).valid?(wire(company))).to be(false)
+      end
+    end
+  end
+
   # The schema's deep requiredness claims must AGREE with runtime outcomes. Each example asserts both sides
   # against the same class.
   describe "runtime agreement for deep subfields" do
