@@ -3,6 +3,7 @@
 require "axn/internal/field_config"
 # An `id_type:` class is named in a residue through the non-dispatching renderer.
 require "axn/internal/rendering"
+require "axn/internal/stable_addresses"
 # A model id renders through the same serializer every other emitted literal does.
 require "axn/internal/reflection/values"
 # A gated id's requirement is named with the shared residue sentence.
@@ -138,16 +139,8 @@ module Axn
             shape if SCALAR_ID_TYPES.include?(shape[:type])
           end
 
-          # A class named in parentheses, unless its rendering is a bare parenthesized placeholder
-          # (`(anonymous class)`), which a second pair would only double. A name merely starting with one
-          # (`(anonymous class)::Inner`) is still wrapped.
-          def parenthesized_name(mod)
-            name = Axn::Internal::Rendering.stable_module_name(mod)
-            name.match?(BARE_PLACEHOLDER) ? name : "(#{name})"
-          end
-
-          BARE_PLACEHOLDER = /\A\([^()]*\)\z/
-          private_constant :BARE_PLACEHOLDER
+          # A class named in parentheses, unless its rendering is a bare placeholder that already carries its own pair.
+          def parenthesized_name(mod) = Axn::Internal::StableAddresses.parenthesized(Axn::Internal::Rendering.stable_module_name(mod))
 
           def unstated_id_type_residue(id_type)
             "its `id_type:` #{parenthesized_name(id_type)} has no JSON type a lookup token " \
