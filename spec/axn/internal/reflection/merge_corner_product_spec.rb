@@ -52,7 +52,11 @@ module MergeCornerProduct
   LITERALS = { "Hash" => '{ "a" => 1 }', "String" => '"x"', "untyped" => '"x"', "union" => '"x"' }.freeze
   PRESENCES = { "required" => "", "optional" => "optional: true", "allow_nil" => "allow_nil: true",
                 "default" => :literal, "procdefault" => :proc, "closed" => "if: -> { false }", "open" => "if: -> { true }",
-                "transformed" => "preprocess: ->(v) { v }" }.freeze
+                "transformed" => "preprocess: ->(v) { v }",
+                # A transform that REPLACES the value, so a check on the transformed value parts from one on the wire
+                # value: a value-preserving Proc cannot show a child judged after the transform being stated as if
+                # it judged the wire. Varied only on the transforming route of a triple (`transform_triples`).
+                "replaced" => 'preprocess: ->(_v) { { "leaf" => "a", "owner_id" => 1 } }' }.freeze
 
   # A route is one declaration landing on the node: `lines` are whole declarations of their own, `member` a block
   # member of the anchor, `raw` a raw member of the anchor's `shape:`, `anchor` options of the anchor itself.
@@ -76,7 +80,7 @@ module MergeCornerProduct
     Route.new(kind:, label: "#{kind}(#{label})", lines:, member:, raw:, anchor:, node:, base:)
   end
 
-  def value_variations(types = TYPES.keys - ["union"], presences = PRESENCES.keys)
+  def value_variations(types = TYPES.keys - ["union"], presences = PRESENCES.keys - ["replaced"])
     types.product(presences) + [%w[union required], %w[union optional]]
   end
 
@@ -149,7 +153,7 @@ module MergeCornerProduct
   def ordered?(first, second) = [first, second].all? { |r| !r.lines.empty? && r.kind != "D" }
 
   def cells
-    @cells ||= pair_cells + triple_cells + top_level_cells
+    @cells ||= pair_cells + triple_cells + transform_triples + top_level_cells
   end
 
   def pair_cells
@@ -191,6 +195,30 @@ module MergeCornerProduct
       e.product(b, d).map { |rs| build("ExBxD", rs) } +
       mraw.product(b, d).map { |rs| build("MrawxBxD", rs) } +
       mraw.product(e, dotted_routes(presences: few, on: ":r_e")).map { |rs| build("MrawxExD", rs) }
+  end
+
+  # One route replacing the node's value beside one reading it as sent, with a dotted child anchored on each: the child
+  # of the replacing route judges the Proc's output, the other the wire value.
+  def transform_triples
+    plain = explicit_routes("E", variations: value_variations(%w[Hash untyped], %w[required optional]))
+    replacing = explicit_routes("A", variations: value_variations(%w[Hash untyped], %w[replaced]))
+    few = %w[required optional]
+    %w[:r_a :r_e].flat_map do |on|
+      children = dotted_routes(presences: few, on:) + model_child_routes(on:)
+      plain.product(replacing, children).map { |rs| build("ExA(replaced)xD#{on}", rs) }
+    end
+  end
+
+  # A `model:` child under the node, which writes no property of its own key — only its generated `owner_id` — alone,
+  # and beside an `owner_id` declared on the wire-reading route that the lookup reads (it owns the `owner_id` reader)
+  # or reads past (`as:`-renamed, a plain id or another `model:` route), which `FieldConfig.id_token_routes` decides.
+  def model_child_routes(on:)
+    model = ->(pres) { opts("expects :owner", "on: #{on}", MODEL, presence(pres, "String")) }
+    siblings = { "id read" => "expects :owner_id, on: :r_e, type: Integer, optional: true",
+                 "id read past" => "expects :owner_id, on: :r_e, as: :oid, type: Integer, optional: true",
+                 "model read past" => "expects :owner_id, on: :r_e, as: :oid, #{MODEL}, optional: true" }
+    %w[required optional].map { |pres| route("Dm", pres, lines: [model.call(pres)]) } +
+      siblings.map { |label, line| route("Dm", "required #{label}", lines: [model.call("required"), line]) }
   end
 
   # A top-level `model:` beside a top-level explicit field at its generated id, or beside a second `model:` route
@@ -269,6 +297,8 @@ module MergeCornerProduct
   # The doctrine's stated exceptions (AGENTS.md, "exact at its core"), asked as narrowly as the payload allows.
   def stated_exception?(cell, value, satisfiable)
     return true if (value.nil? || (value.is_a?(Hash) && value.value?(nil))) && cell.id.include?("default") # a `nil` a `default:` fills (PRO-3589)
+    # An absent or `nil` value a `preprocess:` Proc rescues: the replacing Proc returns an object for either.
+    return true if (value.nil? || OMITTED.equal?(value)) && cell.id.include?("replaced")
 
     # A blank-tolerant position's skipped blank (PRO-3244), only where the node admits some non-blank value.
     satisfiable && cell.id.match?(/optional|allow_blank/) && non_nil_blank?(value)
@@ -288,7 +318,7 @@ module MergeCornerProduct
       document = schemer(schema)
       verdicts = POOL.map do |value|
         payload = payload_for(cell, value)
-        [value, payload, klass.call(**payload).ok?, document.valid?(JSON.parse(JSON.generate(payload)))]
+        [value, payload, WireCall.call(klass, payload).ok?, document.valid?(WireCall.payload(payload))]
       end
       satisfiable = verdicts.any? { |value, _, _, doc_ok| doc_ok && !OMITTED.equal?(value) && !value.nil? && !non_nil_blank?(value) }
       verdicts.each do |value, payload, runtime_ok, doc_ok|

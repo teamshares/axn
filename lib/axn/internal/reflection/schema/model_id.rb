@@ -3,6 +3,7 @@
 require "axn/internal/field_config"
 # An `id_type:` class is named in a residue through the non-dispatching renderer.
 require "axn/internal/rendering"
+require "axn/internal/stable_addresses"
 # A model id renders through the same serializer every other emitted literal does.
 require "axn/internal/reflection/values"
 # A gated id's requirement is named with the shared residue sentence.
@@ -138,8 +139,11 @@ module Axn
             shape if SCALAR_ID_TYPES.include?(shape[:type])
           end
 
+          # A class named in parentheses, unless its rendering is a bare placeholder that already carries its own pair.
+          def parenthesized_name(mod) = Axn::Internal::StableAddresses.parenthesized(Axn::Internal::Rendering.stable_module_name(mod))
+
           def unstated_id_type_residue(id_type)
-            "its `id_type:` (#{Axn::Internal::Rendering.stable_module_name(id_type)}) has no JSON type a lookup token " \
+            "its `id_type:` #{parenthesized_name(id_type)} has no JSON type a lookup token " \
               "can take, so the id's type is not stated"
           end
 
@@ -293,7 +297,7 @@ module Axn
             shape = declared && model_id_type_schema(declared)
             return prop if shape.nil? || projected_types(prop).include?(shape[:type])
 
-            record_residue(prop, "its `id_type:` (#{Axn::Internal::Rendering.stable_module_name(declared)}) is not stated, " \
+            record_residue(prop, "its `id_type:` #{parenthesized_name(declared)} is not stated, " \
                                  "since a nested declaration reads the id as an object")
           end
 

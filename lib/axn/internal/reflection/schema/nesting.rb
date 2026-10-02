@@ -156,8 +156,11 @@ module Axn
             # of which routes a property is built from, so the member a child is conjoined with is judged by the
             # configs that produced it.
             emitted_ancestor_configs = property_routes(parent_configs) + carried
+            transforming_routes = transforming_routes_beside_wire_routes(parent_configs)
+            transformed_keys = []
             child_loop = nil
             model_routes_first(children).each do |key, node|
+              transformed = collect_transformed_keys!(transformed_keys, key, node, children, transforming_routes)
               if node.implicit?
                 apply_implicit_node!(prop, key, node, ancestor_configs, ann)
                 next
@@ -170,7 +173,7 @@ module Axn
 
               unless model_configs.empty?
                 child_loop ||= ChildLoop.new(prop:, children:, parent_configs:, ann:, carried:, required_model_ids:, model_id_siblings:)
-                apply_model_id_child!(child_loop, key, node, model_configs)
+                apply_model_id_child!(child_loop, key, node, model_configs, derived: model_id_derived?(transformed, key, model_configs, children))
               end
 
               representative = property_representative(node.configs)
@@ -204,6 +207,83 @@ module Axn
             # A required nested model id can't be null (a null token resolves the model to nil at runtime).
             # Done after the loop so it survives an explicit id subfield declared after the model: subfield.
             required_model_ids.each { |id_field| reject_null!(prop[:properties][id_field]) if prop[:properties][id_field] }
+            # Last, once every key's property and `required` entry is final — whichever path wrote it: an explicit
+            # or implicit child, a `model:` route's generated id (written before the loop reaches the route's own
+            # property, and absent a representative at all for a `model:`-only child), or the drains above.
+            transformed_keys.uniq.each { |key| stand_down_transformed_child!(prop, key) }
+          end
+
+          # Whether this child reads a transforming route, recording the keys it writes that stand down if so.
+          def collect_transformed_keys!(transformed_keys, key, node, children, transforming_routes)
+            return false unless reads_transformed_route?(node, transforming_routes)
+
+            transformed_keys.concat(transformed_child_keys(key, node, children))
+            true
+          end
+
+          # The keys a child anchored on a transforming route writes: its own, and a `model:` route's generated id
+          # when nothing else is declared at the id's key — the Proc's output then supplies the token. A declared
+          # sibling keeps its own property: its own anchor decides it on its own visit.
+          def transformed_child_keys(key, node, children)
+            model_configs = node.implicit? ? [] : node.configs.select { |c| c.validations[:model] }
+            return [key] if model_configs.empty? || model_id_reading(key, model_configs, children) != :generated
+
+            [key, Internal::FieldConfig.model_id_key(key)]
+          end
+
+          # Whether a `model:` child's generated id carries the model's own requirement: always, unless the child reads
+          # a transforming route and its lookup reads past a sibling declared at the id's key.
+          def model_id_derived?(transformed, key, model_configs, children)
+            !transformed || model_id_reading(key, model_configs, children) != :unread_sibling
+          end
+
+          # Where a `model:` child's lookup reads its token: `:generated` when nothing is declared at the `<field>_id`
+          # key, `:sibling` when every model route reads a declaration there — asked of the runtime's own selector
+          # (`FieldConfig.id_token_routes`, which `ContractForSubfields.sibling_id_configs` calls over the same
+          # candidates) — and `:unread_sibling` when one is declared but a route reads past it, off its own
+          # (transformed) parent.
+          def model_id_reading(key, model_configs, children)
+            sibling = children[Internal::FieldConfig.model_id_key(key)]
+            return :generated if sibling.nil? || sibling.implicit?
+
+            read = model_configs.all? { |config| Internal::FieldConfig.id_token_routes(config, sibling.configs).any? }
+            read ? :sibling : :unread_sibling
+          end
+
+          # At a node two routes declare, the routes that transform the value (`preprocess:`) while another reads it
+          # as sent. A node every route transforms stands down whole, children included (`emitted_input_property`,
+          # the collision's own stand-down), so only the mixed node has a child to judge on its own.
+          def transforming_routes_beside_wire_routes(parent_configs)
+            routes = parent_configs.reject { |c| c.validations[:model] }
+            transforming = routes.select { |c| transforms_wire_value?([c]) }
+            transforming.size < routes.size ? transforming : NO_TRANSFORMING_ROUTES
+          end
+
+          NO_TRANSFORMING_ROUTES = [].freeze
+          private_constant :NO_TRANSFORMING_ROUTES
+
+          # Whether any declaration in this child's subtree is anchored on a transforming route: its `on:` names
+          # that route's reader, so it reads the Proc's output rather than the wire value — the reading a child of
+          # a transformed parent declared alone takes. A dotted `on:` naming the node itself is refused at
+          # declaration when two routes declare it, so a reader name is the only way to reach one route.
+          def reads_transformed_route?(node, transforming_routes)
+            return false if transforming_routes.empty?
+
+            readers = transforming_routes.map { |route| route.reader_as.to_sym }
+            subtree_configs(node).any? { |config| readers.include?(config.on.to_s.split(".").first&.to_sym) }
+          end
+
+          def subtree_configs(node) = node.configs + node.children.each_value.flat_map { |child| subtree_configs(child) }
+
+          # The child's checks judge the Proc's output, so none of them is stated on the wire form — the same
+          # stand-down a transformed parent's whole property takes (`emitted_input_property`), its description and
+          # default kept and the rest named. Nor is it required: the transform may supply it.
+          def stand_down_transformed_child!(prop, key)
+            child = prop[:properties][key]
+            return if child.nil?
+
+            prop[:properties][key] = stand_down_from(child.slice(:description, :default), child.except(:description, :default), TRANSFORM_RESIDUE)
+            prop[:required].delete(required_key(key))
           end
 
           # The children with a `model:` route first, each group in declaration order. A dotted child reaching a
@@ -309,7 +389,12 @@ module Axn
           # folded into `apply_children!`'s single already-large loop body, which the conflict/reconciliation
           # logic here had pushed past this file's complexity budget. Mutates `prop`/`required_model_ids` in
           # place, exactly as the inlined code it replaces did.
-          def apply_model_id_child!(child_loop, key, node, model_configs)
+          #
+          # `derived: false` is a child of a merged node's transforming route whose lookup reads past whatever is
+          # declared at the id's key — a non-model sibling, or another `model:` route renamed with `as:`: the Proc's
+          # output supplies the token, so nothing of the model's requirement is added there, and a declared sibling
+          # keeps exactly the property and requiredness it declares.
+          def apply_model_id_child!(child_loop, key, node, model_configs, derived: true)
             # The id key derives from the LEAF wire segment (a dotted model name digs `<leaf>_id` off
             # the same nested parent at runtime). A user may declare an explicit NON-model nested
             # `<field>_id` subfield — its own entry in `children`, keyed by that same id, visited
@@ -344,12 +429,13 @@ module Axn
               # this sibling's OWN entry in `children` hasn't necessarily been visited yet, so
               # `prop[:properties][id_field]` isn't guaranteed to hold its FINAL emission until every key
               # in this loop has run.
-              child_loop.model_id_siblings << [id_field, model_configs, explicit_id]
+              child_loop.model_id_siblings << [id_field, model_configs, explicit_id] if derived
             elsif !child_loop.prop[:properties].key?(id_field)
               id_type = reconciled_model_id_type_token(model_configs)
               _, subprop = model_id_property(model_configs.first, id_type)
               child_loop.prop[:properties][id_field] ||= subprop
             end
+            return unless derived
             return if node_optional?(node, child_loop.ann, model_configs)
             # A sibling id whose default supplies the lookup token on the omitted call rescues it, by the one
             # predicate the annotation credit and the declaration guard share.

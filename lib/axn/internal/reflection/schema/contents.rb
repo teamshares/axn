@@ -108,6 +108,7 @@ module Axn
             if !for_output && untyped_node?(node)
               node = node.merge(not: blank_refusal(nullable:)) if presence_rejects_blank?(constraints)
               apply_untyped_value_constraints!(node, constraints, nullable:)
+              drop_floors_blank_refusal_implies!(node)
             else
               apply_value_constraints!(node, constraints, nullable:, for_output:, declared_klass: bag[:klass])
             end

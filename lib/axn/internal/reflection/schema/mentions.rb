@@ -31,9 +31,9 @@ module Axn
           private_constant :MENTIONABLE_MAP, :MENTIONABLE_EACH_PAIR
 
           # The fragment a residue MENTIONS, rendered without requiring the caller's literals to be
-          # JSON-encodable. They need not be: `normalize_scalar_literal` deliberately keeps a
-          # `Float::INFINITY` default and its kind, so ordinary reflection does not fail on one — and a path
-          # that merely NAMES such a value must not be the one that fails instead.
+          # JSON-encodable. They need not be: an `inclusion:` set the document cannot state is named here with
+          # its members as declared (a `Float::INFINITY`, a class token), and a path that merely NAMES such a
+          # value must not be the one that fails.
           def render_constraint(prop)
             # A mentioned subtree no longer participates in the final schema walk. Finalize its
             # reports now, on a copy, while schema nodes can still be distinguished from literals.

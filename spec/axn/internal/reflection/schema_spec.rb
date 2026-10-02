@@ -558,10 +558,11 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     end
 
     it "emits an enum for a static Symbol-array inclusion and treats a defaulted field as optional" do
-      # The static enum is normalized to Strings, and the usable :a default makes the field optional.
+      # The static enum is normalized to Strings, which `type: Symbol` parses back, and the usable :a default
+      # makes the field optional.
       klass = Class.new do
         include Axn
-        expects :mode, inclusion: { in: %i[a b] }, default: :a
+        expects :mode, type: Symbol, inclusion: { in: %i[a b] }, default: :a
       end
       schema = described_class.build_input(klass.internal_field_configs, klass.subfield_configs)
       expect(schema[:properties][:mode][:enum]).to eq(%w[a b])
@@ -1588,6 +1589,23 @@ RSpec.describe Axn::Internal::Reflection::Schema do
       let(:note) { "its `id_type:` (Integer) is not stated, since a nested declaration reads the id as an object" }
 
       def id_residues(klass) = klass.input_schema_residues.select { |r| r.path == %i[payload company_id] }.map(&:summary)
+
+      # An anonymous class already renders as a parenthesized placeholder, which a second pair would double.
+      it "names an anonymous id_type: once, without doubling its placeholder's parentheses" do
+        klass = build_axn do
+          expects :company, model: { klass: Struct.new(:id), finder: :new, id_type: Class.new }
+        end
+        summaries = klass.input_schema_residues.map(&:summary)
+
+        expect(summaries).to include(a_string_starting_with("its `id_type:` (anonymous class) has no JSON type"))
+        expect(summaries.join).not_to include("((")
+
+        anon = Class.new
+        anon.const_set(:Inner, Class.new)
+        nested = build_axn { expects :company, model: { klass: Struct.new(:id), finder: :new, id_type: anon::Inner } }
+        expect(nested.input_schema_residues.map(&:summary))
+          .to include(a_string_starting_with("its `id_type:` ((anonymous class)::Inner) has no JSON type"))
+      end
 
       it "names the declared id_type: an object claim replaces" do
         klass = build_axn do
@@ -3755,11 +3773,46 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     it "normalizes Symbol inclusion enum members to Strings, not raw symbols" do
       klass = Class.new do
         include Axn
-        expects :x, inclusion: { in: %i[draft open] }
+        expects :x, type: Symbol, inclusion: { in: %i[draft open] }
       end
       schema = klass.input_schema
 
       expect(schema[:properties][:x][:enum]).to eq(%w[draft open])
+    end
+
+    # Coercion runs only where the read path resolves a field; an `of:` element, a map value and a shape member
+    # have no reader, so a String sent there reaches the inclusion check as a String.
+    it "states no enum for Symbol members at a position nothing coerces, even under its own class" do
+      member = Axn::Core::Contract::ShapeConfig.new(field: :status, validations: { type: { klass: Symbol }, inclusion: { in: %i[active] } })
+      klass = Class.new do
+        include Axn
+        expects :statuses, type: Array, of: { klass: Symbol, inclusion: { in: %i[active] } }
+        expects :by_key, type: Hash, of: { values: { klass: Symbol, inclusion: { in: %i[active] } } }
+        expects :row, type: Hash, shape: { members: [member] }
+        def call = nil
+      end
+      props = klass.input_schema[:properties]
+
+      expect(props.dig(:statuses, :items)).not_to have_key(:enum)
+      expect(props.dig(:by_key, :additionalProperties)).not_to have_key(:enum)
+      expect(props.dig(:row, :properties, :status)).not_to have_key(:enum)
+      expect(Axn::Tools::Invoker.new.call(klass, { "statuses" => ["active"], "by_key" => {}, "row" => { "status" => :active } })).not_to be_ok
+      expect(klass.input_schema_residues.map(&:path)).to include(%i[statuses], %i[by_key], %i[row status])
+    end
+
+    # A String a client sends is never `==` to a Symbol, and with no `type: Symbol` nothing parses it into one,
+    # so the String forms are values the runtime rejects: the set is left out and named instead.
+    it "states no enum for Symbol members where no declared type parses a String back into one" do
+      klass = Class.new do
+        include Axn
+        expects :x, inclusion: { in: %i[draft open] }
+      end
+      prop = klass.input_schema[:properties][:x]
+
+      expect(prop).not_to have_key(:enum)
+      expect(klass.input_schema_residues.map(&:summary)).to include(a_string_including('"inclusion":{"in":["draft","open"]}'))
+      expect(klass.call(x: "draft")).not_to be_ok
+      expect(klass.call(x: :draft)).to be_ok
     end
 
     it "normalizes a Time default to its iso8601 String form, matching format: date-time" do
@@ -4219,11 +4272,13 @@ RSpec.describe Axn::Internal::Reflection::Schema do
           include Axn
           expects(:payload, type: Hash) { field :inner, type: String }
           expects :inner, on: :payload, type: String, optional: true,
-                          default: hostile.new, preprocess: ->(v) { v }
+                          default: hostile.new, exclusion: { in: [hostile.new] }, preprocess: ->(v) { v }
           def call; end
         end
 
         expect { klass.input_schema }.not_to raise_error
+        # The default has no JSON literal and is left out; the exclusion set is what the residue quotes.
+        expect(klass.input_schema_residues.map(&:summary)).to include(a_string_including('"exclusion"'))
       end
     end
 
@@ -5866,7 +5921,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             klass = Class.new do
               include Axn
               expects :payload, type: Hash do
-                field :inner, type: Object, inclusion: { in: [{ allowed: true }] }
+                field :inner, type: Object, inclusion: { in: [{ "allowed" => true }] }
               end
               expects :inner, on: :payload, type: Hash
               def call = nil
@@ -5878,8 +5933,8 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             validator = JSONSchemer.schema(JSON.parse(JSON.generate(inner)))
             expect(validator.valid?({ "allowed" => true })).to be(true)
             expect(validator.valid?({ "other" => true })).to be(false)
-            expect(klass.call(payload: { inner: { allowed: true } })).to be_ok
-            expect(klass.call(payload: { inner: { other: true } })).not_to be_ok # not in the ancestor's inclusion list
+            expect(klass.call(payload: { inner: { "allowed" => true } })).to be_ok
+            expect(klass.call(payload: { inner: { "other" => true } })).not_to be_ok # not in the ancestor's inclusion list
           end
 
           # Two sides that are BOTH unknown-class hints never contradict each other (they both fall back to
@@ -6364,17 +6419,17 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             it "keeps both inclusion sets of two colliding object positions rather than taking the later one" do
               klass = Class.new do
                 include Axn
-                expects(:payload, type: Hash) { field :inner, type: Hash, inclusion: [{ a: 1 }, { b: 2 }] }
-                expects :inner, on: :payload, type: Hash, inclusion: [{ b: 2 }, { c: 3 }]
+                expects(:payload, type: Hash) { field :inner, type: Hash, inclusion: [{ "a" => 1 }, { "b" => 2 }] }
+                expects :inner, on: :payload, type: Hash, inclusion: [{ "b" => 2 }, { "c" => 3 }]
                 def call = nil
               end
               inner = klass.input_schema[:properties][:payload][:properties][:inner]
 
               expect(inner[:enum]).to be_nil
-              expect(inner[:allOf]).to include({ enum: [{ a: 1 }, { b: 2 }] }, { enum: [{ b: 2 }, { c: 3 }] })
+              expect(inner[:allOf]).to include({ enum: [{ "a" => 1 }, { "b" => 2 }] }, { enum: [{ "b" => 2 }, { "c" => 3 }] })
               # The runtime is the reference: each side's own set is enforced, so only the shared member runs.
-              expect(klass.call(payload: { inner: { b: 2 } })).to be_ok
-              [{ a: 1 }, { c: 3 }].each { |v| expect(klass.call(payload: { inner: v })).not_to be_ok }
+              expect(klass.call(payload: { inner: { "b" => 2 } })).to be_ok
+              [{ "a" => 1 }, { "c" => 3 }].each { |v| expect(klass.call(payload: { inner: v })).not_to be_ok }
             end
 
             # Why the two sets are BRANCHED and not intersected. Intersecting means deciding which members
@@ -6386,19 +6441,19 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             it "does not narrow to nothing when the two sets spell a shared member differently" do
               klass = Class.new do
                 include Axn
-                expects(:payload, type: Hash) { field :inner, type: Hash, inclusion: [{ a: 1 }] }
-                expects :inner, on: :payload, type: Hash, inclusion: [{ a: 1.0 }]
+                expects(:payload, type: Hash) { field :inner, type: Hash, inclusion: [{ "a" => 1 }] }
+                expects :inner, on: :payload, type: Hash, inclusion: [{ "a" => 1.0 }]
                 def call = nil
               end
               inner = klass.input_schema[:properties][:payload][:properties][:inner]
 
               expect(inner[:enum]).to be_nil
-              expect(inner[:allOf]).to include({ enum: [{ a: 1 }] }, { enum: [{ a: 1.0 }] })
+              expect(inner[:allOf]).to include({ enum: [{ "a" => 1 }] }, { enum: [{ "a" => 1.0 }] })
               # No branch may be the empty set: `enum: []` is satisfied by nothing, and a consumer reading it
               # is told the position is unusable.
               expect(Array(inner[:allOf]).map { |b| b[:enum] }).to all(be_present)
               # The runtime accepts both spellings, so the document must not refuse them.
-              [{ a: 1 }, { a: 1.0 }].each { |v| expect(klass.call(payload: { inner: v })).to be_ok }
+              [{ "a" => 1 }, { "a" => 1.0 }].each { |v| expect(klass.call(payload: { inner: v })).to be_ok }
             end
 
             it "honors a gate nested on the validator that carries the contradicting keyword" do
@@ -6471,8 +6526,8 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             end
 
             # A residue only MENTIONS the fragment it declined to conjoin, so it must not impose a
-            # requirement ordinary reflection does not: `normalize_scalar_literal` deliberately keeps a
-            # `Float::INFINITY` default, and JSON cannot encode one.
+            # requirement ordinary reflection does not: a `Float::INFINITY` default, which JSON cannot
+            # encode, is left out of the document rather than failing it.
             it "mentions a literal JSON cannot encode without failing" do
               klass = Class.new do
                 include Axn
@@ -6997,6 +7052,163 @@ RSpec.describe Axn::Internal::Reflection::Schema do
     end
   end
 
+  # Two routes declare one wire node and one of them transforms it. A child anchored on the transforming route reads
+  # the Proc's output, exactly as the child of a transformed parent declared alone does, so its checks are not
+  # stated on the wire form and the transform is named; a child anchored on the other route reads the wire value and
+  # keeps its exact schema.
+  describe "a child anchored on one route of a node two routes declare" do
+    def merged(child_route, transform_first: false)
+      untransformed = 'expects :company, on: "payload.inner", as: :r_e, type: Hash'
+      transforming = 'expects :company, on: :pin, as: :r_a, type: Hash, preprocess: ->(_v) { { "leaf" => "zzz" } }'
+      routes = transform_first ? [transforming, untransformed] : [untransformed, transforming]
+      decl = ["expects :payload, type: Hash", "expects :inner, on: :payload, as: :pin, type: Hash", *routes,
+              "expects :leaf, on: :#{child_route}, type: String"].join("\n")
+      Class.new do
+        include Axn
+        class_eval(decl)
+        def call = nil
+      end
+    end
+
+    def node(klass) = klass.input_schema.dig(:properties, :payload, :properties, :inner, :properties, :company)
+    def checker(klass) = JSONSchemer.schema(JSON.parse(JSON.generate(klass.input_schema)))
+    def wire(company) = { "payload" => { "inner" => { "company" => company } } }
+
+    it "states nothing of a child anchored on the transforming route, in either declaration order" do
+      [false, true].each do |transform_first|
+        klass = merged(:r_a, transform_first:)
+        [{ "leaf" => 5 }, { "x" => 1 }].each do |company|
+          expect(klass.call(payload: { "inner" => { "company" => company } })).to be_ok
+          expect(checker(klass).valid?(wire(company))).to be(true)
+        end
+        expect(node(klass)[:required].to_a).not_to include("leaf")
+        leaf_residues = klass.input_schema_residues.select { |r| r.path == %i[payload inner company leaf] }.map(&:summary)
+        expect(leaf_residues).to include(a_string_starting_with(described_class::Vocabulary::TRANSFORM_RESIDUE))
+      end
+    end
+
+    # A `model:` child writes no property of its own key, only its generated id — before the loop would reach its
+    # own property, and with no representative to build one from — so the id is what stands down.
+    it "states no generated id for a model: child anchored on the transforming route" do
+      stub_const("MergedRouteCompany", Struct.new(:id) { def self.find(id) = new(id) })
+      model_child = lambda do |route|
+        Class.new do
+          include Axn
+          expects :payload, type: Hash
+          expects :inner, on: :payload, as: :pin, type: Hash
+          expects :account, on: "payload.inner", as: :raw, type: Hash
+          expects :account, on: :pin, as: :cooked, type: Hash, preprocess: ->(_v) { { "company_id" => 1 } }
+          expects :company, on: route, model: { klass: MergedRouteCompany, finder: :find }
+          def call = nil
+        end
+      end
+      account = ->(klass) { klass.input_schema.dig(:properties, :payload, :properties, :inner, :properties, :account) }
+
+      cooked = model_child.call(:cooked)
+      expect(cooked.call(payload: { "inner" => { "account" => { "x" => 1 } } })).to be_ok
+      without_id = { "payload" => { "inner" => { "account" => { "x" => 1 } } } }
+      expect(JSONSchemer.schema(JSON.parse(JSON.generate(cooked.input_schema))).valid?(without_id)).to be(true)
+      expect(account.call(cooked)[:required].to_a).not_to include("company_id")
+
+      raw = model_child.call(:raw)
+      expect(raw.call(payload: { "inner" => { "account" => { "x" => 1 } } })).not_to be_ok
+      expect(account.call(raw)[:required]).to include("company_id")
+    end
+
+    # The lookup reads an explicitly declared id, so where that declaration sits on the wire-reading route the id is
+    # checked as sent, and keeps its own exact property.
+    it "keeps an explicit id the wire-reading route declares beside a model: child of the transforming one" do
+      stub_const("MergedRouteCompany", Struct.new(:id) { def self.find(id) = new(id) })
+      klass = Class.new do
+        include Axn
+        expects :payload, type: Hash
+        expects :inner, on: :payload, as: :pin, type: Hash
+        expects :account, on: "payload.inner", as: :raw, type: Hash
+        expects :account, on: :pin, as: :cooked, type: Hash, preprocess: ->(_v) { { "company_id" => 1 } }
+        expects :company, on: :cooked, model: { klass: MergedRouteCompany, finder: :find }
+        expects :company_id, on: :raw, type: Integer, optional: true
+        def call = nil
+      end
+      id = klass.input_schema.dig(:properties, :payload, :properties, :inner, :properties, :account, :properties, :company_id)
+
+      expect(klass.call(payload: { "inner" => { "account" => { "x" => 1 } } })).not_to be_ok
+      expect(id).to include(type: "integer")
+    end
+
+    # Whether the lookup reads a declared `company_id` is the runtime's own selector (`FieldConfig.id_token_routes`),
+    # not the declaration's presence: it reads the route on the model's own `on:` or the one owning the `company_id`
+    # reader, and an `as:`-renamed one on another route is read past, so the Proc's output supplies the token.
+    describe "a model: child of the transforming route beside a declared id" do
+      def account_with(sibling)
+        decl = ["expects :payload, type: Hash", "expects :inner, on: :payload, as: :pin, type: Hash",
+                'expects :account, on: "payload.inner", as: :raw, type: Hash',
+                'expects :account, on: :pin, as: :cooked, type: Hash, preprocess: ->(_v) { { "company_id" => 1 } }',
+                "expects :company, on: :cooked, model: { klass: MergedRouteCompany, finder: :find }", sibling].compact.join("\n")
+        Class.new do
+          include Axn
+          class_eval(decl)
+          def call = nil
+        end
+      end
+
+      before { stub_const("MergedRouteCompany", Struct.new(:id) { def self.find(id) = id.nil? ? nil : new(id) }) }
+
+      {
+        "no declared id" => nil,
+        "an id the lookup reads (the `company_id` reader on the wire-reading route)" => "expects :company_id, on: :raw, type: Integer, optional: true",
+        "a gated id the lookup still reads" => "expects :company_id, on: :raw, type: Integer, optional: true, if: -> { false }",
+        "an id on the model's own route" => "expects :company_id, on: :cooked, type: Integer, optional: true",
+        "an `as:`-renamed id the lookup reads past" => "expects :company_id, on: :raw, as: :other_id, type: Integer, optional: true",
+        "a model: route at the id's key" => "expects :company_id, on: :raw, model: { klass: MergedRouteCompany, finder: :find }, optional: true",
+        "an `as:`-renamed model: route the lookup reads past" =>
+          "expects :company_id, on: :raw, as: :cid, model: { klass: MergedRouteCompany, finder: :find }, optional: true",
+      }.each do |label, sibling|
+        it "never rejects what the runtime accepts, with #{label}" do
+          klass = account_with(sibling)
+          document = JSONSchemer.schema(JSON.parse(JSON.generate(klass.input_schema)))
+          [{ "x" => 1 }, { "company_id" => 5 }, { "company_id" => nil }, { "company_id" => "a" }].each do |account|
+            next unless klass.call(payload: { "inner" => { "account" => account } }).ok?
+
+            expect(document.valid?({ "payload" => { "inner" => { "account" => account } } })).to be(true), "#{label}: #{account.inspect}"
+          end
+        end
+      end
+
+      def account(klass) = klass.input_schema.dig(:properties, :payload, :properties, :inner, :properties, :account)
+
+      it "keeps a read-past sibling's own optional property, and adds no model requirement to it" do
+        klass = account_with("expects :company_id, on: :raw, as: :other_id, type: Integer, optional: true")
+
+        expect(account(klass)[:required].to_a).not_to include("company_id")
+        expect(account(klass).dig(:properties, :company_id)).to include(type: %w[integer null])
+      end
+
+      it "adds no model requirement beside an `as:`-renamed model: route the lookup reads past" do
+        klass = account_with("expects :company_id, on: :raw, as: :cid, model: { klass: MergedRouteCompany, finder: :find }, optional: true")
+
+        expect(klass.call(payload: { "inner" => { "account" => { "x" => 1 } } })).to be_ok
+        expect(account(klass)[:required].to_a).not_to include("company_id")
+      end
+
+      it "keeps the requirement of a sibling the lookup reads" do
+        klass = account_with("expects :company_id, on: :raw, type: Integer, optional: true")
+
+        expect(klass.call(payload: { "inner" => { "account" => { "x" => 1 } } })).not_to be_ok
+        expect(account(klass)[:required]).to include("company_id")
+      end
+    end
+
+    it "keeps the exact schema of a child anchored on the untransformed route" do
+      klass = merged(:r_e)
+
+      expect(node(klass)).to include(properties: { leaf: { type: "string", minLength: 1 } }, required: ["leaf"])
+      [{ "leaf" => 5 }, { "x" => 1 }].each do |company|
+        expect(klass.call(payload: { "inner" => { "company" => company } })).not_to be_ok
+        expect(checker(klass).valid?(wire(company))).to be(false)
+      end
+    end
+  end
+
   # The schema's deep requiredness claims must AGREE with runtime outcomes. Each example asserts both sides
   # against the same class.
   describe "runtime agreement for deep subfields" do
@@ -7245,7 +7457,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
             properties: {
               address: {
                 properties: {
-                  zip: { default: "x", not: { enum: ["", [], {}, false, nil] }, minItems: 1, minProperties: 1, minLength: 1 },
+                  zip: { default: "x", not: { enum: ["", [], {}, false, nil] } },
                 },
               },
             },
@@ -7343,7 +7555,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
               status: { type: "string", minLength: 1 },
               address: {
                 properties: {
-                  zip: { default: "x", not: { enum: ["", [], {}, false, nil] }, minItems: 1, minProperties: 1, minLength: 1 },
+                  zip: { default: "x", not: { enum: ["", [], {}, false, nil] } },
                 },
               },
             },
@@ -8096,16 +8308,18 @@ RSpec.describe Axn::Internal::Reflection::Schema do
   end
 
   # Scalar leaves DO route to Values.serialize_value, which refuses a non-finite Float outright because
-  # JSON has no literal for one. Reflection reports the declaration anyway: a reflected literal promises
-  # nothing about encodability, while serialize_exposed's output does, which is where that refusal belongs.
-  it "reflects a non-finite Float default as declared rather than raising" do
+  # JSON has no literal for one. Reflection must not raise on it, and must not write a `default` an encoder
+  # then refuses; `default` is an annotation, so leaving it out changes nothing the document accepts.
+  it "leaves a non-finite Float default out rather than raising or writing one JSON cannot encode" do
     klass = Class.new do
       include Axn
       expects :limit, type: Numeric, default: Float::INFINITY
     end
 
     expect { klass.input_schema }.not_to raise_error
-    expect(klass.input_schema[:properties][:limit][:default]).to eq(Float::INFINITY)
+    expect(klass.input_schema[:properties][:limit]).not_to have_key(:default)
+    expect(klass.input_schema[:required].to_a).not_to include("limit")
+    expect { JSON.generate(klass.input_schema) }.not_to raise_error
   end
 
   # `build_input` is public, so a config a downstream caller built itself reaches the emitter without passing
@@ -10255,7 +10469,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         expect(action.call(f: [nil])).not_to be_ok
         expect(action.call(f: [""])).not_to be_ok
         expect(action.input_schema.dig(:properties, :f, :items))
-          .to eq(not: { enum: ["", [], {}, false, nil] }, minItems: 1, minProperties: 1, minLength: 1)
+          .to eq(not: { enum: ["", [], {}, false, nil] })
       end
 
       # Outbound the schema may say LESS than the contract and never more, and an untyped OUTPUT position is
@@ -10283,7 +10497,7 @@ RSpec.describe Axn::Internal::Reflection::Schema do
         expect(bagged.input_schema.dig(:properties, :f, :items, :description)).to include('"format":')
         expect(bagged.input_schema.dig(:properties, :f, :items)).not_to have_key(:type)
         expect(constraints(fielded.input_schema[:properties][:f]))
-          .to eq(not: { enum: ["", [], {}, false, nil] }, minItems: 1, minProperties: 1, minLength: 1, pattern: "^a")
+          .to eq(not: { enum: ["", [], {}, false, nil] }, pattern: "^a")
         expect(fielded.input_schema[:properties][:f][:description]).to include('"format":{"with":')
       end
     end

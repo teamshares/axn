@@ -681,7 +681,7 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
         klass = declared_with_member(Struct.new(:field, :validations, :default).new(:a, { presence: true }, "dflt"))
 
         expect(klass.input_schema.dig(:properties, :payload, :properties, :a))
-          .to eq(not: { enum: ["", [], {}, false, nil] }, minItems: 1, minProperties: 1, minLength: 1)
+          .to eq(not: { enum: ["", [], {}, false, nil] })
         expect(klass.input_schema.dig(:properties, :payload, :required)).to eq(["a"])
         expect(klass.call(payload: {})).not_to be_ok
       end
@@ -1367,6 +1367,35 @@ RSpec.describe "shape contracts (block syntax for structured fields)" do
         sku = member
         expect { build_axn { expects :val, type: Object, shape: { container: Hash, members: [sku] } } }
           .to raise_error(ArgumentError, /beside `type: Object` — .*`type: Object` admits values that aren't, which skip them\.\z/)
+      end
+
+      # `:params` admits an `ActionController::Parameters`, which is not a Hash, so `container: Hash` skips its
+      # members. The verdict is the same whether or not Rails is loaded (spec_rails holds the Parameters half).
+      it "refuses `container: Hash` beside `type: :params`, which admits a value that is not a Hash" do
+        sku = member
+        expect { build_axn { expects :val, type: :params, shape: { container: Hash, members: [sku] } } }
+          .to raise_error(ArgumentError,
+                          "`container: Hash` #{head} beside `type: :params` — declare `type: Hash` (and pass " \
+                          "`params.to_unsafe_h`) to check the members on every value. The members are checked only " \
+                          "on a value that `is_a?(Hash)`, and `type: :params` admits values that aren't, which skip them.")
+        expect { build_axn { expects :val, type: [Hash, :params], shape: { container: Hash, members: [sku] } } }
+          .to raise_error(ArgumentError, /beside `type: \[Hash, :params\]` — keep in `type:` only classes/)
+        expect { build_axn { expects :val, type: Array, of: { klass: :params, shape: { container: Hash, members: [sku] } } } }
+          .to raise_error(ArgumentError, /inside the `of:` bag on expects :val beside `klass: :params`/)
+        expect { build_axn { expects :val, type: :params, shape: { container: Object, members: [sku] } } }.not_to raise_error
+      end
+
+      # Without Rails, all that is known of a Parameters value's class is that it descends from `Object` and no other
+      # class: a class container is refused, a container every object is declares, and a module — which Parameters may
+      # include, as it does `ActiveSupport::DeepMergeable` — is undecided, so it declares. (spec_rails holds the
+      # Rails half, read off Parameters' real ancestry.)
+      it "judges `:params` beside a container without Rails by what is known of Parameters" do
+        skip "ActionController::Parameters is loaded" if defined?(ActionController::Parameters)
+
+        sku = member
+        declares = ->(container) { build_axn { expects :val, type: :params, shape: { container:, members: [sku] } } && true }
+        [Kernel, BasicObject, Enumerable].each { |container| expect { declares.call(container) }.not_to raise_error }
+        [Data, Class.new, Comparable].each { |container| expect { declares.call(container) }.to raise_error(ArgumentError, /beside `type: :params`/) }
       end
 
       # The rule weighs the type against the container, so it stands down where the two can part: a `type:` gated on

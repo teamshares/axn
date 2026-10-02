@@ -609,6 +609,7 @@ module Axn
           return false unless node.is_a?(::Hash)
           return false if SIBLING_DEPENDENT_KEYWORDS.include?(name)
           return true if node.key?(name) && same_schema_value?(node[name], value)
+          return true if floor_implied_by_blank_refusal?(node, name, value)
 
           Array(node[:allOf]).any? { |conjunct| unconditionally_enforced?(conjunct, name, value) }
         end
@@ -765,8 +766,9 @@ module Axn
         # `default`/`enum` matches the property's advertised type. Scalar wire coercion is delegated to
         # Values.serialize_value (the single source of truth for it), so the two never drift. Mutable
         # String leaves are duped so a consumer mutating the returned schema can't reach the stored
-        # contract; an unrecognized object is left as-is (schema literals are already simple values,
-        # so this deliberately does NOT follow Values.serialize_value's as_json/to_h coercion).
+        # contract; an unrecognized object is left as-is (this deliberately does NOT follow
+        # Values.serialize_value's as_json/to_h coercion, which runs the caller's code), and `json_literal?` is
+        # what keeps it out of the document.
         def normalize_schema_literal(value)
           # Only EXACT built-in containers are traversed/duped (instance_of?, not is_a?): an Array/Hash/
           # String SUBCLASS could override map/each_with_object/dup with user code, and reflection must stay
@@ -787,13 +789,112 @@ module Axn
         end
 
         # A literal the serializer refuses outright — a non-finite `default: Float::INFINITY`, which no JSON
-        # `default` could carry — is reported exactly as declared. Reflection describes a declaration and must
-        # never raise on user data, and a reflected literal makes no encodability promise; `serialize_exposed`'s
-        # output, which does make one, is where that refusal belongs.
+        # `default` could carry — comes back exactly as declared rather than raising: reflection describes a
+        # declaration and must never raise on user data. The emitters then leave out what `json_literal?`
+        # refuses, and `serialize_exposed`'s output, which promises encodability, is where a refusal belongs.
         def normalize_scalar_literal(value)
           Values.serialize_value(value)
         rescue Axn::Extensions::Serialization::UnserializableValue
           value
+        end
+
+        # Whether a normalized literal can be written into the document as it stands: built only of `nil`, `true`,
+        # `false`, an Integer, a finite Float, a String with a UTF-8 rendering, and exact Arrays and Hashes of
+        # them keyed by such a String, a Symbol or an Integer. Anything else — a class, a module, an opaque object,
+        # a non-finite Float, bytes with no UTF-8 rendering, the subclass instances `normalize_schema_literal`
+        # leaves opaque — has no honest JSON form: left in the Hash it stays a live Ruby object, which an encoder
+        # renders as an object address (or refuses outright). Read by exact class and through bound methods only,
+        # since a literal is the caller's own object.
+        def json_literal?(value)
+          klass = Axn::Internal::Identity.class_of(value)
+          return true if JSON_SCALAR_CLASSES.include?(klass)
+          return value.finite? if ::Float.equal?(klass)
+          return !Axn::Internal::Text.utf8_rendering(value).nil? if ::String.equal?(klass)
+          return LITERAL_ARRAY_ALL.bind_call(value) { |element| json_literal?(element) } if ::Array.equal?(klass)
+
+          ::Hash.equal?(klass) && LITERAL_HASH_ALL.bind_call(value) { |key, element| json_key?(key) && json_literal?(element) }
+        end
+
+        # `Integer`, `true`, `false` and `nil` admit no singleton methods and no subclass instances, so the exact
+        # class answers for the value.
+        JSON_SCALAR_CLASSES = [::NilClass, ::TrueClass, ::FalseClass, ::Integer].freeze
+        LITERAL_ARRAY_ALL = ::Array.instance_method(:all?)
+        LITERAL_HASH_ALL = ::Hash.instance_method(:all?)
+        private_constant :JSON_SCALAR_CLASSES, :LITERAL_ARRAY_ALL, :LITERAL_HASH_ALL
+
+        def json_key?(key)
+          klass = Axn::Internal::Identity.class_of(key)
+          return true if ::Symbol.equal?(klass) || ::Integer.equal?(klass)
+
+          ::String.equal?(klass) && !Axn::Internal::Text.utf8_rendering(key).nil?
+        end
+
+        # Whether a tool invoker's coercion (`coerce_input_types`, which `Axn::Tools::Invoker` turns on) can parse this
+        # position's wire String into its declared type before its checks run: only a field the read path resolves
+        # (`Coercion.coerce_config_value`, a top-level field or a dotted subfield), and only where its own `coerce:`
+        # does not opt out (`Coercion.field_coerces?`). A shape member, an `of:` element and a map axis have no
+        # reader, so nothing coerces them — the same test `transforms_wire_value?` reads.
+        def wire_value_coerced?(config)
+          config.respond_to?(:preprocess) && Axn::Internal::Coercion.field_coerces?(config.validations[:type], true)
+        end
+
+        # Whether an INPUT `inclusion:` set can be stated as an `enum`: every member is a value a JSON document
+        # carries and the runtime accepts back as that member. Its literal is what the document advertises, so a
+        # member whose literal the runtime rejects — a Symbol or a Time anywhere no declared type parses the String
+        # back into it, a Complex's string form, a Symbol-keyed Hash, a class token rendered as its name — would
+        # advertise a value no call can send, and one with no literal at all would leave a live object in the
+        # document. Either stands the set down, and the caller names it, the direction the schema may always err in.
+        #
+        # `tokens` are the declared classes of a position the runtime coerces (`wire_value_coerced?`), and none
+        # elsewhere. Where one of them parses a String into the member's own class (`Coercion.coerce_value`, the
+        # same step a tool invoker turns on), the member's String form is the call the schema already states
+        # canonically for that type, so it stands — exactly when parsing that form gives the member back.
+        def wire_enum?(members, tokens) = LITERAL_ARRAY_ALL.bind_call(members) { |member| wire_member?(member, tokens) }
+
+        # The classes whose String form a declared type can parse back (`Coercion::COERCERS`' String-keyed half).
+        COERCED_LITERAL_CLASSES = [::Symbol, ::Time, ::Date, ::DateTime].freeze
+        NO_WIRE_TOKENS = [].freeze
+        private_constant :COERCED_LITERAL_CLASSES, :NO_WIRE_TOKENS
+
+        def wire_member?(member, tokens)
+          klass = Axn::Internal::Identity.class_of(member)
+          return wire_string?(member) if ::String.equal?(klass)
+          return LITERAL_ARRAY_ALL.bind_call(member) { |element| wire_member?(element, NO_WIRE_TOKENS) } if ::Array.equal?(klass)
+          return wire_object?(member) if ::Hash.equal?(klass)
+          return numeric_wire_member?(member) if ::BigDecimal.equal?(klass) || ::Rational.equal?(klass)
+          return coerced_wire_member?(member, klass, tokens) if COERCED_LITERAL_CLASSES.include?(klass)
+
+          json_literal?(member)
+        end
+
+        # A JSON object arrives as a Hash keyed by Strings, which no Symbol key is `eql?` to.
+        def wire_object?(member)
+          LITERAL_HASH_ALL.bind_call(member) do |key, element|
+            ::String.equal?(Axn::Internal::Identity.class_of(key)) && wire_string?(key) && wire_member?(element, NO_WIRE_TOKENS)
+          end
+        end
+
+        # A JSON String arrives as UTF-8, and Ruby compares Strings across encodings by their bytes only where both
+        # are ASCII-compatible and the bytes are ASCII; so the member is the String a client sends exactly when its
+        # UTF-8 rendering is itself rather than a transcoded copy.
+        def wire_string?(string) = Axn::Internal::Identity.same?(Axn::Internal::Text.utf8_rendering(string), string)
+
+        # A BigDecimal or Rational is written as the Float it normalizes to, which a client sends back as that Float.
+        def numeric_wire_member?(member)
+          float = normalize_scalar_literal(member)
+          ::Float.equal?(Axn::Internal::Identity.class_of(float)) && float.finite? && float == member
+        end
+
+        def coerced_wire_member?(member, klass, tokens)
+          rendered = normalize_scalar_literal(member)
+          return false unless ::String.equal?(Axn::Internal::Identity.class_of(rendered)) && wire_string?(rendered)
+
+          coerced = Axn::Internal::Coercion.coerce_value(rendered, tokens)
+          return false unless klass.equal?(Axn::Internal::Identity.class_of(coerced))
+
+          # The class's own `==`, read natively, so a member carrying a singleton `==` is not asked.
+          equality = Axn::Internal::NativeMethods.declared_instance_method(klass, :==)
+          !equality.nil? && equality.bind_call(member, coerced)
         end
 
         # The `enum:` member list for an inclusion set. `nullable` (nil_allowed?) is the runtime truth: when
@@ -914,8 +1015,9 @@ module Axn
           # it. Nothing above depends on the constraint already being there.
           if !for_output && type_info.empty? && !structured?(config)
             apply_untyped_value_constraints!(prop, config.validations, nullable:)
+            drop_floors_blank_refusal_implies!(prop)
           else
-            apply_value_constraints!(prop, config.validations, nullable:, for_output:)
+            apply_value_constraints!(prop, config.validations, nullable:, for_output:, coerced: wire_value_coerced?(config))
           end
 
           return prop if for_output
@@ -1165,8 +1267,12 @@ module Axn
           return for_output ? prop : record_residue(prop, PROC_DEFAULT_RESIDUE) if computed_default?(declared_default)
           return prop if broken_default?(declared_default)
 
-          emit_default = subfield ? config.applied_default? : true
-          prop[:default] = normalize_schema_literal(declared_default) if emit_default
+          return prop unless subfield ? config.applied_default? : true
+
+          # A default with no JSON literal is left out rather than written as a live object. `default` is an
+          # annotation, so leaving it out admits and rejects exactly what writing it would.
+          literal = normalize_schema_literal(declared_default)
+          prop[:default] = literal if json_literal?(literal)
           prop
         end
 
@@ -1283,8 +1389,8 @@ module Axn
         # Array's element, a map's axis), so a keyword cannot land at one position and be forgotten at another —
         # which is what a mirrored copy would eventually become. The keyword each one lands on is decided by the
         # node's own emitted `type:`, so the same call does the right thing wherever the node sits.
-        def apply_value_constraints!(node, validations, nullable:, for_output:, property_names: false, declared_klass: nil)
-          apply_inclusion_enum!(node, validations, nullable:, for_output:, property_names:, declared_klass:)
+        def apply_value_constraints!(node, validations, nullable:, for_output:, property_names: false, declared_klass: nil, coerced: false)
+          apply_inclusion_enum!(node, validations, nullable:, for_output:, property_names:, declared_klass:, coerced:)
           apply_size_constraints!(node, validations, for_output:, property_names:, declared_klass:)
           apply_numeric_bounds!(node, validations, nullable:, for_output:, declared_klass:)
           apply_pattern!(node, validations, for_output:, property_names:, declared_klass:)
@@ -1334,7 +1440,7 @@ module Axn
         # object key is a string. A Symbol has a faithful form; an Integer does not, and the runtime really does
         # accept `{ 1 => v }`, so a set with any unrenderable member stands the ENUM down (leaving the axis's
         # other, string-shaped constraints in place) rather than emit a set no key can satisfy.
-        def apply_inclusion_enum!(node, validations, nullable:, for_output:, property_names:, declared_klass: nil)
+        def apply_inclusion_enum!(node, validations, nullable:, for_output:, property_names:, declared_klass: nil, coerced: false)
           inclusion = validations[:inclusion]
           return unless inclusion
 
@@ -1346,8 +1452,13 @@ module Axn
             return if values.nil?
           else
             return if for_output && !output_enum_exact?(values, validations, declared_klass)
+            return node.merge!(record_residue(node, unstated_check_sentence(:inclusion, inclusion))) if
+              !for_output && !wire_enum?(values, coerced ? declared_type_tokens(validations, declared_klass) : NO_WIRE_TOKENS)
 
             values = enum_for_inclusion(values, nullable:)
+            # A member with no JSON literal — a non-finite Float, bytes with no UTF-8 rendering, a value
+            # `normalize_schema_literal` leaves opaque — cannot be written into the document at all.
+            return unless values.all? { |value| json_literal?(value) }
             return node.merge!(record_residue(node, UNREACHABLE_ENUM_RESIDUE)) if !for_output && enum_unreachable?(node, values)
           end
 
@@ -1479,8 +1590,9 @@ module Axn
           # Inbound, the REACHABLE subset rather than all-or-nothing. A JSON key is a String, so it can only
           # ever equal a String member — which makes `["a", 1]` project to exactly `["a"]`: not an
           # approximation, but the precise set of JSON-supplied keys the runtime accepts. Standing down from
-          # the whole constraint instead admitted every key the document said nothing about.
-          reachable = values.grep(::String)
+          # the whole constraint instead admitted every key the document said nothing about. A key arrives as
+          # UTF-8, so a member whose bytes render only as a transcoded copy (or not at all) equals no key either.
+          reachable = values.grep(::String).select { |value| wire_string?(value) }
           # Nothing reachable, and the axis's CLASS already admits a String key — the whole inbound projection
           # is gated on that before this runs — so the position is reachable from JSON while its set holds
           # nothing a JSON key could equal: no key satisfies it, and `enum: []` is what says so. Standing down
@@ -1493,9 +1605,10 @@ module Axn
           return EMPTY_ENUM if reachable.empty?
 
           # Detached, never the inclusion array's own Strings: reflection hands these to a consumer, and one
-          # mutating a member in place would change which keys the DECLARED action accepts. The value-enum path
-          # dups through the same normalizer.
-          normalize_schema_literal(reachable)
+          # mutating a member in place would change which keys the DECLARED action accepts. Copied as plain
+          # Strings, so a String subclass member — which a key equals by its bytes — is written as those bytes
+          # rather than left in the document as the caller's own object.
+          reachable.map { |key| ::String.new(key) }
         end
 
         # A declared `format:` reflects as `pattern` when the regex translates faithfully — `Reflection::Pattern`

@@ -9,6 +9,7 @@ require "pry-byebug"
 $LOAD_PATH.unshift(File.expand_path(__dir__))
 
 require "support/declaration_message_audit"
+require "support/wire_call"
 
 RSpec.configure do |config|
   # Enable flags like --only-failures and --next-failure
