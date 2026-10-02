@@ -194,9 +194,11 @@ module Axn
         # it afterward would strand those under the old key while `configure(value)` writes/validates
         # under the new one. Lock on first use and enforce the documented "declare it first" rule.
         if @_config_namespace_locked && value != @_config_namespace
+          given = Axn::Internal::Rendering.stable_inspect(value)
+          used = Axn::Internal::Rendering.stable_inspect(@_config_namespace || self)
           raise ArgumentError,
                 "config_namespace must be declared before any overridable setting is defined or its " \
-                "overrides are included (got #{value.inspect} after use under #{(@_config_namespace || self).inspect})"
+                "overrides are included (got #{given} after use under #{used})"
         end
 
         @_config_namespace = value
@@ -219,7 +221,10 @@ module Axn
       # otherwise store silently and never resolve), then validates the value against the setting.
       def _validate_override_setter!(name, value)
         setting = _override_settings[name.to_sym]
-        raise ArgumentError, "unknown overridable setting #{name.inspect} for namespace #{config_namespace.inspect}" unless setting
+        unless setting
+          raise ArgumentError,
+                "unknown overridable setting #{name.inspect} for namespace #{Axn::Internal::Rendering.stable_inspect(config_namespace)}"
+        end
 
         setting.validate!(value)
       end
@@ -281,9 +286,9 @@ module Axn
         # DSL collision, not a merge; fail fast (re-registering the same source is a no-op).
         if existing && !existing.equal?(self)
           raise ArgumentError,
-                "config_namespace #{ns.inspect} is already owned by " \
-                "#{Axn::Internal::Rendering.module_name(existing)} on " \
-                "#{base.name || base}; two config sources cannot share a namespace"
+                "config_namespace #{Axn::Internal::Rendering.stable_inspect(ns)} is already owned by " \
+                "#{Axn::Internal::Rendering.stable_module_name(existing)} on " \
+                "#{Axn::Internal::Rendering.installed_name(base)}; two config sources cannot share a namespace"
         end
 
         registry[ns] = self
@@ -307,7 +312,7 @@ module Axn
             slot&.each_key do |key|
               next if known.key?(key)
 
-              raise ArgumentError, "unknown overridable setting #{key.inspect} for namespace #{ns.inspect}"
+              raise ArgumentError, "unknown overridable setting #{key.inspect} for namespace #{Axn::Internal::Rendering.stable_inspect(ns)}"
             end
           end
           break unless klass.is_a?(Class) && klass.superclass
@@ -586,8 +591,8 @@ module Axn
           if defined?(Axn.config)
             Axn::Extensions.best_effort("logging a reset! collision", action: base) do
               Axn.config.logger.debug do
-                "[Axn] #{Axn::Internal::Rendering.module_name(base)}: instance method `reset!` is already " \
-                  "defined by #{Axn::Internal::Rendering.module_name(existing.owner)}, so the Configurable " \
+                "[Axn] #{Axn::Internal::Rendering.stable_module_name(base)}: instance method `reset!` is already " \
+                  "defined by #{Axn::Internal::Rendering.stable_module_name(existing.owner)}, so the Configurable " \
                   "settings DSL leaves it alone. Per-setting reset is unavailable on this class."
               end
             end

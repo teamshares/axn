@@ -42,22 +42,22 @@ RSpec.describe Axn::Internal::Rendering do
     end
 
     # The policy that separates this reader from `action_name`, which degrades to the generic "Action": a type
-    # label is what the message says the input is NOT, so an unnameable class degrades to the bound rendering,
-    # which still identifies WHICH declared class was meant.
-    it "falls back to the bound rendering for an anonymous class, whose name is nil" do
-      expect(described_class.type_label(Class.new)).to match(/\A#<Class:0x[0-9a-f]+>\z/)
+    # label is what the message says the input is NOT, so an unnameable class degrades to its placeholder, which
+    # still says the declared type was a class rather than naming something else.
+    it "falls back to the placeholder for an anonymous class, whose name is nil" do
+      expect(described_class.type_label(Class.new)).to eq("(anonymous class)")
     end
 
-    it "falls back to the bound rendering when the class's own reader raises, on the same terms" do
+    it "falls back to the placeholder when the class's own reader raises, on the same terms" do
       klass = Class.new { def self.name = raise(Exception, "answered") } # rubocop:disable Lint/RaiseException
 
-      expect(described_class.type_label(klass)).to match(/\A#<Class:0x[0-9a-f]+>\z/)
+      expect(described_class.type_label(klass)).to eq("(anonymous class)")
     end
 
-    it "falls back to the bound rendering for a class answering with something other than a String" do
+    it "falls back to the placeholder for a class answering with something other than a String" do
       klass = Class.new { def self.name = :sym }
 
-      expect(described_class.type_label(klass)).to match(/\A#<Class:0x[0-9a-f]+>\z/)
+      expect(described_class.type_label(klass)).to eq("(anonymous class)")
     end
 
     # The positive control: an ordinary class and a pseudo-type read as a validation message has always said
@@ -258,6 +258,86 @@ RSpec.describe Axn::Internal::Rendering do
       exception.set_backtrace(hostile_container.new(["/app/lib/thing.rb:42:in `block'"]))
 
       expect(described_class.exception_source_location(exception)).to eq("thing.rb:42")
+    end
+  end
+
+  # A DSL argument quoted back in a refusal may run exactly what quoting it by its own `inspect` ran, and nothing
+  # more: a plain Array's elements are walked (native `Array#inspect` reaches each one's `inspect` too), while any
+  # other container is quoted by its own `inspect`. Each example goes through a real refusal path, so it also pins
+  # that the refusal is the error raised.
+  describe ".stable_inspect" do
+    # Named, because a container quoted by its own `inspect` renders an anonymous element by its address, which is
+    # that container's rendering rather than axn's.
+    let(:exception_class) { stub_const("StableInspectSpec::Boom", Class.new(StandardError)) }
+
+    # Records every call to `name` on a container whose own code must not run, raising an `Interrupt` (outside
+    # what the refusal paths absorb) so a call replaces the refusal as well as being counted.
+    def hostile_array(name, calls)
+      Class.new(Array) do
+        define_method(name) do |*, **, &|
+          calls << name
+          raise Interrupt, "#{name} ran"
+        end
+      end
+    end
+
+    %i[map each join].each do |name|
+      it "never runs an Array subclass's own ##{name} for an invalid factory spec" do
+        calls = []
+        spec = hostile_array(name, calls).new([exception_class, "retry", :extra])
+
+        expect { Axn::Factory.build(fails_on: [spec]) { nil } }
+          .to raise_error(ArgumentError, /\A\[Axn::Factory\] Invalid fails_on spec \(expected \[exceptions, message\?\]\): /)
+        expect(calls).to be_empty
+      end
+
+      it "never runs an Array subclass's own ##{name} for an invalid `step if:`" do
+        calls = []
+        condition = hostile_array(name, calls).new([:a])
+        step_axn = build_axn { def call = nil }
+
+        expect { build_axn { step :maybe, step_axn, if: condition } }
+          .to raise_error(ArgumentError, /\Astep if: must be a Symbol or callable/)
+        expect(calls).to be_empty
+      end
+    end
+
+    # The dispatch quoting it by its own `inspect` always made, and so the rendering it always had.
+    it "quotes an Array subclass by its own #inspect" do
+      condition = Class.new(Array) { def inspect = "<my list>" }.new([:a])
+      step_axn = build_axn { def call = nil }
+
+      expect { build_axn { step :maybe, step_axn, if: condition } }
+        .to raise_error(ArgumentError, "step if: must be a Symbol or callable (got <my list>)")
+    end
+
+    it "quotes a plain Array carrying a singleton #map or #inspect by its own #inspect, never the singleton #map" do
+      calls = []
+      condition = [:a]
+      condition.define_singleton_method(:map) { |*| calls << :map }
+      condition.define_singleton_method(:inspect) { "<singleton list>" }
+      step_axn = build_axn { def call = nil }
+
+      expect { build_axn { step :maybe, step_axn, if: condition } }
+        .to raise_error(ArgumentError, "step if: must be a Symbol or callable (got <singleton list>)")
+      expect(calls).to be_empty
+    end
+
+    it "walks a plain Array, naming a class element by its placeholder and quoting the rest by their own #inspect" do
+      expect(described_class.stable_inspect([Class.new, "retry", :extra, [Module.new]]))
+        .to eq('[(anonymous class), "retry", :extra, [(anonymous module)]]')
+    end
+
+    # Nothing below `::Array` adds code, so walking it runs only what its inherited `inspect` would have.
+    it "walks an Array subclass that adds no methods of its own" do
+      expect(described_class.stable_inspect(Class.new(Array).new([Class.new, :x]))).to eq("[(anonymous class), :x]")
+    end
+
+    it "quotes a self-referential plain Array the way Array#inspect does" do
+      cyclic = [1]
+      cyclic << cyclic
+
+      expect(described_class.stable_inspect(cyclic)).to eq("[1, [...]]")
     end
   end
 end

@@ -160,7 +160,10 @@ module Axn
     # because its target is fixed, while forward!'s target is chosen at run time — which is the point
     # of the affordance.
     def _forward_to_class(klass)
-      raise ArgumentError, "forward!: #{klass} must include Axn" unless klass.included_modules.include?(::Axn) || klass < ::Axn
+      unless klass.included_modules.include?(::Axn) || klass < ::Axn
+        raise ArgumentError,
+              "forward!: #{Internal::Rendering.stable_module_name(klass)} must include Axn"
+      end
 
       klass.call(**Internal::ActionState.inputs(self))
     end

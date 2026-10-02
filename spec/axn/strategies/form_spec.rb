@@ -291,7 +291,7 @@ RSpec.describe Axn::Strategies::Form do
 
         expect do
           test_action.use(:form, type: invalid_form_class)
-        end.to raise_error(ArgumentError, "form strategy: #{invalid_form_class} must implement `valid?`")
+        end.to raise_error(ArgumentError, "form strategy: (anonymous class) must implement `valid?`")
       end
 
       it "names the offending form class without running its to_s" do

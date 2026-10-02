@@ -263,6 +263,18 @@ RSpec.describe "Global on_exception handler" do
 
         expect(logged).to include("Handled exception (RuntimeError): Test error")
       end
+
+      # The placeholder carries its own parentheses, so it stands where the named class would, not inside a pair.
+      it "names an anonymous exception class by its placeholder, in one pair of parentheses" do
+        anonymous = Class.new(StandardError)
+        raising = build_axn { define_method(:call) { raise anonymous, "Test error" } }
+        logged = []
+        allow(raising).to receive(:log) { |msg, **| logged << msg }
+
+        raising.call
+
+        expect(logged).to include("Handled exception (anonymous class): Test error")
+      end
     end
   end
 

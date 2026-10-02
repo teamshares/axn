@@ -130,7 +130,7 @@ module Axn
         # on_exception/logs while the end user sees only the generic result.error headline.
         def raise_method_call_not_permitted(source, segment)
           raise Axn::ContractViolation::MethodCallNotPermittedError,
-                "Refusing to resolve `#{field}` by calling `##{segment}` on #{source.class}: resolving a field by " \
+                "Refusing to resolve `#{field}` by calling `##{segment}` on #{Axn::Internal::Rendering.stable_class_name(source)}: resolving a field by " \
                 "invoking a method is opt-in. Add `method_call: true` to the declaration if that is intended " \
                 "(`expects ..., method_call: true` for a subfield, or `field ..., method_call: true` inside a shape " \
                 "block); otherwise the safe default reads declared data only (Hash keys, Struct/OpenStruct/Data members)."

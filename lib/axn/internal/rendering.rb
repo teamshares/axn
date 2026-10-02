@@ -1,7 +1,9 @@
 # frozen_string_literal: true
 
 require "axn/exceptions"
+require "axn/internal/cycle_guard"
 require "axn/internal/identity"
+require "axn/internal/native_methods"
 require "axn/internal/text"
 
 module Axn
@@ -24,7 +26,9 @@ module Axn
       EXCEPTION_BACKTRACE = ::Exception.instance_method(:backtrace)
       STRING_SPLIT = ::String.instance_method(:split)
       ARRAY_FIRST = ::Array.instance_method(:first)
-      private_constant :EXCEPTION_TO_S, :EXCEPTION_BACKTRACE, :STRING_SPLIT, :ARRAY_FIRST
+      ARRAY_MAP = ::Array.instance_method(:map)
+      ARRAY_JOIN = ::Array.instance_method(:join)
+      private_constant :EXCEPTION_TO_S, :EXCEPTION_BACKTRACE, :STRING_SPLIT, :ARRAY_FIRST, :ARRAY_MAP, :ARRAY_JOIN
 
       UNKNOWN_LOCATION = "unknown location"
 
@@ -77,9 +81,34 @@ module Axn
         # DELEGATED like the rest of this module's naming, and for the same reason.
         #
         # Falls back to the BOUND rendering rather than to a generic word: this token is the type a validation
-        # message says the input is not, and `#<Class:0x…>` at least tells the reader which declared class was
-        # meant, where a stand-in noun would leave the message saying nothing about it at all.
-        def module_type_label(mod) = RenderedInstalledName.of(mod) { module_name(mod) }
+        # message says the input is not, and `(anonymous class)` at least tells the reader the declared type was a
+        # class, where a stand-in noun would leave the message saying nothing about it at all.
+        def module_type_label(mod) = installed_name(mod)
+
+        # A class or module named in prose by the name axn may have INSTALLED on it (`RenderedInstalledName`), or by
+        # its stable placeholder when it has none — for a class that is not necessarily an action (a form type, a
+        # config consumer), where `action_name`'s generic "Action" would name the wrong thing.
+        def installed_name(mod) = RenderedInstalledName.of(mod) { stable_module_name(mod) }
+
+        # A value a caller handed axn, quoted back in a message. A class or module is NAMED, by its stable
+        # placeholder when anonymous, since naming a class is axn's rendering rather than the value's; anything
+        # else by its own `inspect`, which is the caller's rendering of their own object, address and all.
+        #
+        # A plain Array is quoted element by element on the same terms, and only a plain one: one adding no
+        # methods to `::Array`'s (`plain_array?`), not even a singleton one. Its own `inspect` is then Ruby's, which
+        # reaches each element's `inspect` exactly as this walk does, so walking it runs nothing a quote by
+        # `inspect` would not have run; the walk reads the elements through bound `Array` methods for the same
+        # reason. Any other Array is quoted by its own `inspect`, which is all quoting it ever ran: its `map` or
+        # `each` is caller code it never reached.
+        def stable_inspect(value, seen = nil)
+          return stable_module_name(value) if Identity.kind?(value, ::Module)
+          return value.inspect unless plain_array?(value)
+
+          CycleGuard.guard(value, seen, on_cycle: CycleGuard::ARRAY_PLACEHOLDER) do |nested|
+            rendered = ARRAY_MAP.bind_call(value) { |element| stable_inspect(element, nested) }
+            "[#{ARRAY_JOIN.bind_call(rendered, ', ')}]"
+          end
+        end
 
         # An ACTION class named in prose, where `module_name` would name it wrongly: axn installs a `name` of
         # its own on the classes it builds, so the bound reader answers with an object address in place of the
@@ -143,6 +172,11 @@ module Axn
         end
 
         private
+
+        # An Array whose every method is `::Array`'s own — no singleton method, and no method a subclass or a module
+        # it mixes in adds below `::Array` — asked without dispatching anything to it (`Module#===`, then
+        # `NativeMethods.own_array_methods`, which reads method tables).
+        def plain_array?(value) = Identity.kind?(value, ::Array) && NativeMethods.own_array_methods(value).empty?
 
         # The message bytes, before rendering. Private: nothing outside this module reads unrendered bytes,
         # and `exception_message` is the whole contract — verified with

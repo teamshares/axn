@@ -59,8 +59,9 @@ module Axn
           # doctrine, reject the repeat. A subclass declaring its own `tool` is a fresh first call
           # (fresh object, no ivar) and is fine.
           if instance_variable_defined?(:@__axn_tool_declared)
-            raise ArgumentError, "`tool` was already declared on #{self}; declare all adapters, `name:`, `except:`, and " \
-                                 "per-adapter options in a single call (e.g. `tool :mcp, ruby_llm: { … }, name: \"...\"`)."
+            raise ArgumentError, "`tool` was already declared on #{Axn::Internal::Rendering.installed_name(self)}; declare all " \
+                                 "adapters, `name:`, `except:`, and per-adapter options in a single call (e.g. `tool :mcp, " \
+                                 "ruby_llm: { … }, name: \"...\"`)."
           end
           @__axn_tool_declared = true
 

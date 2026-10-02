@@ -215,8 +215,9 @@ module Axn
             unreachable = classes.reject { |klass| _fails_on_reachable?(klass) }
             return if unreachable.empty?
 
+            named = unreachable.map { |klass| Axn::Internal::Rendering.stable_module_name(klass) }.join(", ")
             raise ArgumentError,
-                  "fails_on cannot reclassify #{unreachable.map { |klass| Axn::Internal::Rendering.module_name(klass) }.join(', ')} — axn never converts " \
+                  "fails_on cannot reclassify #{named} — axn never converts " \
                   "#{unreachable.one? ? 'it' : 'them'} into a result (a signal, an `exit`, or a library's own " \
                   "control-flow signal is raised straight through `.call`), so the declaration would have no " \
                   "effect. Remove it, and rescue at the call site if the caller needs to handle it."
@@ -255,7 +256,7 @@ module Axn
             end
 
             raise ArgumentError,
-                  "fails_on #{key}: cannot apply #{rule.inspect} -- expected a Symbol, a callable, a String " \
+                  "fails_on #{key}: cannot apply #{Axn::Internal::Rendering.stable_inspect(rule)} -- expected a Symbol, a callable, a String " \
                   "naming a constant, or an Exception class"
           end
         end

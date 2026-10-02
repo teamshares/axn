@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "axn/internal/stable_addresses"
 require "axn/internal/text"
 
 module Axn
@@ -83,8 +84,11 @@ module Axn
 
       # Names the value's CLASS without asking the value anything. Nested rescue because `class_of`
       # binds an Object method, which a BasicObject-based proxy cannot receive at all.
+      #
+      # The class is axn's rendering rather than the value's, so an anonymous one reads as its placeholder
+      # (`StableAddresses`), not its object address.
       def self.undescribable(value)
-        "#<#{MODULE_NAME.bind_call(class_of(value))} (inspect unavailable)>"
+        "#<#{StableAddresses.of(MODULE_NAME.bind_call(class_of(value)))} (inspect unavailable)>"
       rescue Exception # rubocop:disable Lint/RescueException
         "#<unrenderable value>"
       end

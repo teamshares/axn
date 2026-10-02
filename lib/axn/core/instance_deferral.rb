@@ -268,7 +268,7 @@ module Axn
           # The definer is a class or module the user wrote, which axn never renames, so it is read bound. The
           # ACTION is the one axn may have named itself — a factory-built or mounted class carries a `name` axn
           # installed — and reading that one bound answers with an object address instead.
-          owner = Axn::Internal::Rendering.module_name(definer)
+          owner = Axn::Internal::Rendering.stable_module_name(definer)
           klass = Axn::Internal::Rendering.action_name(base)
           Axn.config.logger.warn(
             "[#{klass}] axn left ##{name} to #{owner}: it already defines the name, so calls reach #{owner}'s " \

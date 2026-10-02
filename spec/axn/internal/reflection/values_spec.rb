@@ -990,6 +990,19 @@ RSpec.describe Axn::Internal::Reflection::Values do
       expect(error.message).to eq("Cannot serialize exposed value at `data (hash key :x)` (Symbol): it is bad.")
     end
 
+    # The placeholder carries its own parentheses, so it stands where the named class would, not inside a pair.
+    it "names an anonymous value class by its placeholder, in one pair of parentheses" do
+      error = described_class.new(path: "data", value: Class.new.new, reason: "it is bad.")
+
+      expect(error.message).to eq("Cannot serialize exposed value at `data` (anonymous class): it is bad.")
+    end
+
+    it "does the same for an async argument" do
+      error = Axn::Async::UnserializableArgument.new(field: :data, value: Class.new.new)
+
+      expect(error.message).to start_with("Cannot serialize argument `data` (anonymous class) for async execution.")
+    end
+
     it "falls back to the cycle reason when none is supplied, so the two-kwarg call form keeps working" do
       error = described_class.new(path: "items[1]", value: [])
 
